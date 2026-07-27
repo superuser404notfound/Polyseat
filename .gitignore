@@ -1,0 +1,5 @@
+/polyseat
+/polyseatd
+/dist/
+*.log
+spike/**/out/
