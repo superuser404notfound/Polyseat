@@ -92,14 +92,49 @@ hier passiert.
   das nicht CPU-optimierte `[cachyos]`-Repo ein, und zwar ans *Ende* der
   `pacman.conf`, damit Arch bei allen gemeinsamen Paketen gewinnt.
 
-## Offen — der nächste Schritt
+## Eingabe: am laufenden Stream gemessen
 
-**Eingabe ist noch nicht geprüft.** Aus M0 ist bekannt, dass SDL mit
-`SDL_JOYSTICK_DISABLE_UDEV=1` Hotplug bemerkt. Für **sway** gilt das nicht:
-dessen libinput-Backend hängt an udev-Uevents, die den Container nicht
-erreichen. Tastatur und Maus, die Sunshine beim Verbinden eines Clients als
-virtuelle Geräte anlegt, werden vom Compositor daher voraussichtlich **nicht**
-bemerkt.
+Mit verbundenem Moonlight-Client (iPhone, 2026-07-27) nachgesehen, wo Sunshines
+virtuelle Geräte landen:
 
-Damit wird der Fake-udev-Shim, den M0 noch überflüssig gemacht hatte, für
-Tastatur und Maus vermutlich doch gebraucht. Das ist die erste Frage von M2.
+- Im Container existiert **`/dev/input` überhaupt nicht**.
+- Auf dem Host liegen sie: `Mouse passthrough`, `Mouse passthrough (absolute)`,
+  `Keyboard passthrough`.
+
+**Das ist der M0-Befund, jetzt am echten Sunshine bestätigt:** `uinput` ist
+nicht namespaced, also registriert der Kernel die Geräte global, und der
+Host-udev legt die Knoten an — im Seat, der sie erzeugt hat, sind sie
+unsichtbar. Sway hat damit **null Eingabegeräte**. Tastatur, Maus und Pad im
+Stream können gar nicht funktionieren, bevor der Broker existiert.
+
+Zwei Anschlussbefunde:
+
+- **Die Geräte heißen in jedem Seat gleich.** „Keyboard passthrough" trägt kein
+  Unterscheidungsmerkmal — bei mehreren Seats ist nicht erkennbar, wohin ein
+  Gerät gehört. Eine Suche in der Binärdatei fand keine Konfigurationsoption
+  für den Gerätenamen. Der Seat-Tag braucht also einen Sunshine-Patch oder
+  einen LD_PRELOAD-Shim, wie in M0 vermutet.
+- **Sie erreichen den KDE-Desktop derzeit nicht** — `libinput list-devices`
+  listet sie nicht, weil udev ihnen keine `ID_INPUT`-Eigenschaften gibt,
+  obwohl `input_id` laut `udevadm test` läuft. Die Ursache ist **ungeklärt**.
+  Darauf darf sich der Entwurf nicht verlassen: Wenn diese Geräte auf einem
+  anderen System oder nach einem Update doch klassifiziert werden, greift der
+  Client eines Seats in den Host-Desktop durch. Die Ausblendregel muss sie
+  deshalb ausdrücklich erfassen, statt auf ein unerklärtes Verhalten zu bauen.
+- **Abgestürzte Sunshine-Instanzen hinterlassen ihre Geräte.** Beobachtet
+  wurden zwei vollständige Sätze. Der Broker muss verwaiste Geräte aufräumen.
+
+## Offen — M2
+
+Der Input-Broker. Er muss:
+
+1. neu entstehende virtuelle Geräte erkennen und dem richtigen Seat zuordnen
+   (setzt den Seat-Tag voraus),
+2. sie per `unix-char`-Hotplug in den Seat einhängen (in M0 verifiziert),
+3. sie am Host ausdrücklich vor libinput verstecken,
+4. verwaiste Geräte aufräumen.
+
+Dazu die aus M0 offene Frage: Sways libinput-Backend hängt an udev-Uevents, die
+den Container nicht erreichen. Für SDL half `SDL_JOYSTICK_DISABLE_UDEV=1` — ein
+Gegenstück dazu hat libinput nicht. Für Tastatur und Maus wird der
+Fake-udev-Shim daher vermutlich doch gebraucht.
