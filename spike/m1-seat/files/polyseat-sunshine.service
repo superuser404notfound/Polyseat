@@ -1,0 +1,13 @@
+[Unit]
+Description=polyseat: Sunshine
+After=polyseat-sway.service
+BindsTo=polyseat-sway.service
+
+[Service]
+Type=simple
+Environment=GBM_BACKEND=nvidia-drm
+Environment=__GLX_VENDOR_LIBRARY_NAME=nvidia
+Environment=SDL_JOYSTICK_DISABLE_UDEV=1
+ExecStart=/usr/bin/sunshine
+Restart=on-failure
+RestartSec=5

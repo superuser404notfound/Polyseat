@@ -1,0 +1,24 @@
+[Unit]
+Description=polyseat: headless Sway-Session
+After=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+Environment=WLR_BACKENDS=headless,libinput
+# /dev/input ist beim Start leer — ohne das bricht der libinput-Backend ab.
+Environment=WLR_LIBINPUT_NO_DEVICES=1
+Environment=WLR_RENDERER=gles2
+Environment=WLR_HEADLESS_OUTPUTS=1
+Environment=LIBSEAT_BACKEND=noop
+Environment=XDG_SESSION_TYPE=wayland
+# Befund aus M0: ohne diese Variable bemerkt SDL kein Pad, das erst zur
+# Laufzeit in den Container kommt.
+Environment=GBM_BACKEND=nvidia-drm
+Environment=__GLX_VENDOR_LIBRARY_NAME=nvidia
+Environment=SDL_JOYSTICK_DISABLE_UDEV=1
+ExecStart=/usr/bin/sway
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
