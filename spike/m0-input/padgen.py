@@ -41,14 +41,24 @@ UI_DEV_SETUP = _ioc(_IOC_WRITE, 3, 92)   # sizeof(struct uinput_setup)
 UI_ABS_SETUP = _ioc(_IOC_WRITE, 4, 28)   # sizeof(struct uinput_abs_setup)
 UI_SET_EVBIT = _ioc(_IOC_WRITE, 100, 4)
 UI_SET_KEYBIT = _ioc(_IOC_WRITE, 101, 4)
+UI_SET_RELBIT = _ioc(_IOC_WRITE, 102, 4)
 UI_SET_ABSBIT = _ioc(_IOC_WRITE, 103, 4)
 UI_GET_SYSNAME = _ioc(_IOC_READ, 44, 32)
 
 # ------------------------------------------------------------- Event-Konstanten
 
-EV_SYN, EV_KEY, EV_ABS = 0x00, 0x01, 0x03
+EV_SYN, EV_KEY, EV_REL, EV_ABS = 0x00, 0x01, 0x02, 0x03
 SYN_REPORT = 0x00
 BUS_USB = 0x03
+
+# Tastatur- und Maus-Varianten. libinput ignoriert Gamepads grundsätzlich —
+# die liest ein Spiel direkt über evdev. Für den Compositor zählen nur
+# Tastatur und Maus, und genau die legt Sunshine als "Keyboard passthrough"
+# bzw. "Mouse passthrough" an. Wer die Eingabekette gegen sway prüfen will,
+# braucht deshalb diese beiden Typen, nicht das Pad.
+KEYBOARD_KEYS = list(range(1, 128))          # KEY_ESC .. KEY_COMPOSE
+MOUSE_BUTTONS = [0x110, 0x111, 0x112]        # BTN_LEFT, BTN_RIGHT, BTN_MIDDLE
+REL_AXES = [0x00, 0x01, 0x08]                # REL_X, REL_Y, REL_WHEEL
 
 BUTTONS = [
     0x130,  # BTN_SOUTH  (A)
@@ -81,16 +91,27 @@ AXES = {
 
 
 class Pad:
-    def __init__(self, name, vendor, product):
+    def __init__(self, name, vendor, product, kind="gamepad"):
         self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        self.kind = kind
 
         # UI_SET_*BIT nehmen den Code als Wert, nicht als Zeiger auf einen Puffer.
         fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_KEY)
-        for code in BUTTONS:
-            fcntl.ioctl(self.fd, UI_SET_KEYBIT, code)
-        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_ABS)
-        for code in AXES:
-            fcntl.ioctl(self.fd, UI_SET_ABSBIT, code)
+        if kind == "keyboard":
+            for code in KEYBOARD_KEYS:
+                fcntl.ioctl(self.fd, UI_SET_KEYBIT, code)
+        elif kind == "mouse":
+            for code in MOUSE_BUTTONS:
+                fcntl.ioctl(self.fd, UI_SET_KEYBIT, code)
+            fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_REL)
+            for code in REL_AXES:
+                fcntl.ioctl(self.fd, UI_SET_RELBIT, code)
+        else:
+            for code in BUTTONS:
+                fcntl.ioctl(self.fd, UI_SET_KEYBIT, code)
+            fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_ABS)
+            for code in AXES:
+                fcntl.ioctl(self.fd, UI_SET_ABSBIT, code)
 
         # struct uinput_setup { struct input_id id; char name[80]; __u32 ff; }
         setup = struct.pack(
@@ -101,12 +122,13 @@ class Pad:
 
         # struct uinput_abs_setup { __u16 code; <2 Byte Padding>; input_absinfo }
         # struct input_absinfo { value, minimum, maximum, fuzz, flat, resolution }
-        for code, (lo, hi, fuzz, flat) in AXES.items():
-            value = 0
-            fcntl.ioctl(
-                self.fd, UI_ABS_SETUP,
-                struct.pack("<H2x6i", code, value, lo, hi, fuzz, flat, 0),
-            )
+        if kind == "gamepad":
+            for code, (lo, hi, fuzz, flat) in AXES.items():
+                value = 0
+                fcntl.ioctl(
+                    self.fd, UI_ABS_SETUP,
+                    struct.pack("<H2x6i", code, value, lo, hi, fuzz, flat, 0),
+                )
 
         fcntl.ioctl(self.fd, UI_DEV_CREATE)
 
@@ -144,12 +166,19 @@ def main():
     ap.add_argument("--vendor", type=lambda s: int(s, 0), default=0x045E)
     ap.add_argument("--product", type=lambda s: int(s, 0), default=0x028E)
     ap.add_argument("--quiet", action="store_true", help="keine Testereignisse senden")
+    ap.add_argument("--type", dest="kind", default="gamepad",
+                    choices=["gamepad", "keyboard", "mouse"],
+                    help="Gerätetyp — libinput ignoriert Gamepads, für sway "
+                         "sind nur keyboard und mouse relevant")
     args = ap.parse_args()
 
-    name = args.name or f"polyseat:{args.seat} Virtual Gamepad"
+    suffix = {"gamepad": "Virtual Gamepad",
+              "keyboard": "Virtual Keyboard",
+              "mouse": "Virtual Mouse"}[args.kind]
+    name = args.name or f"polyseat:{args.seat} {suffix}"
 
     try:
-        pad = Pad(name, args.vendor, args.product)
+        pad = Pad(name, args.vendor, args.product, args.kind)
     except PermissionError:
         sys.exit("Kein Zugriff auf /dev/uinput — als root ausführen bzw. Device durchreichen.")
     except FileNotFoundError:
@@ -173,13 +202,24 @@ def main():
     while running:
         if not args.quiet:
             # Sichtbare Ereignisse, damit evtest und SDL nicht nur ein stummes
-            # Gerät sehen: A-Taste antippen, linken Stick wackeln.
-            pad.emit(EV_KEY, BTN_SOUTH, 1)
-            pad.emit(EV_ABS, ABS_X, 12000)
-            pad.sync()
-            time.sleep(0.15)
-            pad.emit(EV_KEY, BTN_SOUTH, 0)
-            pad.emit(EV_ABS, ABS_X, 0)
+            # Gerät sehen.
+            if args.kind == "gamepad":
+                pad.emit(EV_KEY, BTN_SOUTH, 1)
+                pad.emit(EV_ABS, ABS_X, 12000)
+                pad.sync()
+                time.sleep(0.15)
+                pad.emit(EV_KEY, BTN_SOUTH, 0)
+                pad.emit(EV_ABS, ABS_X, 0)
+            elif args.kind == "mouse":
+                pad.emit(EV_REL, 0x00, 5)   # REL_X
+                pad.sync()
+                time.sleep(0.15)
+                pad.emit(EV_REL, 0x00, -5)
+            else:
+                pad.emit(EV_KEY, 0x39, 1)   # KEY_SPACE
+                pad.sync()
+                time.sleep(0.15)
+                pad.emit(EV_KEY, 0x39, 0)
             pad.sync()
             tick += 1
             print(f"  tick {tick}", flush=True)
