@@ -10,11 +10,13 @@ if [[ -z "$node" ]]; then
     exit 1
 fi
 # evtest kennt kein --info; es druckt die Gerätebeschreibung beim Start und
-# geht dann in den Capture-Modus, deshalb der timeout.
-if incus exec "$CT" -- timeout 2 evtest "$node" 2>&1 | head -24; then
+# geht dann in den Capture-Modus, deshalb der timeout. Dessen Exitcode 124 ist
+# hier der Normalfall — geprüft wird die Ausgabe, nicht der Rückgabewert.
+if incus exec "$CT" -- timeout 2 evtest "$node" 2>&1 | tee /dev/stderr \
+     | grep -q '^Input device name'; then
     ok "evdev lesbar — der Knoten funktioniert"
 else
-    bad "evtest schlägt fehl"
+    bad "evtest liefert keine Gerätebeschreibung"
 fi
 
 step "sdlprobe bauen"

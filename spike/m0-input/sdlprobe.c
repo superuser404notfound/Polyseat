@@ -11,15 +11,55 @@
 
 #include <SDL2/SDL.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-int main(void) {
+/* Beobachtungsmodus: meldet Gerätewechsel, solange er läuft. Damit wird
+ * geprüft, ob ein Pad, das ERST NACH dem Programmstart in den Container
+ * kommt, überhaupt bemerkt wird — Enumeration beim Start und Hotplug zur
+ * Laufzeit sind zwei verschiedene Mechanismen. SDL horcht dafür auf
+ * udev-Netlink-Uevents, und die erreichen einen Container normalerweise
+ * nicht. Für Steam, das dauerhaft läuft, ist genau das der relevante Fall. */
+static int watch(int seconds) {
+    printf("beobachte %d s ...\n", seconds);
+    fflush(stdout);
+    Uint32 start = SDL_GetTicks();
+    int added = 0;
+    while (SDL_GetTicks() - start < (Uint32)seconds * 1000) {
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_JOYDEVICEADDED) {
+                const char *n = SDL_JoystickNameForIndex(ev.jdevice.which);
+                printf("  + hinzugefügt: index=%d  %s\n",
+                       ev.jdevice.which, n ? n : "(namenlos)");
+                fflush(stdout);
+                added++;
+            } else if (ev.type == SDL_JOYDEVICEREMOVED) {
+                printf("  - entfernt: id=%d\n", ev.jdevice.which);
+                fflush(stdout);
+            }
+        }
+        SDL_Delay(100);
+    }
+    printf("Ende. %d Gerät(e) währenddessen gemeldet.\n", added);
+    return added;
+}
+
+int main(int argc, char **argv) {
     const char *disable_udev = SDL_getenv("SDL_JOYSTICK_DISABLE_UDEV");
     printf("SDL_JOYSTICK_DISABLE_UDEV = %s\n",
            disable_udev ? disable_udev : "(nicht gesetzt)");
 
-    if (SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0) {
+    if (SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
         fprintf(stderr, "SDL_Init fehlgeschlagen: %s\n", SDL_GetError());
         return 1;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--watch") == 0) {
+        int seconds = (argc > 2) ? atoi(argv[2]) : 30;
+        int added = watch(seconds);
+        SDL_Quit();
+        return added > 0 ? 0 : 2;
     }
 
     int n = SDL_NumJoysticks();

@@ -90,6 +90,27 @@ das Konzept ist übernehmbar, auch ohne Wolf als Produkt zu nutzen.
 **Deshalb ist das der allererste Spike.** Trägt Hälfte 2 nicht, kippt die
 Container-Architektur und wir landen bei einem Unix-User pro Seat.
 
+### Ergebnis von M0 (2026-07-27): sie trägt
+
+Gemessen, nicht vermutet — Protokoll in [`spike/m0-input/README.md`](../spike/m0-input/README.md).
+
+- Ein im Container erzeugtes Pad erscheint am Host, im Container dagegen
+  existiert `/dev/input` gar nicht. Die Isolation entsteht also tatsächlich
+  strukturell.
+- `unix-char`-Hotplug bringt den Knoten in den laufenden Container.
+- SDL erkennt das Pad dort als Controller.
+- Eine udev-Regel auf `ATTRS{name}=="polyseat:*"` hält die Pads zuverlässig
+  vom Host-Desktop fern.
+
+**Eine Auflage:** Ein Pad, das *während* eines laufenden Prozesses eingehängt
+wird, bleibt unbemerkt — libudev enumeriert über `/sys` (im Container
+sichtbar), der udev-Monitor hängt aber an Netlink-Uevents (erreichen den
+Container nicht). Mit `SDL_JOYSTICK_DISABLE_UDEV=1` pollt SDL `/dev/input`
+direkt und bemerkt Hotplug zuverlässig. **Die Variable gehört damit in die
+Umgebung jedes Seats.** Ein Fake-udev-Shim wird vorerst nicht gebraucht — ob
+Steam mit seinem eigenen SDL und Steam Input genauso reagiert, ist die erste
+offene Frage von M1.
+
 **Ausweichentwurf, falls die Namens-Korrelation zu fragil wird:** Pads nicht im
 Container erzeugen lassen, sondern vom polyseat-Daemon auf dem Host. Dann kennt
 der Daemon die Zuordnung ohne Raten. Kostet aber einen tieferen Eingriff in

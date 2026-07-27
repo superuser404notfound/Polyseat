@@ -83,15 +83,62 @@ Geräteknoten heißt aber `eventM` — die Zahlen stimmen **nicht** überein
 ist das der zuverlässige Korrelationsweg — dann braucht es das Namens-Tag
 nur noch für die udev-Regel, nicht mehr für die Zuordnung.
 
-## Protokoll
+## Protokoll — durchgeführt 2026-07-27
 
-Ergebnisse hier eintragen, damit spätere Entscheidungen darauf aufbauen können.
+**Ergebnis: die Container-Architektur trägt.** Alle Hypothesen grün, mit einer
+Auflage (siehe H7).
 
 | Hypothese | Ergebnis | Notiz |
 |---|---|---|
-| H1 | | GPU im Container |
-| H2 | | uinput nicht namespaced |
-| H3 | | `/dev/input` im Container leer |
-| H4 | teilweise ✓ | Name frei setzbar, `ID_INPUT_JOYSTICK` gesetzt — KDE-Test offen |
-| H5 | | unix-char-Hotplug |
-| H6 | | **das Risiko** |
+| H1 | ✅ | `nvidia-smi` im Container meldet die RTX 4080 |
+| H2 | ✅ | im Container erzeugtes Pad erscheint am Host als `/dev/input/event24` |
+| H3 | ✅ | `/dev/input` existiert im Container **gar nicht** — Isolation per Default |
+| H4 | ✅ | udev-Regel strippt `ID_INPUT`, `libinput list-devices` findet nichts mehr |
+| H5 | ✅ | `unix-char`-Hotplug bringt den Knoten in den laufenden Container |
+| H6 | ✅ | SDL erkennt das Pad als „Xbox 360 Controller" — **auch ohne Kniff** |
+| H7 | ⚠️ | Hotplug zur Laufzeit **nur** mit `SDL_JOYSTICK_DISABLE_UDEV=1` |
+
+### H7 — die Auflage
+
+H6 beantwortet nur, ob SDL beim Start findet, was schon da ist. Das reicht
+nicht: Steam läuft im Seat dauerhaft, und Pads entstehen erst, wenn sich
+jemand verbindet.
+
+Gemessen mit `55-hotplug.sh`: ein zweites Pad, das während der Beobachtung
+eingehängt wird, bleibt **unbemerkt**. Der Knoten kommt an — ein anschließend
+neu gestartetes `sdlprobe` sieht beide Pads — aber die *Benachrichtigung*
+fehlt. Grund: libudev enumeriert über `/sys`, das im Container sichtbar ist,
+der udev-*Monitor* hängt dagegen an Netlink-Uevents, und die erreichen den
+Container nicht.
+
+Mit `SDL_JOYSTICK_DISABLE_UDEV=1` pollt SDL stattdessen `/dev/input` direkt
+und meldet das nachträglich eingehängte Pad zuverlässig.
+
+**Folge für die Architektur:** Die Variable gehört in die Umgebung jedes Seats.
+Ein Fake-udev-Shim wird dadurch vorerst nicht gebraucht.
+
+**Offen:** Steam bringt sein eigenes SDL mit und benutzt udev auch für Steam
+Input. Ob die Variable dort genauso greift, muss in M1 mit echtem Steam
+geprüft werden — `sdlprobe` beantwortet das nicht.
+
+### Weitere Befunde aus dem Durchlauf
+
+- **`nvidia.runtime=true` spiegelt nur Bibliotheken**, keine Geräteknoten.
+  Ohne zusätzliches `gpu`-Device läuft `nvidia-smi` und meldet „No devices
+  found". Nebenbei: `nvidia-smi -L` liefert auch dann Exit 0 — Prüfungen
+  müssen die Ausgabe ansehen, nicht den Rückgabewert.
+- **Reihenfolge ist zwingend:** Pakete installieren, *dann* `nvidia.runtime`
+  einschalten. Sonst kollidiert pacman mit den injizierten Treiberdateien
+  (`mesa: /usr/lib/libGLX_indirect.so.0 exists in filesystem`). `--overwrite`
+  wäre die falsche Antwort — es ersetzt die Treiberdatei.
+- **Incus braucht eigene idmap-Bereiche.** CachyOS liefert nur einen Eintrag
+  für den Benutzer; ohne `root:1000000:1000000000` in `/etc/subuid` und
+  `/etc/subgid` scheitert jeder Containerstart mit „System doesn't have a
+  functional idmap setup".
+- **SDL benennt bekannte Geräte um.** Das Pad heißt im Container „Xbox 360
+  Controller", nicht wie im evdev-Namen. Der Seat-Tag ist also nichts, worauf
+  sich etwas *oberhalb* von evdev verlassen darf — für udev-Regeln taugt er,
+  für Anwendungslogik nicht.
+- `UI_GET_SYSNAME` liefert `inputNN`, der Knoten heißt `eventM`, die Zahlen
+  stimmen nicht überein (`input40` → `event24`). Zuordnung über
+  `/sys/class/input/inputNN/eventM/`.
