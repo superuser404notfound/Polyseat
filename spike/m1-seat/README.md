@@ -76,6 +76,18 @@ hier passiert.
 - **Den Null-Sink deklarativ anlegen, nicht per `exec pactl`.** PipeWire
   überlebt einen sway-Neustart, das `exec` nicht — nach vier Neustarts gab es
   vier identische Sinks.
+- **Sunshines CSRF-Schutz erlaubt von Haus aus nur `localhost`-Ursprünge.** Wer
+  die Weboberfläche über die LAN- oder Verwaltungsadresse öffnet — also immer —
+  bekommt beim Speichern „CSRF Protection Error", ohne dass Sunshine etwas
+  protokolliert, das darauf hindeutet. `csrf_allowed_origins` erwartet eine
+  kommagetrennte Liste vollständiger URL-Präfixe **mit Schema und Port**;
+  `20-session.sh` erzeugt sie aus den tatsächlichen Adressen des Seats.
+
+  **Folge für den Daemon:** Seat-Adressen müssen stabil sein. Ändert DHCP die
+  Adresse, passt die CSRF-Liste nicht mehr, und die Oberfläche wird
+  unbedienbar. Seats brauchen also eine feste Adresse (DHCP-Reservierung oder
+  statisch konfiguriert) — das ist ohnehin sinnvoll, weil auch die
+  Moonlight-Einrichtung auf dem Client an der Adresse hängt.
 - **Sunshine liegt im CachyOS-Repo, nicht in Arch.** Der Container bindet nur
   das nicht CPU-optimierte `[cachyos]`-Repo ein, und zwar ans *Ende* der
   `pacman.conf`, damit Arch bei allen gemeinsamen Paketen gewinnt.

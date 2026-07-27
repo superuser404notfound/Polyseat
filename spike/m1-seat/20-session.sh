@@ -31,6 +31,20 @@ incus file push "$HERE/files/sway.config" \
     "$CT/home/$PLAYER/.config/sway/config"
 incus file push "$HERE/files/sunshine.conf" \
     "$CT/home/$PLAYER/.config/sunshine/sunshine.conf"
+
+# Sunshines CSRF-Schutz erlaubt von Haus aus nur localhost-Ursprünge. Wer die
+# Weboberfläche über die LAN- oder Verwaltungsadresse öffnet — also immer —
+# bekommt sonst beim Speichern "CSRF Protection Error". Die erlaubten
+# Ursprünge werden deshalb aus den tatsächlichen Adressen des Seats erzeugt.
+origins=""
+for iface in eth0 eth1; do
+    ip=$(incus exec "$CT" -- sh -c \
+        "ip -4 -o addr show $iface 2>/dev/null | awk '{print \$4}' | cut -d/ -f1")
+    [[ -n "$ip" ]] && origins="${origins:+$origins,}https://$ip:47990"
+done
+[[ -n "$origins" ]] && incus exec "$CT" -- sh -c \
+    "printf 'csrf_allowed_origins = %s\n' '$origins' >> /home/$PLAYER/.config/sunshine/sunshine.conf"
+ok "csrf_allowed_origins = $origins"
 incus file push "$HERE/files/polyseat-sway.service" \
     "$CT/home/$PLAYER/.config/systemd/user/polyseat-sway.service"
 incus file push "$HERE/files/polyseat-sunshine.service" \
