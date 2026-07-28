@@ -1,0 +1,27 @@
+[Unit]
+Description=Polyseat: the seat daemon
+Documentation=https://github.com/superuser404notfound/Polyseat
+After=incus.service
+Wants=incus.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/polyseatd
+Restart=on-failure
+RestartSec=5
+
+# Deliberately no sandboxing directives. The daemon creates containers through
+# the Incus socket, attaches host device nodes to them, runs a bpftrace probe on
+# the kernel and supervises the input broker. ProtectSystem, PrivateDevices,
+# RestrictAddressFamilies and the rest would each have to be punched through
+# until they said nothing, and a hardening block that grants everything reads as
+# protection while providing none. What actually limits the damage here is that
+# the seats are unprivileged containers, which is measured in docs/security.md.
+
+# Stopping the daemon does not stop the seats. Their containers keep running and
+# are picked up again when it comes back, so an update never interrupts a game.
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
