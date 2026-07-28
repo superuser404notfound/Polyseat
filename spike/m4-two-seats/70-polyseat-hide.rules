@@ -1,0 +1,30 @@
+# Polyseat: virtual input devices belonging to a seat must never reach the
+# host desktop.
+#
+# Three name patterns, because there are three sources:
+#   polyseat:*      Polyseat's own test devices
+#   *passthrough*   Sunshine's keyboard, mouse, touch and pen
+#   Sunshine*       Sunshine's gamepads, which are named after the emulated
+#                   model, e.g. "Sunshine X-Box One (virtual) pad (seat1)"
+#
+# Stripping ID_INPUT* alone is not enough. Those devices also carry the
+# "uaccess" tag, and systemd-logind then grants the active desktop user an ACL
+# on the node. That is how a seat's gamepad ended up readable on the host even
+# though libinput ignored it: games and Steam open evdev nodes directly.
+#
+# So the tag goes as well, and ownership is pinned to root. The seats are
+# unaffected: Incus creates its own node inside the container with its own
+# mode, and the broker only reads /sys.
+SUBSYSTEM=="input", ATTRS{name}=="polyseat:*",   GOTO="polyseat_hide"
+SUBSYSTEM=="input", ATTRS{name}=="*passthrough*", GOTO="polyseat_hide"
+SUBSYSTEM=="input", ATTRS{name}=="Sunshine*",     GOTO="polyseat_hide"
+GOTO="polyseat_end"
+
+LABEL="polyseat_hide"
+ENV{ID_INPUT}="", ENV{ID_INPUT_JOYSTICK}="", ENV{ID_INPUT_MOUSE}="", \
+  ENV{ID_INPUT_KEYBOARD}="", ENV{ID_INPUT_KEY}="", ENV{ID_INPUT_TOUCHSCREEN}="", \
+  ENV{ID_INPUT_TABLET}="", ENV{LIBINPUT_IGNORE_DEVICE}="1"
+TAG-="uaccess", TAG-="seat"
+OWNER="root", GROUP="root", MODE="0600"
+
+LABEL="polyseat_end"

@@ -78,6 +78,61 @@ reasons:
   for ports and mDNS names and produces devices nobody owns. That is a case for
   the doctor.
 
+## The gamepad leak, and why the check missed it
+
+While both streams were live, seat1's gamepad turned up **on the host**: the
+desktop user could read `/dev/input/event258`, "Sunshine X-Box One (virtual) pad
+(seat1)".
+
+Two mistakes stacked on top of each other.
+
+**The hide rule did not cover gamepads.** It matched `polyseat:*` and
+`*passthrough*`. Sunshine names keyboard, mouse, touch and pen "... passthrough"
+but names gamepads after the emulated model, so the pad fell through both
+patterns. The rule now matches `Sunshine*` as well.
+
+**Stripping `ID_INPUT*` is not enough on its own.** Those devices also carry the
+`uaccess` tag, and systemd-logind then grants the active desktop user an ACL on
+the node:
+
+```
+crw-rw----+ 1 root input 13, 258
+user:rooky:rw-
+```
+
+Applications that open evdev nodes directly, which is exactly what games and
+Steam do, do not care about `ID_INPUT` at all. The rule therefore also drops the
+`uaccess` and `seat` tags and pins ownership to `root:root 0600`. The seats are
+unaffected, because Incus creates its own node inside the container with its own
+mode and the broker only reads `/sys`.
+
+**And the verification method was blind to it.** Isolation had been checked with
+
+```
+libinput list-devices | grep -c passthrough
+```
+
+which reported 0 and looked perfect. But **libinput ignores gamepads by
+design**, the very fact recorded back in M2. So the check could not have caught
+a leaking pad even in principle. The honest check is to try opening the node as
+the desktop user:
+
+```
+python3 -c "open('/dev/input/eventN','rb')"   # must raise PermissionError
+```
+
+The lesson is worth more than the fix: a verification that shares a blind spot
+with the mechanism it verifies will confirm whatever you hoped for.
+
+## Cleaned up along the way
+
+- The leftover `sunshine-headless.service` and `sway-sunshine.service` user
+  units from the previous setup were stopped, disabled and deleted. With their
+  Sunshine gone, the three untagged devices disappeared too.
+- `85-sunshine-input-isolation.rules`, also from the old setup, was removed. It
+  matched virtual devices by vendor `beef:dead`, which the current Sunshine no
+  longer produces, so it had been matching nothing for some time.
+
 ## Open
 
 - **Long-run behaviour under load.** What was tested is two parallel streams
