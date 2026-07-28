@@ -124,6 +124,48 @@ python3 -c "open('/dev/input/eventN','rb')"   # must raise PermissionError
 The lesson is worth more than the fix: a verification that shares a blind spot
 with the mechanism it verifies will confirm whatever you hoped for.
 
+## Two remaining exposures, raised by joleuger in the issue
+
+Both are real, both were measured here, and neither is fully closed yet.
+
+**The kernel VT layer receives the seats' keystrokes.** Virtual keyboards are
+attached to the kernel's keyboard handler just like physical ones:
+
+```
+"Keyboard passthrough (seat1)"   Handlers=sysrq kbd event26
+"Logitech G502 X PLUS"           Handlers=sysrq kbd leds event20 mouse2
+```
+
+Measured on this host, the practical risk is currently small but not zero:
+
+| | |
+|---|---|
+| `kernel.sysrq` | 16, only `sync` permitted, so no reboot or crash |
+| tty2, running KDE | keyboard in disabled mode (K_OFF) |
+| tty1, tty3 | Unicode mode, so active |
+| getty units | none running |
+
+While KDE holds the active VT, K_OFF also blocks VT switching, so a seat client
+cannot reach a text console on its own. The window that stays open is the host
+switching to a text console manually while a seat is streaming: from then on the
+client types into that console.
+
+Mitigations, none of them free: put unused VTs into K_OFF (which costs the host
+its text consoles), run something that holds the VTs such as joleuger's
+`fallbackdm`, or set `kernel.sysrq=0`. The daemon should at least *detect* the
+situation, which is a case for the doctor.
+
+**uinput inside a container is unrestricted, and our attribution is by name.**
+A seat can create a virtual device with any name it likes, including one
+carrying another seat's tag. The broker would then hand it to that other seat.
+Nothing exploits this today, and every seat is ours, but it is worth being
+precise about what the design actually guarantees: the seat tag protects against
+*accidents*, not against a compromised seat.
+
+This is exactly where vuinputd's approach is structurally better, because
+mediating `/dev/uinput` makes attribution a property of who called, not of what
+they wrote into the name. See `docs/architecture.md`.
+
 ## Cleaned up along the way
 
 - The leftover `sunshine-headless.service` and `sway-sunshine.service` user
