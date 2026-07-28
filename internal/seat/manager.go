@@ -59,11 +59,20 @@ type runtime struct {
 
 	container string
 	addresses map[string][]string
-	sway      string
-	sunshine  string
-	encoder   string
-	devices   []string
-	checked   time.Time
+
+	// configOrigins is what the seat's Sunshine configuration says, and
+	// runningOrigins is what the Sunshine that is actually running was started
+	// with. They differ exactly when a seat's address moved under it, which
+	// under DHCP happens on its own and used to go unnoticed until somebody
+	// tried to save something in that seat's own web interface.
+	configOrigins  []string
+	runningOrigins []string
+	notes          []string
+	sway           string
+	sunshine       string
+	encoder        string
+	devices        []string
+	checked        time.Time
 }
 
 // NewManager prepares the manager. Nothing is started yet; see Run.
@@ -388,6 +397,8 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		encoder = m.readEncoder(ctx, name)
 	}
 
+	m.checkOrigins(ctx, name, addresses)
+
 	up := sway == "active" && sunshine == "active"
 
 	// The broker is the daemon's own child process, so bringing it back is
@@ -420,6 +431,109 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 	if changed {
 		m.notify()
 	}
+}
+
+// checkOrigins notices a seat whose address moved under it.
+//
+// Sunshine's allowed web origins are generated from the seat's addresses, and
+// under DHCP those change on their own. When they do, that seat's own web
+// interface starts refusing every save with a CSRF error that gives no hint
+// where it comes from. This is the whole reason a seat is better off with a
+// fixed address.
+//
+// Two separate things are tracked, because they fail differently. The
+// configuration on disk can be fixed here and now, so it is. What the running
+// Sunshine loaded at startup cannot be, short of restarting it, and restarting
+// Sunshine under somebody who is in the middle of a game is not a repair worth
+// making on its own. So that one is reported instead.
+func (m *Manager) checkOrigins(ctx context.Context, name string, addresses map[string][]string) {
+	want := OriginsFor(addresses)
+	if len(want) == 0 {
+		return
+	}
+
+	rt := m.runtimeOf(name)
+
+	m.mu.Lock()
+	known := rt.configOrigins
+	running := rt.runningOrigins
+	m.mu.Unlock()
+
+	// Nothing recorded means this daemon did not start the session: it adopted
+	// a seat that was already running. Read what is actually in the seat rather
+	// than guessing, once.
+	if known == nil {
+		conf, err := m.client.ReadFile(name, SunshineConfigPath)
+		if err != nil {
+			return
+		}
+
+		known = ParseOrigins(conf)
+		running = known
+
+		m.mu.Lock()
+		rt.configOrigins = known
+		rt.runningOrigins = running
+		m.mu.Unlock()
+	}
+
+	if !sameStrings(want, known) {
+		seat, err := m.store.Get(name)
+		if err != nil {
+			return
+		}
+
+		p := &Provisioner{
+			Client: m.client,
+			Seat:   seat,
+			Image:  m.cfg.Image,
+			Log:    func(f string, a ...any) { m.logf(name, f, a...) },
+			uid:    rt.uid,
+		}
+
+		m.logf(name, "the address changed, rewriting the Sunshine configuration")
+
+		origins, err := p.WriteSunshineConfig(ctx)
+		if err != nil {
+			m.logf(name, "! could not rewrite it: %v", err)
+
+			return
+		}
+
+		m.mu.Lock()
+		rt.configOrigins = origins
+		m.mu.Unlock()
+	}
+
+	var notes []string
+	if !sameStrings(want, running) {
+		notes = append(notes, "This seat's address changed since Sunshine started. "+
+			"Its own web interface will refuse to save anything until the seat is "+
+			"restarted. A fixed address avoids this.")
+	}
+
+	m.mu.Lock()
+	changed := !sameStrings(notes, rt.notes)
+	rt.notes = notes
+	m.mu.Unlock()
+
+	if changed {
+		m.notify()
+	}
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (m *Manager) unitState(ctx context.Context, name, unit string) string {
@@ -731,9 +845,16 @@ func (m *Manager) startSession(ctx context.Context, name string) error {
 		m.logf(name, "! %v, the web interface may refuse saves", err)
 	}
 
-	if err := p.WriteSunshineConfig(ctx); err != nil {
+	origins, err := p.WriteSunshineConfig(ctx)
+	if err != nil {
 		return err
 	}
+
+	m.mu.Lock()
+	m.rt[name].configOrigins = origins
+	m.rt[name].runningOrigins = origins
+	m.rt[name].notes = nil
+	m.mu.Unlock()
 
 	m.logf(name, "starting the audio stack")
 
@@ -1141,6 +1262,7 @@ func (m *Manager) Status(name string) (Status, error) {
 		Broker:    broker,
 		Devices:   rt.devices,
 		Busy:      rt.busy,
+		Notes:     rt.notes,
 		Error:     rt.lastErr,
 		Stale:     seat.Provisioned != Generation,
 	}, nil

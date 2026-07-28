@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
+	"github.com/superuser404notfound/Polyseat/internal/sunshine"
 )
 
 //go:embed assets
@@ -718,7 +719,7 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		return err
 	}
 
-	if err := p.WriteSunshineConfig(ctx); err != nil {
+	if _, err := p.WriteSunshineConfig(ctx); err != nil {
 		return err
 	}
 
@@ -800,39 +801,99 @@ func (p *Provisioner) waitAddresses(ctx context.Context) error {
 // origins depend on the addresses. Under DHCP those change, and when they do
 // the web interface stops accepting saves with an error that gives no hint
 // where it comes from.
-func (p *Provisioner) WriteSunshineConfig(ctx context.Context) error {
+func (p *Provisioner) WriteSunshineConfig(ctx context.Context) ([]string, error) {
 	if p.uid == 0 {
 		if err := p.readUID(ctx); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	addresses, err := p.Client.Addresses(p.name())
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	var origins []string
-
-	for _, addrs := range addresses {
-		for _, addr := range addrs {
-			origins = append(origins, "https://"+addr+":47990")
-		}
-	}
-
-	sort.Strings(origins)
+	origins := OriginsFor(addresses)
 
 	conf, err := render("assets/sunshine.conf", map[string]string{
 		"Origins": strings.Join(origins, ","),
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	p.Log("allowed web origins: %s", strings.Join(origins, ", "))
 
-	return p.Client.PushFile(p.name(),
-		"/home/"+Player+"/.config/sunshine/sunshine.conf", conf, 0o644, p.uid, p.uid)
+	err = p.Client.PushFile(p.name(), SunshineConfigPath, conf, 0o644, p.uid, p.uid)
+
+	return origins, err
+}
+
+// SunshineConfigPath is where a seat keeps the configuration the daemon writes.
+const SunshineConfigPath = "/home/" + Player + "/.config/sunshine/sunshine.conf"
+
+// OriginsFor turns a seat's addresses into the origins Sunshine has to accept.
+//
+// Both interfaces, because the seat's own page is legitimately reached over
+// either: the LAN address from a browser, the bridge address from the daemon.
+// Sorted, so that two runs over the same addresses produce the same list and
+// the daemon does not see a change where there is none.
+func OriginsFor(addresses map[string][]string) []string {
+	var origins []string
+
+	for _, addrs := range addresses {
+		for _, addr := range addrs {
+			origins = append(origins, fmt.Sprintf("https://%s:%d", addr, sunshine.Port))
+		}
+	}
+
+	sort.Strings(origins)
+
+	return origins
+}
+
+// ParseOrigins reads the origins back out of a seat's configuration, so a
+// daemon that has adopted a running seat knows what its Sunshine was started
+// with rather than assuming.
+//
+// Anchored at the start of the line, and comments skipped. That is not
+// pedantry: the generated file explains itself in a comment that contains the
+// words csrf_allowed_origins, and the first version of this matched that
+// comment before the setting and parsed the prose after it as an address. Every
+// adopted seat then looked like its address had moved.
+func ParseOrigins(conf []byte) []string {
+	for _, line := range strings.Split(string(conf), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		rest, found := strings.CutPrefix(line, "csrf_allowed_origins")
+		if !found {
+			continue
+		}
+
+		value, found := strings.CutPrefix(strings.TrimSpace(rest), "=")
+		if !found {
+			continue
+		}
+
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil
+		}
+
+		origins := strings.Split(value, ",")
+		for i := range origins {
+			origins[i] = strings.TrimSpace(origins[i])
+		}
+
+		sort.Strings(origins)
+
+		return origins
+	}
+
+	return nil
 }
 
 // ------------------------------------------------------------------- helpers

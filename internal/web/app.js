@@ -365,6 +365,8 @@ function facts(seat) {
     row("Provisioning", "out of date, provision this seat again", "flag");
   }
 
+  (seat.notes || []).forEach((note) => row("Note", note, "flag"));
+
   if (seat.error) row("Last error", seat.error, "flag bad");
 
   return list;

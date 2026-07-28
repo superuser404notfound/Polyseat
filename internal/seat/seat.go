@@ -104,6 +104,10 @@ type Status struct {
 	// Busy names the long running operation in progress, empty when idle.
 	Busy string `json:"busy,omitempty"`
 
+	// Notes are things worth telling somebody about this seat that are not
+	// failures: it works, but something about it will bite later.
+	Notes []string `json:"notes,omitempty"`
+
 	// Error is the last failure, kept until something succeeds.
 	Error string `json:"error,omitempty"`
 

@@ -3,6 +3,7 @@ package seat
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -216,5 +217,67 @@ func TestRandomPassword(t *testing.T) {
 		}
 
 		seen[password] = true
+	}
+}
+
+func TestOriginsFor(t *testing.T) {
+	got := OriginsFor(map[string][]string{
+		"eth1": {"10.20.30.71"},
+		"eth0": {"10.54.160.167"},
+	})
+
+	// Sorted, because an unsorted list would look different on every refresh
+	// and the daemon would keep rewriting a configuration that never changed.
+	want := []string{"https://10.20.30.71:47990", "https://10.54.160.167:47990"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("origin %d is %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	if origins := OriginsFor(nil); len(origins) != 0 {
+		t.Errorf("a seat with no addresses produced %v", origins)
+	}
+}
+
+func TestParseOrigins(t *testing.T) {
+	addresses := map[string][]string{"eth1": {"10.20.30.71"}, "eth0": {"10.54.160.167"}}
+	want := OriginsFor(addresses)
+
+	// Rendered from the template the daemon actually writes, not from a
+	// handwritten snippet. The handwritten version is what let the first
+	// parser through: the real file explains itself in a comment that contains
+	// the words csrf_allowed_origins, the parser matched that comment first,
+	// and every adopted seat looked like its address had moved.
+	conf, err := render("assets/sunshine.conf", map[string]string{
+		"Origins": strings.Join(want, ","),
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	if !strings.Contains(string(conf), "# ") {
+		t.Fatal("the template has no comments any more, so this test no longer tests anything")
+	}
+
+	got := ParseOrigins(conf)
+	if !sameStrings(got, want) {
+		t.Errorf("round trip gave %v, want %v", got, want)
+	}
+
+	for _, conf := range []string{
+		"",
+		"capture = wlr\n",
+		"csrf_allowed_origins =\n",
+		"# csrf_allowed_origins = https://evil:47990\n",
+		"  # indented comment mentioning csrf_allowed_origins = nonsense\n",
+	} {
+		if origins := ParseOrigins([]byte(conf)); len(origins) != 0 {
+			t.Errorf("ParseOrigins(%q) = %v, want nothing", conf, origins)
+		}
 	}
 }
