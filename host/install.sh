@@ -103,10 +103,15 @@ Installed. Start it with:
 
 Then open the interface and create your seats there:
 
-  http://127.0.0.1:47800
+  https://$(hostname):47800
 
-It listens on localhost only. The daemon creates containers as root, so putting
-it on the network is a decision to make on purpose, in
+The first password is generated on that first start and written to the log:
+
+  journalctl -u polyseatd | grep password
+
+It answers on the whole network and the certificate is self signed, so the
+browser asks once, exactly like Sunshine's own interface. To keep it on this
+machine instead, set "listen" to "127.0.0.1:47800" in
 /etc/polyseat/polyseatd.json.
 
 Check the host afterwards with:

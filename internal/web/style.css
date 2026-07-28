@@ -256,3 +256,66 @@ dialog menu {
 }
 
 .error { color: var(--bad); font-size: 0.85rem; min-height: 1.2em; margin: 0; }
+
+/* ------------------------------------------------------------------ login */
+
+.login {
+  max-width: 24rem;
+  margin: 4rem auto;
+  padding: 0 1.5rem;
+}
+
+.login form {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.4rem 1.5rem;
+}
+
+.login h2 { margin: 0 0 1rem; font-size: 1.1rem; }
+
+.login label {
+  display: block;
+  margin-bottom: 0.9rem;
+  font-size: 0.85rem;
+  color: var(--dim);
+}
+
+.login input {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.login button { width: 100%; margin-top: 0.5rem; padding: 0.5rem; }
+
+.hint {
+  margin: 0 0 1.2rem;
+  font-size: 0.82rem;
+  color: var(--dim);
+  line-height: 1.5;
+}
+
+.hint code {
+  display: inline-block;
+  margin-top: 0.3rem;
+  padding: 0.15rem 0.4rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  word-break: break-all;
+}
+
+button.quiet {
+  padding: 0.1rem 0.55rem;
+  font-size: 0.78rem;
+  color: var(--dim);
+}

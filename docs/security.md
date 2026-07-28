@@ -48,6 +48,50 @@ of creation. Both forgery paths were demonstrated and refused:
 `root:root 0600` with the `uaccess` tag stripped, and opening one as the desktop
 user raises `PermissionError`.
 
+**The daemon's interface demands a password and speaks only TLS.** It listens on
+all interfaces, so this is the wall. Measured against the running daemon:
+
+```
+without a session   /api/state         401
+                    /api/events        401
+                    DELETE /api/seats/seat1   401
+                    /  (the page itself)      200
+wrong password      401, same message for a wrong user name
+6 failed attempts   429, then a doubling delay per further attempt
+forged cookie       401
+real cookie with the expiry moved forward   401
+```
+
+The details behind that:
+
+* The password is stored as an **argon2id** hash, memory hard on purpose. The
+  alternative, a fast hash with many rounds, is exactly what a GPU is good at.
+* The session cookie is **HMAC signed** rather than stored server side, so a
+  daemon restart does not sign everybody out. The signature covers the expiry,
+  which is why moving it forward fails.
+* The cookie is `HttpOnly`, `Secure` and `SameSite=Strict`. That last one is
+  what stops another site from making a browser act on the session: every
+  state changing call here is a plain request carrying a cookie, and without it
+  a link in a mail could delete a seat.
+* **Changing the password ends every session**, because it rotates the signing
+  key. That is the behaviour people expect from changing a password and would
+  otherwise not get from signed cookies.
+* The certificate is **self signed**, so the browser asks once. Same as
+  Sunshine, whose own interfaces the seat cards link to at
+  `https://<seat>:47990`. The daemon logs the fingerprint at startup so it can
+  be compared against what the browser is asking to trust.
+
+**There is no window in which the interface is open.** On first start the daemon
+generates a random password, stores its hash and writes the plain text to its
+log exactly once. Reading that needs the same access as reading anything else
+root writes. The alternative, accepting anything until somebody sets a password,
+means whoever reaches it first wins, which on something that listens on the
+network is not a window worth opening.
+
+The static page is served without a session on purpose. It is the same markup
+for everybody and useless without the API behind it, and serving it openly is
+what lets the page render a login form at all.
+
 ## What is deliberately accepted
 
 ### Passwordless sudo for the desktop user
@@ -64,6 +108,26 @@ Harmless while nothing listens on the network for it. It becomes the weakest
 point in the whole setup the moment SSH or any other authenticating service is
 enabled, which is why the console hardening in `host/` deliberately does **not**
 recommend enabling SSH.
+
+### The interface answers on the whole network
+
+Listening only on localhost would be safer and was the default until the
+interface grew a password. It is on the network because that is the point: seats
+are meant to be manageable from the couch, from the same phone that runs
+Moonlight.
+
+What that makes the password worth being clear about: **a valid session is full
+control of a daemon running as root.** It can create and destroy every seat and
+everything installed in it. It cannot reconfigure the daemon itself, since the
+bootstrap configuration is read only over the API, and nothing from a request
+reaches a shell on the host, but that is a limit on the blast radius rather than
+a second wall.
+
+So the password carries real weight and should not be a short one. The interface
+refuses anything under eight characters for that reason.
+
+Anyone who wants the old posture back sets `listen` to `127.0.0.1:47800` in
+`/etc/polyseat/polyseatd.json`.
 
 ### Seats sit directly on the LAN
 
@@ -110,31 +174,6 @@ is inherent to putting several tenants on one consumer card.
 
 `0.0.0.0:27036` for Remote Play discovery. Reachable from the LAN like any other
 seat port.
-
-### The daemon's web interface has no authentication
-
-`polyseatd` runs as root and serves an unauthenticated API that can create,
-delete, reconfigure, start and stop seats. It binds `127.0.0.1` by default, so
-reaching it means already running code on the host as some local user. Any local
-user will do; the socket does not care which.
-
-**On this machine that grants nothing new**, because the desktop user has
-passwordless sudo and could become root directly anyway. **On a host configured
-normally it does grant something**, and that is worth being exact about rather
-than waving at:
-
-* Any local user can destroy every seat and everything installed in it. That is
-  the real exposure, and it is data loss rather than privilege.
-* Any local user can build a seat and take a root shell in it. That root maps to
-  an ordinary unprivileged host uid, so it is not a way to host root.
-* The daemon's own configuration, including the uplink interface, is read only
-  over the API. Seat names are checked against a narrow pattern and nothing from
-  a request reaches a shell on the host.
-
-So it is unauthenticated destructive control of a root daemon, not a root
-escalation. Both deserve fixing, and the fix is the same one: authentication in
-front of the API. Until it exists, the listener stays on localhost, and moving
-it so a phone can reach it needs that work done first.
 
 ### The kernel console
 

@@ -21,9 +21,9 @@ const DefaultPath = "/etc/polyseat/polyseatd.json"
 
 // Config is the bootstrap configuration.
 type Config struct {
-	// Listen is the address of the web interface. Localhost by default: the
-	// daemon creates containers as root, so putting it on the network is a
-	// decision somebody has to make on purpose.
+	// Listen is the address of the web interface. All interfaces by default,
+	// which is only defensible because the interface speaks TLS and demands a
+	// password. Set it to 127.0.0.1:47800 to keep it on this machine.
 	Listen string `json:"listen"`
 
 	// StateDir holds the seat definitions the daemon owns.
@@ -49,7 +49,7 @@ type Config struct {
 // Default returns the configuration used when no file exists.
 func Default() Config {
 	return Config{
-		Listen:    "127.0.0.1:47800",
+		Listen:    ":47800",
 		StateDir:  "/var/lib/polyseat",
 		HelperDir: "/usr/local/lib/polyseat",
 		Uplink:    "",

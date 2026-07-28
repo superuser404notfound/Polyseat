@@ -12,8 +12,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
+	"github.com/superuser404notfound/Polyseat/internal/auth"
 	"github.com/superuser404notfound/Polyseat/internal/config"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
 	"github.com/superuser404notfound/Polyseat/internal/web"
@@ -22,26 +24,58 @@ import (
 // Server exposes the manager over HTTP.
 type Server struct {
 	manager *seat.Manager
+	auth    *auth.Store
 	log     *slog.Logger
 }
 
 // New builds the HTTP handler.
-func New(manager *seat.Manager, logger *slog.Logger) http.Handler {
-	s := &Server{manager: manager, log: logger}
+func New(manager *seat.Manager, credentials *auth.Store, logger *slog.Logger) http.Handler {
+	s := &Server{manager: manager, auth: credentials, log: logger}
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /api/state", s.getState)
-	mux.HandleFunc("GET /api/events", s.events)
-	mux.HandleFunc("POST /api/seats", s.createSeat)
-	mux.HandleFunc("PATCH /api/seats/{name}", s.updateSeat)
-	mux.HandleFunc("DELETE /api/seats/{name}", s.deleteSeat)
-	mux.HandleFunc("GET /api/seats/{name}/log", s.seatLog)
-	mux.HandleFunc("POST /api/seats/{name}/{action}", s.seatAction)
+	// Reachable without a session. The first two are how you get one; the last
+	// is what tells the interface whether it needs to ask.
+	mux.HandleFunc("POST /api/login", s.login)
+	mux.HandleFunc("POST /api/logout", s.logout)
+	mux.HandleFunc("GET /api/session", s.session)
 
-	mux.Handle("GET /", web.Handler())
+	guarded := http.NewServeMux()
+	guarded.HandleFunc("GET /api/state", s.getState)
+	guarded.HandleFunc("GET /api/events", s.events)
+	guarded.HandleFunc("POST /api/password", s.changePassword)
+	guarded.HandleFunc("POST /api/seats", s.createSeat)
+	guarded.HandleFunc("PATCH /api/seats/{name}", s.updateSeat)
+	guarded.HandleFunc("DELETE /api/seats/{name}", s.deleteSeat)
+	guarded.HandleFunc("GET /api/seats/{name}/log", s.seatLog)
+	guarded.HandleFunc("POST /api/seats/{name}/{action}", s.seatAction)
+
+	mux.Handle("/api/", s.requireSession(guarded))
+
+	// The static files carry nothing worth guarding: they are the same markup
+	// for everybody and useless without the API behind them. Serving them
+	// openly is what lets the page render a login form at all.
+	//
+	// Registered without a method. "GET /" and "/api/" overlap without either
+	// being the more specific of the two, and the router refuses that pair
+	// outright rather than guessing.
+	mux.Handle("/", web.Handler())
 
 	return logging(logger, mux)
+}
+
+// requireSession rejects anything without a valid session cookie.
+func (s *Server) requireSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(auth.CookieName)
+		if err != nil || !s.auth.Valid(cookie.Value) {
+			fail(w, http.StatusUnauthorized, errors.New("not logged in"))
+
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func logging(logger *slog.Logger, next http.Handler) http.Handler {
@@ -54,6 +88,133 @@ func logging(logger *slog.Logger, next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// --------------------------------------------------------------------- auth
+
+type loginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	source := auth.Source(r)
+
+	if ok, wait := s.auth.Allow(source); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		fail(w, http.StatusTooManyRequests,
+			fmt.Errorf("too many attempts, wait %d seconds", int(wait.Seconds())+1))
+
+		return
+	}
+
+	var req loginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if !s.auth.Check(req.Username, req.Password) {
+		s.auth.Failed(source)
+		s.log.Warn("failed login", "source", source, "username", req.Username)
+
+		// One message for both a wrong name and a wrong password, so it does
+		// not confirm which half was right.
+		fail(w, http.StatusUnauthorized, errors.New("wrong user name or password"))
+
+		return
+	}
+
+	s.auth.Succeeded(source)
+	s.log.Info("login", "source", source, "username", req.Username)
+	s.setSession(w, s.auth.Issue())
+
+	writeJSON(w, http.StatusOK, map[string]string{"username": req.Username})
+}
+
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     auth.CookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// session tells the interface whether it has to ask for a password.
+func (s *Server) session(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie(auth.CookieName)
+	valid := err == nil && s.auth.Valid(cookie.Value)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": valid,
+		"username":      s.auth.Username(),
+	})
+}
+
+func (s *Server) setSession(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     auth.CookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(auth.SessionTTL / time.Second),
+		HttpOnly: true,
+
+		// Secure, because the interface only ever speaks TLS. SameSite strict
+		// is what keeps another site from making a browser act on this session:
+		// every state changing call here is a plain request with a cookie, and
+		// without this a link in a mail could delete a seat.
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+type passwordRequest struct {
+	Username string `json:"username"`
+	Current  string `json:"current"`
+	New      string `json:"new"`
+}
+
+func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
+	var req passwordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	// Asked for again even though the caller is already logged in, so that a
+	// borrowed browser cannot be turned into a permanent one.
+	if !s.auth.Check(s.auth.Username(), req.Current) {
+		fail(w, http.StatusUnauthorized, errors.New("the current password is wrong"))
+
+		return
+	}
+
+	username := req.Username
+	if username == "" {
+		username = s.auth.Username()
+	}
+
+	if err := s.auth.SetPassword(username, req.New); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	// Changing the password ends every session, including this one, so the
+	// caller gets a fresh cookie rather than being thrown out of the page they
+	// are standing on.
+	s.setSession(w, s.auth.Issue())
+	s.log.Info("password changed", "username", username)
+
+	writeJSON(w, http.StatusOK, map[string]string{"username": username})
 }
 
 // -------------------------------------------------------------------- state

@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/superuser404notfound/Polyseat/internal/api"
+	"github.com/superuser404notfound/Polyseat/internal/auth"
 	"github.com/superuser404notfound/Polyseat/internal/config"
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
@@ -89,6 +91,25 @@ func run(configPath, listenOverride string, logger *slog.Logger) error {
 		return err
 	}
 
+	credentials, initialPassword, err := auth.Open(cfg.StateDir)
+	if err != nil {
+		return err
+	}
+
+	if initialPassword != "" {
+		// Logged once, and only once: this is the only moment it exists in
+		// plain text. Putting it in the journal rather than leaving the
+		// interface open until somebody sets a password means there is never a
+		// window in which the first visitor wins.
+		logger.Info("no credentials yet, generated an initial password",
+			"username", credentials.Username(), "password", initialPassword)
+	}
+
+	certificate, err := auth.EnsureCertificate(cfg.StateDir)
+	if err != nil {
+		return fmt.Errorf("prepare the TLS certificate: %w", err)
+	}
+
 	manager := seat.NewManager(cfg, client, store, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -99,16 +120,24 @@ func run(configPath, listenOverride string, logger *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.New(manager, logger),
+		Handler:           api.New(manager, credentials, logger),
 		ReadHeaderTimeout: 10 * time.Second,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{certificate},
+			MinVersion:   tls.VersionTLS12,
+		},
 	}
 
 	serverDone := make(chan error, 1)
 
 	go func() {
-		logger.Info("web interface", "address", "http://"+cfg.Listen)
+		logger.Info("web interface", "address", "https://"+cfg.Listen,
+			"certificate", auth.Fingerprint(certificate))
 
-		err := server.ListenAndServe()
+		// TLS always, never plain HTTP. The interface takes a password and is
+		// meant to be reachable from the network, and a password sent in clear
+		// text would look like protection while providing none.
+		err := server.ListenAndServeTLS("", "")
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}

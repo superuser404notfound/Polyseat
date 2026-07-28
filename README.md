@@ -29,10 +29,8 @@ Confirmed on real hardware on 2026-07-28. The logs of each step live in
 [`spike/`](spike/) and record what works, what does not, and why.
 
 **Not done yet.** Pairing still happens in each seat's own Sunshine interface,
-one per seat, which is exactly the juggling the project set out to remove. The
-web interface has no authentication and therefore listens on localhost only.
-Both are named in [`docs/security.md`](docs/security.md) and
-[`docs/architecture.md`](docs/architecture.md) rather than left to be
+one per seat, which is exactly the juggling the project set out to remove. Named
+in [`docs/architecture.md`](docs/architecture.md) rather than left to be
 discovered.
 
 Architecture and the reasoning behind it: [`docs/architecture.md`](docs/architecture.md).
@@ -54,16 +52,23 @@ That builds the daemon, places the input helpers under `/usr/local/lib/polyseat`
 installs the udev rule that keeps seat devices off the host desktop, and
 registers one systemd unit. It creates no seats.
 
-**Everything else happens at <http://127.0.0.1:47800>.** Add a seat, press
-provision, watch the log. The daemon downloads the image, installs the packages,
-repairs the NVIDIA userspace that the driver injection leaves incomplete,
-generates the Sunshine configuration and starts the session. Pairing with
-Moonlight happens in the seat's own Sunshine interface, which the seat card
-links to.
+**Everything else happens at `https://<this machine>:47800`.** The first
+password is generated on first start and written to the log:
 
-It listens on localhost only, because the daemon creates containers as root.
-Putting it on the network is a deliberate change in
-`/etc/polyseat/polyseatd.json`.
+```
+journalctl -u polyseatd | grep password
+```
+
+Sign in, change it under *Account*, then add a seat and press provision. The
+daemon downloads the image, installs the packages, repairs the NVIDIA userspace
+that the driver injection leaves incomplete, generates the Sunshine
+configuration and starts the session. Pairing with Moonlight happens in the
+seat's own Sunshine interface, which the seat card links to.
+
+It answers on the whole network, so seats can be managed from the same phone
+that runs Moonlight. The certificate is self signed, so the browser asks once,
+exactly like Sunshine's own interface does. To keep it on this machine instead,
+set `listen` to `127.0.0.1:47800` in `/etc/polyseat/polyseatd.json`.
 
 **Reading what happened.** Each seat card carries its own log, and the useful
 lines in it come from the input broker. It says for every device whether its

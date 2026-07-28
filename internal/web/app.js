@@ -8,6 +8,7 @@ const el = (id) => document.getElementById(id);
 
 let state = null;
 let openLogs = new Set();
+let stream = null;
 
 // A page that renders nothing is worse than one that says what broke. Without
 // this, the first version of the seat cards threw halfway through and left an
@@ -26,6 +27,12 @@ async function api(method, path, body) {
   const text = await response.text();
   const data = text ? JSON.parse(text) : {};
 
+  if (response.status === 401) {
+    const err = new Error(data.error || "not logged in");
+    err.unauthorized = true;
+    throw err;
+  }
+
   if (!response.ok) throw new Error(data.error || response.statusText);
 
   return data;
@@ -36,6 +43,11 @@ async function refresh() {
     state = await api("GET", "/api/state");
     render();
   } catch (err) {
+    if (err.unauthorized) {
+      showLogin();
+      return;
+    }
+
     // Swallowing this is how the empty column happened: the fetch succeeded,
     // rendering threw, and the catch turned a broken page into a silent one.
     console.error(err);
@@ -61,6 +73,7 @@ function render() {
   el("hostname").textContent = state.host.hostname;
 
   const observer = el("observer");
+  observer.hidden = false;
   observer.textContent = "uhid observer: " + state.observer;
   observer.className = "pill " + state.observer;
 
@@ -281,8 +294,112 @@ async function run(handler) {
     await handler();
     await refresh();
   } catch (err) {
+    if (err.unauthorized) {
+      showLogin();
+      return;
+    }
+
     alert(err.message);
   }
+}
+
+// --------------------------------------------------------------------- login
+
+function showLogin() {
+  if (stream) {
+    stream.close();
+    stream = null;
+  }
+
+  el("app").hidden = true;
+  el("account").hidden = true;
+  el("login").hidden = false;
+  el("hostname").textContent = "";
+  el("observer").hidden = true;
+  el("link").textContent = "signed out";
+  el("link").className = "pill offline";
+  el("login-form").username.focus();
+}
+
+function showApp() {
+  el("login").hidden = true;
+  el("app").hidden = false;
+  el("account").hidden = false;
+  el("login-form").password.value = "";
+  el("login-error").textContent = "";
+
+  refresh();
+  connect();
+}
+
+async function submitLogin(event) {
+  event.preventDefault();
+
+  const form = el("login-form");
+  const button = el("login-submit");
+
+  // Verifying a password is deliberately slow, so say something rather than
+  // letting the page look frozen for a second.
+  button.disabled = true;
+  el("login-error").textContent = "";
+
+  try {
+    await api("POST", "/api/login", {
+      username: form.username.value.trim(),
+      password: form.password.value,
+    });
+
+    showApp();
+  } catch (err) {
+    el("login-error").textContent = err.message;
+    form.password.value = "";
+    form.password.focus();
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function submitPassword(event) {
+  event.preventDefault();
+
+  const form = el("password-form");
+  el("password-error").textContent = "";
+
+  try {
+    await api("POST", "/api/password", {
+      username: form.username.value.trim(),
+      current: form.current.value,
+      new: form.new.value,
+    });
+
+    el("password").close();
+    form.current.value = "";
+    form.new.value = "";
+  } catch (err) {
+    el("password-error").textContent = err.message;
+  }
+}
+
+async function signOut() {
+  try {
+    await api("POST", "/api/logout");
+  } catch (err) {
+    console.error(err);
+  }
+
+  el("password").close();
+  showLogin();
+}
+
+async function openAccount() {
+  const session = await api("GET", "/api/session");
+  const form = el("password-form");
+
+  form.username.value = session.username;
+  form.current.value = "";
+  form.new.value = "";
+  el("password-error").textContent = "";
+  el("password").showModal();
 }
 
 // -------------------------------------------------------------------- editor
@@ -338,7 +455,10 @@ async function saveEditor(event) {
 // --------------------------------------------------------------------- setup
 
 function connect() {
+  if (stream) stream.close();
+
   const source = new EventSource("/api/events");
+  stream = source;
 
   source.addEventListener("hello", () => {
     el("link").textContent = "live";
@@ -349,14 +469,34 @@ function connect() {
   source.addEventListener("change", refresh);
 
   source.onerror = () => {
+    // A dropped stream is also how an expired session shows up here, since an
+    // EventSource cannot report the 401 itself. Asking the API settles which
+    // of the two it is.
     el("link").textContent = "reconnecting";
     el("link").className = "pill offline";
+
+    api("GET", "/api/session")
+      .then((session) => {
+        if (!session.authenticated) {
+          source.close();
+          showLogin();
+        }
+      })
+      .catch(() => {});
   };
 }
 
 el("add").onclick = () => openEditor(null);
 el("editor-cancel").onclick = () => el("editor").close();
 el("editor-form").onsubmit = saveEditor;
+el("login-form").onsubmit = submitLogin;
+el("password-form").onsubmit = submitPassword;
+el("password-cancel").onclick = () => el("password").close();
+el("logout").onclick = signOut;
+el("account").onclick = () => run(openAccount);
 
-refresh();
-connect();
+// Ask before drawing anything, so a signed out visitor gets the login form
+// rather than a flash of an empty seat list.
+api("GET", "/api/session")
+  .then((session) => (session.authenticated ? showApp() : showLogin()))
+  .catch(() => showLogin());

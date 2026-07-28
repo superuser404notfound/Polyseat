@@ -14,10 +14,37 @@
     <span id="hostname"></span>
     <span id="observer" class="pill" title="The uhid observer records which container created which gamepad."></span>
     <span id="link" class="pill offline">offline</span>
+    <button id="account" class="quiet" hidden>Account</button>
   </div>
 </header>
 
-<main>
+<!-- Shown until there is a session. Everything the API serves is behind it. -->
+<section id="login" class="login" hidden>
+  <form id="login-form">
+    <h2>Sign in</h2>
+    <p class="hint">
+      The first password is generated when the daemon starts for the first time
+      and written to its log:
+      <code>journalctl -u polyseatd | grep password</code>
+    </p>
+
+    <label>
+      User name
+      <input name="username" autocomplete="username" autocapitalize="none" required>
+    </label>
+
+    <label>
+      Password
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+
+    <p class="error" id="login-error"></p>
+
+    <button class="primary" id="login-submit">Sign in</button>
+  </form>
+</section>
+
+<main id="app" hidden>
   <div id="warnings"></div>
   <div id="seats" class="seats"></div>
 
@@ -67,6 +94,38 @@
     <menu>
       <button value="cancel" type="button" id="editor-cancel">Cancel</button>
       <button value="save" id="editor-save" class="primary">Save</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="password">
+  <form method="dialog" id="password-form">
+    <h2>Account</h2>
+
+    <label>
+      User name
+      <input name="username" autocomplete="username" autocapitalize="none" required>
+    </label>
+
+    <label>
+      Current password
+      <input name="current" type="password" autocomplete="current-password" required>
+      <small>Asked for again so that a borrowed browser cannot be made permanent.</small>
+    </label>
+
+    <label>
+      New password
+      <input name="new" type="password" autocomplete="new-password" minlength="8" required>
+      <small>At least 8 characters. This guards a daemon that runs as root and answers on the network.</small>
+    </label>
+
+    <p class="error" id="password-error"></p>
+
+    <menu>
+      <button value="logout" type="button" id="logout" class="danger">Sign out</button>
+      <span class="spacer"></span>
+      <button value="cancel" type="button" id="password-cancel">Cancel</button>
+      <button value="save" class="primary">Change</button>
     </menu>
   </form>
 </dialog>

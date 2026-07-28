@@ -123,7 +123,8 @@ without uhid, keyboard and mouse appear normally but a pad never does.
 ┌─ Host: CachyOS, KDE desktop keeps running ───────────────┐
 │                                                          │
 │  polyseatd  - Go, one systemd unit, runs as root         │
-│   ├─ HTTP/JSON API + server sent events                  │
+│   ├─ HTTPS/JSON API + server sent events, password       │
+│   │    protected, self signed certificate                │
 │   ├─ Incus Go client  → create/start/configure seats,    │
 │   │                      lifecycle events instead of     │
 │   │                      polling                         │
@@ -151,6 +152,11 @@ a native one: seats should be configurable from the couch or from a phone, Go is
 strong at HTTP and weak at native GUIs, and Sunshine itself works the same way.
 Wrapping it in a native window later (Wails) stays possible without splitting
 the codebase.
+
+It answers on the whole network rather than on localhost, because the point is
+to manage seats from the same phone that runs Moonlight. That is only defensible
+with a password and TLS in front of it, so it has both; what they are and what
+they are worth is in [`security.md`](security.md).
 
 The most important UX goal: **one interface for all seats.** Without it you
 juggle N Sunshine web UIs on N ports with N pairing dialogs.
