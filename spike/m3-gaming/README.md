@@ -71,12 +71,27 @@ empty and Sunshine handles it itself.
 
 ## Gamepad: `/dev/uhid` is not optional
 
-Sunshine uses **inputtino** and creates gamepads as **HID devices through
-`/dev/uhid`**, not through uinput. If uhid is not passed through, Sunshine
-happily logs "Gamepad 0 will be Xbox One controller" while no device ever
-appears inside the seat. Keyboard, mouse, touch and pen work perfectly
-throughout, which makes the failure look like a gamepad problem on the client
-side.
+If `/dev/uhid` is not passed through, Sunshine happily logs "Gamepad 0 will be
+Xbox One controller" while no device ever appears inside the seat. Keyboard,
+mouse, touch and pen work perfectly throughout, which makes the failure look
+like a gamepad problem on the client side.
+
+**Which interface a pad actually uses depends on the emulated model**, measured
+in M4 with two controllers connected at once:
+
+```
+Sunshine X-Box One (virtual) pad   ->  uinput
+Sunshine PS5 (virtual) pad         ->  uhid  (0005:054C:0CE6)
+```
+
+The log says where the choice came from, either "(default)" or "(auto-selected
+by client-reported type)", and Sunshine's `gamepad` option can force one.
+
+The part that stays unexplained: without uhid *no* pad appears at all, not even
+an Xbox One one, although that model uses uinput. So uhid seems to be needed for
+gamepad support to come up at all, whatever the pad ends up using. An earlier
+version of this document claimed all gamepads go through uhid, which is wrong
+and has been corrected upstream in the issues where it was repeated.
 
 Both devices belong in every seat:
 

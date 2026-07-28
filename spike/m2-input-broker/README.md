@@ -167,6 +167,22 @@ piece across this whole problem space: neither Wolf nor vuinputd has it either.
 A forged gamepad is also the least dangerous forgery, a fake pad in somebody's
 game rather than a keyboard in their session.
 
+**Measured on 2026-07-28 with a controller on each seat.** Only one of the two
+pads went through uhid at all:
+
+```
+seat1  Sunshine X-Box One (virtual) pad (seat1)            creator verified
+seat2  Sunshine PS5 (virtual) pad (seat2)                  uhid descriptor correlated
+seat2  Sunshine PS5 (virtual) pad (seat2) Motion Sensors   uhid descriptor correlated
+seat2  Sunshine PS5 (virtual) pad (seat2) Touchpad         uhid descriptor correlated
+```
+
+Two things worth keeping. Xbox emulation uses uinput and therefore gets the
+strong attribution for free, so the heuristic only applies to DualSense-style
+pads. And one DualSense produces **three** input devices from a single HID
+device, so the uhid side is a one-to-many mapping rather than one node per
+creation.
+
 ## The container backend is a seam
 
 Everything runtime specific sits behind `ContainerBackend`, four operations:
