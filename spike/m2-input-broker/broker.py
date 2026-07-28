@@ -42,6 +42,8 @@ import subprocess
 import sys
 import time
 
+import device_owner
+
 SYS_INPUT = "/sys/class/input"
 
 # Capability bits that suffice for classification.
@@ -117,16 +119,18 @@ def classify(sysdev):
     return list(dict.fromkeys(props))
 
 
-def scan(pattern, tag=None):
+def scan(pattern):
     """All virtual event devices whose name matches the pattern.
 
-    The filter on `/devices/virtual/` is the real safeguard: only what was
+    This only narrows the field. Which seat a device belongs to is decided by
+    attribute(), not here.
+
+    The filter on `/devices/virtual/` is a real safeguard though: only what was
     created through uinput or uhid may enter a seat at all. A pure name filter
     would be dangerous, since "Controller" would also match the host's ASRock
     LED controller, which has no business in any seat.
     """
     rx = re.compile(pattern, re.IGNORECASE)
-    needle = f"({tag})" if tag else None
     found = {}
     for entry in os.listdir(SYS_INPUT):
         if not entry.startswith("event"):
@@ -136,10 +140,6 @@ def scan(pattern, tag=None):
             continue
         name = read(f"{sysdev}/device/name")
         if not name or not rx.search(name):
-            continue
-        # The seat tag decides who owns the device. Without it a second seat
-        # would collect the first one's devices as well.
-        if needle and needle not in name:
             continue
         dev = read(f"{sysdev}/dev")
         if not dev:
@@ -151,9 +151,62 @@ def scan(pattern, tag=None):
             "major": int(major),
             "minor": int(minor),
             "syspath": os.path.realpath(sysdev).removeprefix("/sys"),
+            "sysname": device_owner.sysname_of_node(entry),
             "props": classify(os.path.realpath(f"{sysdev}/device")),
         }
     return found
+
+
+# Devices already reported as refused, so the log says it once rather than
+# twice a second.
+_reported = set()
+
+
+def attribute(candidates, seat, tag):
+    """Decide which of the candidates belong to this seat.
+
+    Two sources of truth, in order of trustworthiness:
+
+    **Structural, for uinput devices.** The creating descriptor is still open,
+    because a uinput device dies with it, so `device_owner` can ask that
+    descriptor which device it made and read the owner's cgroup. Nothing here
+    depends on what the creator wrote into the device name. A device whose
+    creator sits on the host rather than in a container is refused outright,
+    which closes the case of any host process in the `input` group producing a
+    device with a convincing name.
+
+    **The seat tag, for uhid devices.** Gamepads are created through
+    `/dev/uhid`, which has no ioctls at all, so there is no way to ask a
+    descriptor what it made. Until a proxy sees the creation itself, these keep
+    relying on the name that Sunshine writes when XDG_SEAT is set.
+    """
+    owners = device_owner.owners()
+    mine = {}
+    for node, dev in candidates.items():
+        owner = owners.get(dev["sysname"], "unknown")
+        if owner == "unknown":
+            # No uinput descriptor claims it: created through uhid, or gone.
+            dev["attribution"] = "tag"
+            if tag and f"({tag})" in dev["name"]:
+                mine[node] = dev
+        elif owner is None:
+            # Created by a process on the host. Never belongs to a seat.
+            dev["attribution"] = "host"
+            if node not in _reported:
+                _reported.add(node)
+                print(f"  ! {node:<10} refused: created on the host, not in a "
+                      f"container ({dev['name']})")
+        else:
+            dev["attribution"] = "owner"
+            if owner == seat:
+                mine[node] = dev
+            elif f"({seat})" in dev["name"] and node not in _reported:
+                # Claims our tag but was created elsewhere. Exactly what the
+                # structural check exists for.
+                _reported.add(node)
+                print(f"  ! {node:<10} refused: name claims ({seat}) but the "
+                      f"creator is '{owner}'")
+    return mine
 
 
 def state_path(seat):
@@ -281,8 +334,10 @@ FAKEUDEV = "/root/fakeudev.py"
 
 def attach(backend, seat, dev):
     node, minor = dev["node"], dev["minor"]
+    how = {"owner": "creator verified", "tag": "name tag only"}.get(
+        dev.get("attribution", ""), dev.get("attribution", ""))
     print(f"  + {node:<10} {dev['name']}")
-    print(f"    {' '.join(dev['props'])}")
+    print(f"    {how}: {' '.join(dev['props'])}")
 
     # 1) Make the node available inside the container.
     backend.attach_node(seat, node, dev["major"], minor)
@@ -367,7 +422,7 @@ def main():
     known = {}
     try:
         while True:
-            current = scan(args.match, tag)
+            current = attribute(scan(args.match), args.seat, tag)
             for node, dev in current.items():
                 if node not in known:
                     attach(backend, args.seat, dev)

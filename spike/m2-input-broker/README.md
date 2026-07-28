@@ -109,6 +109,45 @@ and the blocker for multiple seats disappeared before it ever became one.
 The lesson: **check whether the feature already exists before patching.** Half a
 day of shim tinkering would have been for nothing.
 
+## Attribution: structural for uinput, by name for uhid
+
+The first version answered "which seat does this device belong to" by reading
+the seat tag out of the device name. That trusts a string the creating process
+chose. Any process able to open `/dev/uinput`, on the host or in another seat,
+could write a name carrying somebody else's tag and have the device delivered
+there. On this host that is not hypothetical: the desktop user is in the `input`
+group.
+
+`device_owner.py` answers it structurally instead, using two facts:
+
+* **A uinput device lives exactly as long as the descriptor that created it.**
+  Close the descriptor and the kernel destroys the device. So while a device
+  exists, its creator still holds an open descriptor that can be found.
+* **`UI_GET_SYSNAME` asks a descriptor which device it created.** Once the
+  descriptor is found, the mapping is not a guess.
+
+`pidfd_getfd()` duplicates the descriptor out of the foreign process, and the
+owner's cgroup gives the container name. Nothing in that chain depends on what
+the creator wrote into the name.
+
+Demonstrated: a host process creating a device named exactly
+`Keyboard passthrough (seat1)` is refused, while seat1 keeps its real devices.
+
+```
+! event21    refused: created on the host, not in a container
+```
+
+**Two practical notes.** Devices have to be found by device number rather than
+by path, because inside a container `/dev/uinput` is a different path and
+`lsof /dev/uinput` shows nothing while seats are streaming. And the broker now
+needs root, since reading foreign descriptors is privileged.
+
+**This covers uinput only.** Gamepads are created through `/dev/uhid`, which has
+no ioctls at all, so there is no way to ask a descriptor what it made. They keep
+using the name tag until a proxy sees the creation itself. A forged gamepad is
+also the least dangerous forgery: a fake pad in somebody's game, rather than a
+keyboard in their session.
+
 ## The container backend is a seam
 
 Everything runtime specific sits behind `ContainerBackend`, four operations:
