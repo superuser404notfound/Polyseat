@@ -150,21 +150,25 @@ cannot reach a text console on its own. The window that stays open is the host
 switching to a text console manually while a seat is streaming: from then on the
 client types into that console.
 
-Mitigations, none of them free: put unused VTs into K_OFF (which costs the host
-its text consoles), run something that holds the VTs such as joleuger's
-`fallbackdm`, or set `kernel.sysrq=0`. The daemon should at least *detect* the
-situation, which is a case for the doctor.
+Handled in [`host/check-hardening.sh`](../../host/check-hardening.sh), which
+reports all of it and pins `kernel.sysrq` so a distribution default cannot drift
+to a permissive value later.
 
-**uinput inside a container is unrestricted, and our attribution is by name.**
-A seat can create a virtual device with any name it likes, including one
-carrying another seat's tag. The broker would then hand it to that other seat.
-Nothing exploits this today, and every seat is ours, but it is worth being
-precise about what the design actually guarantees: the seat tag protects against
-*accidents*, not against a compromised seat.
+Putting the free VTs into `K_OFF` would close the window and is deliberately
+**not** done: it disables the real keyboard on those consoles too, and with it
+the recovery path you want when the desktop is broken. There is no per-device
+alternative either. `/sys/class/input/inputN/inhibited` exists but inhibits the
+device for *all* handlers, including the seat's own.
 
-This is exactly where vuinputd's approach is structurally better, because
-mediating `/dev/uinput` makes attribution a property of who called, not of what
-they wrote into the name. See `docs/architecture.md`.
+**uinput inside a container is unrestricted, and our attribution was by name.**
+A seat could create a virtual device with any name, including one carrying
+another seat's tag, and the broker would have handed it over.
+
+**Closed for uinput** since the broker attributes devices by their creator
+rather than by their name, see [`../m2-input-broker/`](../m2-input-broker/). A
+host process creating a device named exactly `Keyboard passthrough (seat1)` is
+now refused. Gamepads still rely on the tag, because `/dev/uhid` offers no way
+to ask a descriptor what it created.
 
 ## Cleaned up along the way
 
