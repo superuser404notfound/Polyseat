@@ -31,6 +31,7 @@ Seat-Tag im Gerätenamen (Sunshine-Patch oder LD_PRELOAD-Shim).
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
@@ -111,14 +112,24 @@ def classify(sysdev):
 
 
 def scan(pattern):
-    """Alle Eventgeräte, deren Name auf das Muster passt."""
+    """Alle virtuellen Eventgeräte, deren Name auf das Muster passt.
+
+    Der Filter auf `/devices/virtual/` ist die eigentliche Absicherung: nur
+    was per uinput oder uhid erzeugt wurde, darf überhaupt in einen Seat.
+    Ein reiner Namensfilter wäre gefährlich — "Controller" träfe auch den
+    ASRock-LED-Controller des Hosts, und der hat in keinem Seat etwas zu
+    suchen.
+    """
+    rx = re.compile(pattern, re.IGNORECASE)
     found = {}
     for entry in os.listdir(SYS_INPUT):
         if not entry.startswith("event"):
             continue
         sysdev = f"{SYS_INPUT}/{entry}"
+        if "/devices/virtual/" not in os.path.realpath(sysdev):
+            continue
         name = read(f"{sysdev}/device/name")
-        if not name or pattern not in name:
+        if not name or not rx.search(name):
             continue
         dev = read(f"{sysdev}/dev")
         if not dev:
@@ -182,9 +193,13 @@ def detach(seat, node, dev):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--seat", required=True, help="Name des Incus-Containers")
-    ap.add_argument("--match", default="passthrough",
-                    help="Namensbestandteil der zu übernehmenden Geräte "
-                         "(Sunshine nennt sie '… passthrough')")
+    ap.add_argument("--match",
+                    default=r"passthrough|x-?box|dualsense|dualshock|nintendo|"
+                            r"sunshine|gamepad|joystick|controller",
+                    help="regulärer Ausdruck auf den Gerätenamen. Greift nur "
+                         "auf virtuelle Geräte — Tastatur und Maus heißen bei "
+                         "Sunshine '… passthrough', Gamepads dagegen nach dem "
+                         "emulierten Modell (z.B. 'Xbox One')")
     ap.add_argument("--interval", type=float, default=0.5)
     args = ap.parse_args()
 

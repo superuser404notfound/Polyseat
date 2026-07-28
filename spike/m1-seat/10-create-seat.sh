@@ -90,7 +90,13 @@ step "NVIDIA einschalten, GPU und uinput durchreichen"
 incus config set "$CT" nvidia.runtime=true nvidia.driver.capabilities=all
 incus config device add "$CT" gpu gpu
 incus config device add "$CT" uinput unix-char \
-    source=/dev/uinput path=/dev/uinput required=false
+    source=/dev/uinput path=/dev/uinput mode=0666 required=false
+# /dev/uhid ist NICHT optional: Sunshine legt Gamepads über inputtino als
+# HID-Geräte an, nicht über uinput. Ohne uhid meldet es zwar "Gamepad 0 will
+# be Xbox One controller", aber im Seat entsteht kein Gerät — der Controller
+# des Clients bleibt wirkungslos.
+incus config device add "$CT" uhid unix-char \
+    source=/dev/uhid path=/dev/uhid mode=0666 required=false
 incus restart "$CT"
 sleep 5
 

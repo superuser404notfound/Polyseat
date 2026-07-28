@@ -21,11 +21,7 @@ step "Konfiguration und Units einspielen"
 incus exec "$CT" -- install -d -o "$PLAYER" -g "$PLAYER" \
     "/home/$PLAYER/.config/sway" \
     "/home/$PLAYER/.config/sunshine" \
-    "/home/$PLAYER/.config/systemd/user" \
-    "/home/$PLAYER/.config/pipewire/pipewire.conf.d"
-
-incus file push "$HERE/files/10-polyseat-sink.conf" \
-    "$CT/home/$PLAYER/.config/pipewire/pipewire.conf.d/10-polyseat-sink.conf"
+    "/home/$PLAYER/.config/systemd/user"
 
 incus file push "$HERE/files/sway.config" \
     "$CT/home/$PLAYER/.config/sway/config"
