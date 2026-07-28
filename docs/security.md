@@ -114,14 +114,27 @@ seat port.
 ### The daemon's web interface has no authentication
 
 `polyseatd` runs as root and serves an unauthenticated API that can create,
-delete and reconfigure containers. It binds `127.0.0.1` by default, so reaching
-it means already running code on the host as some user.
+delete, reconfigure, start and stop seats. It binds `127.0.0.1` by default, so
+reaching it means already running code on the host as some local user. Any local
+user will do; the socket does not care which.
 
-On this machine that grants nothing new: the desktop user has passwordless sudo,
-so anything that could talk to the daemon could already become root directly.
-The moment either of those changes, the other has to as well. In particular,
-moving the listener off localhost so a phone can reach it needs authentication
-in front of it first, and that does not exist yet.
+**On this machine that grants nothing new**, because the desktop user has
+passwordless sudo and could become root directly anyway. **On a host configured
+normally it does grant something**, and that is worth being exact about rather
+than waving at:
+
+* Any local user can destroy every seat and everything installed in it. That is
+  the real exposure, and it is data loss rather than privilege.
+* Any local user can build a seat and take a root shell in it. That root maps to
+  an ordinary unprivileged host uid, so it is not a way to host root.
+* The daemon's own configuration, including the uplink interface, is read only
+  over the API. Seat names are checked against a narrow pattern and nothing from
+  a request reaches a shell on the host.
+
+So it is unauthenticated destructive control of a root daemon, not a root
+escalation. Both deserve fixing, and the fix is the same one: authentication in
+front of the API. Until it exists, the listener stays on localhost, and moving
+it so a phone can reach it needs that work done first.
 
 ### The kernel console
 

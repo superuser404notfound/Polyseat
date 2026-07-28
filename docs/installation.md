@@ -50,16 +50,38 @@ enough to start and picks btrfs automatically when the root filesystem is btrfs.
 The shared library pool of M6 wants btrfs, so this is worth checking rather than
 assuming.
 
-### Group membership, and the trap in it
+### Group membership is no longer part of this
 
-`usermod -aG incus-admin <user>` **does not affect the running session**. The
-group only applies after the next login. An installer that adds the group and
-then calls `incus` in the same run fails on exactly the machine it is meant to
-set up, the fresh one.
+The spike scripts needed the invoking user in `incus-admin`, and with it the
+trap that `usermod -aG` does not affect the running session, so the scripts had
+to re-exec themselves under `sg incus-admin`. None of that applies any more.
+`polyseatd` runs as root from a systemd unit and opens the Incus socket
+directly, and the installer only copies files.
 
-Both ways out are known: re-exec under `sg incus-admin`, which is what the spike
-scripts do, or tell the user to log in again and stop. Silently failing is the
-one option that is not acceptable.
+Adding yourself to `incus-admin` is now purely a convenience for running `incus`
+by hand, and Polyseat does not need it.
+
+## What is not required
+
+Worth stating, because the machine this was developed on has both and it would
+be easy to bake the assumption in without noticing.
+
+**Passwordless sudo is not required.** Nothing in the daemon calls `sudo` on the
+host; it is already root. The two `sudo -u player` calls run *inside* a
+container, invoked by that container's root, and sudo does not authenticate a
+caller whose uid is 0. The whole installation costs two password prompts:
+
+```
+sudo ./host/install.sh
+sudo systemctl enable --now polyseatd
+```
+
+After that everything happens in the web interface, which needs no privileges of
+its own because the daemon already has them. `host/check-hardening.sh` runs
+unprivileged and only asks for root with `--fix`.
+
+**A CachyOS host is not required either**, beyond the pacman check. Nothing
+CachyOS specific is left inside a seat.
 
 ### Host-side pieces
 
