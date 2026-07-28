@@ -68,11 +68,20 @@ hier passiert.
   mode=0666` löst es.
 - **Der libinput-Backend bricht ohne Eingabegeräte ab.** `/dev/input` ist im
   Container beim Start leer, also braucht sway `WLR_LIBINPUT_NO_DEVICES=1`.
-- **Sunshine muss nach sway starten**, nicht gleichzeitig. Sonst findet es keine
-  Capture-Plattform („Platform failed to initialize") und **alle** Encoder
-  scheitern — auch der Software-Encoder, was die Ursache gut verschleiert.
-  `WAYLAND_DISPLAY` kommt per `systemctl --user import-environment` aus der
-  sway-Config.
+- **Sunshine muss nach sway starten**, nicht gleichzeitig. Sonst meldet es
+  `[wayland] Couldn't connect to Wayland display` und `Platform failed to
+  initialize`, und danach scheitern **alle** Encoder — auch der
+  Software-Encoder, was die Ursache gut verschleiert.
+
+  Das Tückische daran: **Sunshine beendet sich nicht.** Es läuft kaputt weiter
+  und bedient die Weboberfläche, systemd sieht einen gesunden Dienst, und der
+  Client bekommt nur „Failed to initialize video capture/encoding. Is a
+  display connected and turned on?". Der Zustand hielt so eine ganze Nacht.
+
+  Ein `import-environment` in der sway-Config reicht dagegen nicht, weil ein
+  `BindsTo`-Neustart Sunshine früher hochzieht als sways `exec`, und weil ein
+  einmal importiertes `WAYLAND_DISPLAY` nach einem sway-Neustart veraltet sein
+  kann. `sunshine-run.sh` sucht den Socket deshalb selbst und wartet auf ihn.
 - **Den Null-Sink deklarativ anlegen, nicht per `exec pactl`.** PipeWire
   überlebt einen sway-Neustart, das `exec` nicht — nach vier Neustarts gab es
   vier identische Sinks.

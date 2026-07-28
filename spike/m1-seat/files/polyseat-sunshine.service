@@ -8,6 +8,7 @@ Type=simple
 Environment=GBM_BACKEND=nvidia-drm
 Environment=__GLX_VENDOR_LIBRARY_NAME=nvidia
 Environment=SDL_JOYSTICK_DISABLE_UDEV=1
-ExecStart=/usr/bin/sunshine
+# Wartet selbst auf die Wayland-Session — siehe sunshine-run.sh.
+ExecStart=/usr/local/bin/polyseat-sunshine-run
 Restart=on-failure
 RestartSec=5

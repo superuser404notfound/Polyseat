@@ -49,6 +49,8 @@ incus file push "$HERE/files/polyseat-sway.service" \
     "$CT/home/$PLAYER/.config/systemd/user/polyseat-sway.service"
 incus file push "$HERE/files/polyseat-sunshine.service" \
     "$CT/home/$PLAYER/.config/systemd/user/polyseat-sunshine.service"
+incus file push "$HERE/files/sunshine-run.sh" \
+    "$CT/usr/local/bin/polyseat-sunshine-run" --mode 0755
 incus exec "$CT" -- chown -R "$PLAYER:$PLAYER" "/home/$PLAYER/.config"
 
 step "mDNS (damit Moonlight den Seat von selbst findet)"
