@@ -329,6 +329,10 @@ class ContainerBackend:
     def run(self, container, argv, stdin=None):
         raise NotImplementedError
 
+    def push(self, container, local_path, remote_path):
+        """Place a file inside the container, executable."""
+        raise NotImplementedError
+
 
 class IncusBackend(ContainerBackend):
     """Incus, which supports device hotplug into running containers.
@@ -366,6 +370,10 @@ class IncusBackend(ContainerBackend):
         return subprocess.run(["incus", "exec", container, "--", *argv],
                               input=stdin, text=True, capture_output=True,
                               check=False)
+
+    def push(self, container, local_path, remote_path):
+        self._incus("file", "push", local_path, f"{container}{remote_path}",
+                    "--mode", "0755", check=False)
 
 
 # A second backend, for a runtime without device hotplug, would have to:
@@ -446,6 +454,18 @@ def main():
     args = ap.parse_args()
 
     backend = IncusBackend()
+
+    # fakeudev has to live inside the seat, because libudev checks the sender's
+    # credentials after translating them into the container's user namespace.
+    # Copying it here rather than in a wrapper script keeps the broker usable
+    # as a plain systemd unit.
+    local_fakeudev = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "fakeudev.py")
+    if os.path.exists(local_fakeudev):
+        backend.push(args.seat, local_fakeudev, FAKEUDEV)
+    else:
+        print(f"warning: {local_fakeudev} not found, the seat needs {FAKEUDEV} "
+              f"to notice hotplug", file=sys.stderr)
 
     if os.geteuid() != 0 and not os.access("/run/udev/data", os.R_OK):
         print("Note: without root some udev data is unreadable.", file=sys.stderr)

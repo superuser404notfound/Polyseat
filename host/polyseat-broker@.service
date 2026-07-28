@@ -1,0 +1,20 @@
+[Unit]
+Description=Polyseat: input broker for seat %i
+Documentation=https://github.com/superuser404notfound/Polyseat
+After=incus.service polyseat-uhid-observer.service
+Wants=incus.service
+# Not BindsTo: the broker works without the observer, it just falls back to
+# correlating uhid devices instead of knowing their creator.
+After=polyseat-uhid-observer.service
+
+[Service]
+Type=simple
+# Without this the journal stays empty until the process exits.
+Environment=PYTHONUNBUFFERED=1
+# Needs root: reading foreign file descriptors and pidfd_getfd are privileged.
+ExecStart=/usr/local/lib/polyseat/broker.py --seat %i
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

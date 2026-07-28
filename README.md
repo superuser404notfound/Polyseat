@@ -28,6 +28,51 @@ Architecture and the reasoning behind it: [`docs/architecture.md`](docs/architec
 What the isolation actually guarantees, measured rather than assumed:
 [`docs/security.md`](docs/security.md).
 
+## Running it
+
+Not a product yet, so this is the manual route. The daemon will replace all of
+it.
+
+**Once per machine:**
+
+```
+sudo host/install.sh
+sudo systemctl enable --now polyseat-uhid-observer.service
+```
+
+That places the host-side pieces under `/usr/local/lib/polyseat`, installs the
+udev rule that keeps seat devices off the host desktop, and registers the
+systemd units. It creates no seats.
+
+**Per seat**, until the daemon exists, through the M1 scripts:
+
+```
+cd spike/m1-seat
+CT=seat1 SEAT=seat1 ./10-create-seat.sh
+CT=seat1 SEAT=seat1 ./15-nvidia-userspace.sh
+CT=seat1 SEAT=seat1 ./20-session.sh
+CT=seat1 SEAT=seat1 ./30-verify.sh          # prints the addresses to connect to
+sudo systemctl enable --now polyseat-broker@seat1.service
+incus config set seat1 boot.autostart=true
+```
+
+**Checking afterwards:**
+
+```
+host/check-hardening.sh                     # host-side exposures
+cd spike/m1-seat && CT=seat1 ./30-verify.sh # the seat itself
+journalctl -fu polyseat-broker@seat1        # which device went where and why
+```
+
+The broker log is the useful one. It says for every device whether its owner was
+verified, correlated or merely claimed:
+
+```
++ event29    Keyboard passthrough (seat2)
+  creator verified: ID_INPUT=1 ID_INPUT_KEY=1 ID_INPUT_KEYBOARD=1
+! event260   refused: name claims (seat1) but the kernel says 'seat2' created it
+```
+
 ## Roadmap
 
 | | | |

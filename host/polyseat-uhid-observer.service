@@ -1,0 +1,21 @@
+[Unit]
+Description=Polyseat: record which container creates each uhid device
+Documentation=https://github.com/superuser404notfound/Polyseat
+After=incus.service
+Wants=incus.service
+
+[Service]
+Type=simple
+# Without this the journal stays empty until the process exits.
+Environment=PYTHONUNBUFFERED=1
+# Needs root twice over: attaching a kprobe is privileged, and so is reading
+# other processes' cgroups.
+ExecStart=/usr/local/lib/polyseat/uhid_observer.py
+Restart=on-failure
+RestartSec=5
+# The state file lives here and is read by every broker.
+RuntimeDirectory=polyseat
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target
