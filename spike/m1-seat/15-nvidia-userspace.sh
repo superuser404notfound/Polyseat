@@ -49,6 +49,10 @@ incus exec "$CT" -- sh -c 'ls /usr/lib/libnvidia-egl-gbm.so.1 >/dev/null' \
     && ok "egl-gbm present" || bad "egl-gbm missing"
 incus exec "$CT" -- sh -c 'test -e /usr/lib/gbm/nvidia-drm_gbm.so' \
     && ok "GBM backend linked" || bad "GBM backend missing"
-incus exec "$CT" -- sudo -u player env XDG_RUNTIME_DIR=/run/user/1000 \
-    eglinfo -B 2>/dev/null | grep -q 'EGL vendor string: NVIDIA' \
-    && ok "EGL reports NVIDIA" || bad "EGL does not end up on NVIDIA"
+# Run as root: at this point there is no session yet, and as the player
+# eglinfo would fail on the missing runtime directory rather than on EGL.
+# The authoritative check is the encoder line in 30-verify.sh; if EGL had
+# ended up on Mesa, Sunshine would report libx264 instead of nvenc.
+incus exec "$CT" -- eglinfo -B 2>/dev/null | grep -q 'EGL vendor string: NVIDIA' \
+    && ok "EGL reports NVIDIA" \
+    || warn "eglinfo inconclusive here; check the encoder in 30-verify.sh"

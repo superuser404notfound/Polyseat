@@ -187,6 +187,43 @@ simultaneously playing seats do not fit; realistically 2-3 plus a few light
 ones. NVENC and CPU have plenty of headroom; VRAM gets tight with three modern
 titles. The software is built for N, the hardware sets the cap.
 
+## Alternative approaches to input isolation
+
+Sunshine issue [#3768](https://github.com/LizardByte/Sunshine/issues/3768)
+collects the same problem, and two other solutions are discussed there. Both
+deserve a look, because one of them is conceptually cleaner than ours.
+
+**Wolf's fake-udev** (games-on-whales) is the same approach we arrived at
+independently: send a netlink message on the udev multicast group from inside
+the container's network namespace as root, and write the matching entries under
+`/run/udev/data/`. Their documentation adds one detail we get for free, namely
+a `/run/udev/control` file to signal udev's presence, which exists in our seats
+because systemd-udevd runs there. Nothing to change, but worth knowing that the
+approach is documented prior art rather than an invention of ours.
+
+**vuinputd** (joleuger) is architecturally the better idea. It is a CUSE proxy
+for `/dev/uinput`: every container gets its own mediated uinput device, the real
+device creation happens on the host, and the daemon forwards the udev events
+into the container itself. Attribution is then **structural**. It knows which
+container created a device because it mediated the call, so there is no name
+tag, no regular expression and no polling of `/sys`.
+
+That is strictly nicer than what we do. Our broker infers ownership from a name
+that Sunshine happens to write, which means it depends on a third party's
+formatting staying stable.
+
+**We are still not using it, for one concrete reason: vuinputd proxies
+`/dev/uinput` only, not `/dev/uhid`.** And we measured in M3 that Sunshine
+creates gamepads through inputtino as HID devices via uhid. So exactly the
+device class that matters most for gaming would fall outside its isolation. The
+author also lists Steam input support and force feedback as open gaps and calls
+the project alpha.
+
+Our approach covers keyboard, mouse, touch, pen and gamepad today, verified on
+real hardware, and puts nothing in the event path between Sunshine and the
+kernel. If vuinputd gains uhid support, replacing the broker's name correlation
+with it would be a clear improvement and should be reconsidered then.
+
 ## Rejected alternatives
 
 - **Adopting Wolf (games-on-whales).** Solves the same problem container-first

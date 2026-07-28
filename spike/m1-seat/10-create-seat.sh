@@ -80,6 +80,25 @@ incus exec "$CT" -- pacman -Syu --noconfirm --needed \
     mesa vulkan-tools mesa-utils \
     python sudo which
 
+step "Installing Steam and the 32-bit userspace"
+# Steam belongs in the base installation, not in a later add-on install: once
+# nvidia.runtime has been enabled the injection leaves real symlinks behind in
+# the container filesystem, and those never go away again, so lib32-mesa can no
+# longer be installed (finding from M3).
+#
+# --assume-installed: inside a seat the graphics driver always comes from the
+# host, never from a package. Without these flags pacman picks the first
+# provider of the virtual packages, which in the CachyOS repository is
+# lib32-nvidia-390xx-utils, a ten year old driver that would overwrite exactly
+# the injected files.
+incus exec "$CT" -- sh -c 'grep -q "^\[multilib\]" /etc/pacman.conf || printf "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n" >> /etc/pacman.conf'
+incus exec "$CT" -- pacman -Sy --noconfirm >/dev/null
+incus exec "$CT" -- pacman -S --noconfirm --needed \
+    --assume-installed vulkan-driver \
+    --assume-installed lib32-vulkan-driver \
+    --assume-installed opengl-driver \
+    steam lib32-libglvnd lib32-vulkan-icd-loader ttf-liberation zenity
+
 step "Creating user '$PLAYER'"
 incus exec "$CT" -- sh -c "
     id -u $PLAYER >/dev/null 2>&1 || useradd -m -s /bin/bash -G video,input,audio $PLAYER
