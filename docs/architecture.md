@@ -72,9 +72,9 @@ Die Kette hat zwei Hälften:
 
 **Hälfte 1 — Node in den richtigen Seat.**
 
-1. **Seat-Tag im Gerätenamen** beim Anlegen. Sauberste Variante: ein kleiner
-   Sunshine-Patch mit konfigurierbarem Namenspräfix, klein genug für Upstream.
-   Notnagel: LD_PRELOAD-Shim um `ioctl(UI_DEV_SETUP)`.
+1. **Seat-Tag im Gerätenamen.** Kein Eingriff nötig: Sunshine liest `XDG_SEAT`
+   und hängt den Seat-Namen selbst an, sobald der Seat nicht `seat0` ist —
+   aus "Keyboard passthrough" wird "Keyboard passthrough (seat1)".
 2. **Host-udev-Regel** matcht auf das Tag, macht das Gerät für KDE/libinput
    unsichtbar und meldet es dem Broker.
 3. **Broker** fährt `incus config device add <seat> padN unix-char …` und beim
@@ -111,11 +111,9 @@ Umgebung jedes Seats.** Ein Fake-udev-Shim wird vorerst nicht gebraucht — ob
 Steam mit seinem eigenen SDL und Steam Input genauso reagiert, ist die erste
 offene Frage von M1.
 
-**Ausweichentwurf, falls die Namens-Korrelation zu fragil wird:** Pads nicht im
-Container erzeugen lassen, sondern vom polyseat-Daemon auf dem Host. Dann kennt
-der Daemon die Zuordnung ohne Raten. Kostet aber einen tieferen Eingriff in
-Sunshine, weil Capture (muss im Container laufen) und Input (liefe dann am Host)
-getrennt werden müssten.
+Sunshine legt Gamepads übrigens nicht über uinput an, sondern über
+**`/dev/uhid`** (via inputtino). Beide Geräte gehören also in jeden Seat —
+ohne uhid entstehen Tastatur und Maus normal, aber nie ein Pad.
 
 ## Aufbau
 

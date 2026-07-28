@@ -33,7 +33,7 @@ Architektur und die Begründungen dahinter: [`docs/architecture.md`](docs/archit
 | **M1** | Ein Seat: Sway + Sunshine + NVENC + Moonlight | ✅ |
 | **M2** | Input-Broker: Tastatur, Maus und Pad erreichen den Seat | ✅ |
 | **M3** | Ein Seat, der wirklich spielt: Steam, Proton, Pad, Ton | ✅ |
-| **M4** | Zwei Seats parallel — braucht den Seat-Tag im Gerätenamen | |
+| **M4** | Zwei Seats parallel (Seat-Tag steht: `XDG_SEAT`) | |
 | **M5** | Daemon + GUI: Seats anlegen, starten, koppeln, überwachen | |
 | **M6** | Geteilter Bibliotheks-Pool auf btrfs | |
 | **M7** | Komfort: Auflösung pro Client, Bibliotheks-Scanner, Feinschliff | |

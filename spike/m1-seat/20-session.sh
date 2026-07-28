@@ -47,6 +47,20 @@ incus file push "$HERE/files/polyseat-sunshine.service" \
     "$CT/home/$PLAYER/.config/systemd/user/polyseat-sunshine.service"
 incus file push "$HERE/files/sunshine-run.sh" \
     "$CT/usr/local/bin/polyseat-sunshine-run" --mode 0755
+
+# Seat-Tag in den Gerätenamen.
+#
+# Sunshine liest XDG_SEAT und hängt den Seat-Namen an seine virtuellen
+# Eingabegeräte an, sobald der Seat nicht "seat0" ist — aus "Keyboard
+# passthrough" wird "Keyboard passthrough (seat1)". Genau daran erkennt der
+# Broker später, zu welchem Seat ein Gerät gehört. Ohne das heißen die Geräte
+# aller Seats identisch und sind nicht zuzuordnen.
+#
+# Als Drop-in erzeugt, weil der Wert pro Seat verschieden ist.
+incus exec "$CT" -- install -d -o "$PLAYER" -g "$PLAYER" \
+    "/home/$PLAYER/.config/systemd/user/polyseat-sunshine.service.d"
+incus exec "$CT" -- sh -c "printf '[Service]\nEnvironment=XDG_SEAT=%s\n' '$CT' \
+    > /home/$PLAYER/.config/systemd/user/polyseat-sunshine.service.d/10-seat.conf"
 incus exec "$CT" -- chown -R "$PLAYER:$PLAYER" "/home/$PLAYER/.config"
 
 step "mDNS (damit Moonlight den Seat von selbst findet)"

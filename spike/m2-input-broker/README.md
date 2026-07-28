@@ -84,17 +84,39 @@ Zwei Fallstricke dabei:
   dem KDE-Desktop auftauchten, lag an fehlenden `ID_INPUT`-Eigenschaften aus
   ungeklärter Ursache — darauf darf man sich nicht verlassen.
 
+## Zuordnung Gerät → Seat: gelöst, ohne Patch
+
+Ursprünglich als der große offene Punkt notiert: Sunshines Geräte heißen in
+jedem Seat identisch, es gäbe also kein Unterscheidungsmerkmal. Geplant war
+ein Sunshine-Patch oder ein LD_PRELOAD-Shim um `UI_DEV_SETUP`.
+
+**Beides unnötig — Sunshine kann es bereits.** Es liest `XDG_SEAT` und hängt
+den Seat-Namen an seine virtuellen Gerätenamen an, sobald der Seat nicht
+`seat0` ist. Mit `Environment=XDG_SEAT=seat1` in der Sunshine-Unit entsteht
+(am 2026-07-28 gemessen):
+
+```
+Keyboard passthrough (seat1)               ID_INPUT_KEYBOARD
+Mouse passthrough (seat1)                  ID_INPUT_MOUSE
+Mouse passthrough (seat1) (absolute)       ID_INPUT_MOUSE
+Touch passthrough (seat1)                  ID_INPUT_TOUCHSCREEN
+Pen passthrough (seat1)                    ID_INPUT_TABLET
+Sunshine X-Box One (virtual) pad (seat1)   ID_INPUT_JOYSTICK
+```
+
+Der Broker verlangt den Tag deshalb standardmäßig: er fasst nur Geräte an,
+deren Name `(<seat>)` enthält. Damit ist die Zuordnung exakt statt geraten —
+der Blocker für mehrere Seats ist weg, bevor er je einer wurde.
+
+Die Lehre: **vor dem Patchen nachsehen, ob es die Funktion schon gibt.** Ein
+halber Tag Shim-Bastelei wäre für nichts gewesen.
+
 ## Offen
 
-- **Zuordnung Gerät → Seat.** Sunshines Geräte heißen in jedem Seat identisch.
-  Bei einem Seat egal, bei mehreren der Kern des Problems. Es braucht einen
-  Seat-Tag im Gerätenamen: ein kleiner Sunshine-Patch (Konfigurationsoption
-  für einen Namenspräfix, upstream-fähig) oder ein LD_PRELOAD-Shim um
-  `UI_DEV_SETUP`. **Das ist die erste Aufgabe von M3.**
-- **Verwaiste Geräte.** Abgestürzte Sunshine-Instanzen hinterlassen ihre
-  Geräte; beobachtet wurden zwei vollständige Sätze nebeneinander. Der Broker
-  räumt bisher nur auf, was er selbst eingehängt hat.
 - **Der Prototyp pollt** `/sys` im halben Sekundentakt. Der Daemon sollte am
-  udev-Monitor des Hosts hängen.
+  udev-Monitor des Hosts hängen — und den Lebenszyklus des Containers kennen:
+  Blindes Pollen während eines Container-Stopps hat Incus einmal in einen
+  hängenden „Stopping instance" laufen lassen (siehe M3).
 - **Steam Input ungeprüft.** Steam bringt sein eigenes SDL mit und benutzt
-  udev auch selbst.
+  udev auch selbst; der Broker reicht bisher nur `event*`-Knoten durch, keine
+  `hidraw*`.

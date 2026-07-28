@@ -21,15 +21,21 @@ Fähigkeits-Bitmaps in `/sys` ab, nicht aus den udev-Eigenschaften des Hosts —
 denn die sind für Sunshines Geräte gar nicht gesetzt und für polyseat-Geräte
 absichtlich gestrippt.
 
-**Offen:** Die Zuordnung Gerät → Seat. Sunshines Geräte heißen in jedem Seat
-identisch ("Keyboard passthrough"), es gibt also kein Unterscheidungsmerkmal.
-Solange nur ein Seat läuft, ist das egal; für mehrere braucht es einen
-Seat-Tag im Gerätenamen (Sunshine-Patch oder LD_PRELOAD-Shim).
+**Zuordnung Gerät → Seat:** über den Seat-Tag im Gerätenamen. Sunshine liest
+`XDG_SEAT` und hängt den Seat-Namen an, sobald der Seat nicht "seat0" ist —
+aus "Keyboard passthrough" wird "Keyboard passthrough (seat1)". Ein Patch oder
+LD_PRELOAD-Shim, wie zunächst geplant, ist dafür nicht nötig; die Funktion
+gibt es bereits.
+
+Der Broker verlangt den Tag standardmäßig. `--tag ""` schaltet ihn ab und
+fällt auf reine Namensmuster zurück — das ist nur für einen einzelnen Seat
+vertretbar, bei mehreren wäre die Zuordnung Raten.
 
     ./broker.py --seat seat1
 """
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -111,7 +117,7 @@ def classify(sysdev):
     return list(dict.fromkeys(props))
 
 
-def scan(pattern):
+def scan(pattern, tag=None):
     """Alle virtuellen Eventgeräte, deren Name auf das Muster passt.
 
     Der Filter auf `/devices/virtual/` ist die eigentliche Absicherung: nur
@@ -121,6 +127,7 @@ def scan(pattern):
     suchen.
     """
     rx = re.compile(pattern, re.IGNORECASE)
+    needle = f"({tag})" if tag else None
     found = {}
     for entry in os.listdir(SYS_INPUT):
         if not entry.startswith("event"):
@@ -130,6 +137,10 @@ def scan(pattern):
             continue
         name = read(f"{sysdev}/device/name")
         if not name or not rx.search(name):
+            continue
+        # Der Seat-Tag entscheidet, wem das Gerät gehört. Ohne ihn würde ein
+        # zweiter Seat die Geräte des ersten mit einsammeln.
+        if needle and needle not in name:
             continue
         dev = read(f"{sysdev}/dev")
         if not dev:
@@ -144,6 +155,32 @@ def scan(pattern):
             "props": classify(os.path.realpath(f"{sysdev}/device")),
         }
     return found
+
+
+def state_path(seat):
+    """Der Broker muss über einen eigenen Neustart hinweg wissen, was er
+    eingehängt hat — sonst kann er beim Aufräumen kein `remove`-Ereignis
+    senden, weil das Gerät am Host längst weg ist und DEVPATH und Gerätenummer
+    nicht mehr auszulesen sind. Ohne dieses Ereignis behält sway tote
+    Eingabegeräte in seiner Liste."""
+    base = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    return f"{base}/polyseat-broker-{seat}.json"
+
+
+def load_state(seat):
+    try:
+        with open(state_path(seat)) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(seat, devices):
+    try:
+        with open(state_path(seat), "w") as fh:
+            json.dump(devices, fh)
+    except OSError:
+        pass
 
 
 def incus(*args, check=True):
@@ -200,6 +237,10 @@ def main():
                          "auf virtuelle Geräte — Tastatur und Maus heißen bei "
                          "Sunshine '… passthrough', Gamepads dagegen nach dem "
                          "emulierten Modell (z.B. 'Xbox One')")
+    ap.add_argument("--tag", default=None,
+                    help="Seat-Tag, den der Gerätename tragen muss (Vorgabe: "
+                         "der Seat-Name). Sunshine hängt ihn an, wenn XDG_SEAT "
+                         "gesetzt ist. \"\" schaltet die Prüfung ab.")
     ap.add_argument("--interval", type=float, default=0.5)
     args = ap.parse_args()
 
@@ -207,19 +248,51 @@ def main():
         print("Hinweis: ohne root sind manche udev-Daten nicht lesbar.",
               file=sys.stderr)
 
-    print(f"Broker läuft für Seat '{args.seat}', Muster '{args.match}'.")
+    tag = args.seat if args.tag is None else (args.tag or None)
+    if tag:
+        print(f"Broker läuft für Seat '{args.seat}', verlangt Tag '({tag})'.")
+    else:
+        print(f"Broker läuft für Seat '{args.seat}' OHNE Tag-Prüfung — "
+              f"nur bei einem einzelnen Seat vertretbar.")
     print("Strg-C beendet.\n")
+
+    # Verwaiste Einhängungen aus früheren Läufen abräumen. Sunshine-Instanzen,
+    # die abstürzen oder neu starten, hinterlassen ihre Geräte am Host; die
+    # zugehörigen Einhängungen im Seat zeigen danach ins Leere und tauchen in
+    # sway weiter als tote Eingabegeräte auf.
+    stale = 0
+    remembered = load_state(args.seat)
+    listing = incus("config", "device", "list", args.seat, check=False)
+    for dev_name in listing.stdout.split():
+        if not dev_name.startswith("in-"):
+            continue
+        node = dev_name[3:]
+        sysdev = f"{SYS_INPUT}/{node}"
+        name = read(f"{sysdev}/device/name")
+        if not name or (tag and f"({tag})" not in name):
+            print(f"  ~ {node:<10} verwaist, wird entfernt")
+            if node in remembered:
+                detach(args.seat, node, remembered[node])
+            else:
+                # Ohne Erinnerung bleibt nur die Einhängung; sway behält das
+                # tote Gerät dann bis zum nächsten Neustart in seiner Liste.
+                incus("config", "device", "remove", args.seat, dev_name, check=False)
+            stale += 1
+    if stale:
+        print(f"{stale} verwaiste Einhängung(en) entfernt.\n")
 
     known = {}
     try:
         while True:
-            current = scan(args.match)
+            current = scan(args.match, tag)
             for node, dev in current.items():
                 if node not in known:
                     attach(args.seat, dev)
             for node, dev in list(known.items()):
                 if node not in current:
                     detach(args.seat, node, dev)
+            if current != known:
+                save_state(args.seat, current)
             known = current
             time.sleep(args.interval)
     except KeyboardInterrupt:
