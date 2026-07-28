@@ -43,6 +43,7 @@ import sys
 import time
 
 import device_owner
+import uhid_observer
 
 SYS_INPUT = "/sys/class/input"
 
@@ -158,7 +159,9 @@ def scan(pattern):
 
 
 # Devices already reported as refused, so the log says it once rather than
-# twice a second.
+# twice a second. Keyed by the sysfs path rather than the node name: the kernel
+# reuses event numbers, and a stale entry would then silence the refusal for a
+# different device that happened to get the same number.
 _reported = set()
 
 # uhid descriptors seen in the previous cycle. A gamepad that appears belongs to
@@ -200,6 +203,29 @@ def attribute(candidates, seat, tag):
         if owner == "unknown":
             # No uinput descriptor claims it, so it came through uhid.
             claimed = tag and f"({tag})" in dev["name"]
+
+            # Best answer first: the observer saw the kernel create it and
+            # recorded the calling process. That is a fact, not a correlation.
+            observed = uhid_observer.owner_of_node(node)
+            if observed is None:
+                dev["attribution"] = "host"
+                if dev["syspath"] not in _reported:
+                    _reported.add(dev["syspath"])
+                    print(f"  ! {node:<10} refused: created on the host, not in a "
+                          f"container ({dev['name']})")
+                continue
+            if observed != "unknown":
+                dev["attribution"] = "uhid-observed"
+                if observed == seat:
+                    mine[node] = dev
+                elif claimed and dev["syspath"] not in _reported:
+                    _reported.add(dev["syspath"])
+                    print(f"  ! {node:<10} refused: name claims ({seat}) but the "
+                          f"kernel says '{observed}' created it")
+                continue
+
+            # The observer did not see it, usually because it was created
+            # before the observer started. Fall back to the correlation.
             if len(candidates_from_fresh) == 1:
                 # Exactly one container just opened a descriptor: correlate.
                 correlated = next(iter(candidates_from_fresh))
@@ -207,12 +233,12 @@ def attribute(candidates, seat, tag):
                 if correlated == seat:
                     if claimed or not tag:
                         mine[node] = dev
-                    elif node not in _reported:
-                        _reported.add(node)
+                    elif dev["syspath"] not in _reported:
+                        _reported.add(dev["syspath"])
                         print(f"  ! {node:<10} refused: descriptor says '{seat}' "
                               f"but the name claims otherwise ({dev['name']})")
-                elif claimed and node not in _reported:
-                    _reported.add(node)
+                elif claimed and dev["syspath"] not in _reported:
+                    _reported.add(dev["syspath"])
                     print(f"  ! {node:<10} refused: name claims ({seat}) but the "
                           f"uhid descriptor belongs to '{correlated}'")
             else:
@@ -223,18 +249,18 @@ def attribute(candidates, seat, tag):
         elif owner is None:
             # Created by a process on the host. Never belongs to a seat.
             dev["attribution"] = "host"
-            if node not in _reported:
-                _reported.add(node)
+            if dev["syspath"] not in _reported:
+                _reported.add(dev["syspath"])
                 print(f"  ! {node:<10} refused: created on the host, not in a "
                       f"container ({dev['name']})")
         else:
             dev["attribution"] = "owner"
             if owner == seat:
                 mine[node] = dev
-            elif f"({seat})" in dev["name"] and node not in _reported:
+            elif f"({seat})" in dev["name"] and dev["syspath"] not in _reported:
                 # Claims our tag but was created elsewhere. Exactly what the
                 # structural check exists for.
-                _reported.add(node)
+                _reported.add(dev["syspath"])
                 print(f"  ! {node:<10} refused: name claims ({seat}) but the "
                       f"creator is '{owner}'")
     return mine
@@ -366,6 +392,7 @@ FAKEUDEV = "/root/fakeudev.py"
 def attach(backend, seat, dev):
     node, minor = dev["node"], dev["minor"]
     how = {"owner": "creator verified",
+           "uhid-observed": "creator observed at creation",
            "uhid-correlated": "uhid descriptor correlated",
            "tag": "name tag only, unverified"}.get(
         dev.get("attribution", ""), dev.get("attribution", ""))

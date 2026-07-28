@@ -142,7 +142,41 @@ by path, because inside a container `/dev/uinput` is a different path and
 `lsof /dev/uinput` shows nothing while seats are streaming. And the broker now
 needs root, since reading foreign descriptors is privileged.
 
-### Gamepads: correlated, not proven
+### Gamepads: observed at creation
+
+`uhid_observer.py` puts a kprobe on `uhid_dev_create2`, the kernel function that
+actually creates a uhid device. It fires with the calling process as its
+context, so the creator is a fact reported by the kernel at the moment of
+creation rather than something inferred afterwards. Ownership is recorded per
+HID device in `/run/polyseat/uhid-owners.json`, and every input device below it
+inherits it. That matters because one DualSense produces three input devices
+from a single HID device.
+
+**Why not a CUSE proxy.** Mediating `/dev/uhid` gives the same answer and is
+what vuinputd does for uinput, but it sits between the application and the
+kernel: a bug there stops gamepads from working at all. Observing costs nothing
+if it fails, and the broker then simply falls back to the older heuristic. For
+roughly 150 lines instead of 500, in a language we already use, that trade was
+easy.
+
+Both forgeries were demonstrated on the running rig:
+
+```
+! event259   refused: created on the host, not in a container
+! event260   refused: name claims (seat1) but the kernel says 'seat2' created it
+```
+
+The second one is the interesting case: seat2 created a device named exactly
+`Sunshine PS5 (virtual) pad (seat1)`. seat1 refused it and seat2 got it, because
+attribution follows the creator and not the name. A seat can therefore call its
+own devices anything it likes without reaching anybody else.
+
+**One bug this uncovered:** the refusal log was keyed by node name, and the
+kernel reuses event numbers. A stale entry then silenced the refusal for a
+different device that happened to get the same number. Keyed by the sysfs path
+now, which is unique per device instance.
+
+### The fallback, for devices created before the observer started
 
 uhid has no counterpart to `UI_GET_SYSNAME`, in fact no ioctls at all, so a
 descriptor cannot be asked what it created. What can be used instead is that
@@ -157,13 +191,10 @@ the disagreement logged. If several containers opened descriptors at once, or
 none did, it falls back to the name and labels the attribution
 `name tag only, unverified` rather than pretending.
 
-**This is correlation by ordering, not a structural fact.** A determined
-attacker could race it. It is a large improvement over trusting a string and it
-is not the same thing as the uinput case, which is why the log distinguishes
-`creator verified` from `uhid descriptor correlated`.
-
-Being exact here needs a proxy that sees the creation itself, which is the open
-piece across this whole problem space: neither Wolf nor vuinputd has it either.
+**This is correlation by ordering, not a structural fact**, which is why the log
+distinguishes `creator observed at creation` from `uhid descriptor correlated`
+and from `name tag only, unverified`. It only applies to devices that already
+existed when the observer started.
 A forged gamepad is also the least dangerous forgery, a fake pad in somebody's
 game rather than a keyboard in their session.
 
