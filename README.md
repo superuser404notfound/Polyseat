@@ -1,43 +1,43 @@
-# polyseat
+# Polyseat
 
-Mehrere Leute spielen gleichzeitig an einem Linux-PC — jede und jeder in einer
-eigenen, sauber abgeschotteten Session, gestreamt an den eigenen
-Moonlight-Client. Der Desktop des Rechners läuft dabei ungestört weiter.
+Several people playing on one Linux PC at the same time - each in their own
+cleanly isolated session, streamed to their own Moonlight client. The machine's
+regular desktop keeps running undisturbed.
 
-polyseat implementiert **weder Compositor noch Encoder noch Streaming-Protokoll**.
-Die eigentliche Arbeit machen Incus, Sway/wlroots, Sunshine, PipeWire, udev und
-systemd. polyseat ist der Orchestrator darüber: er legt Seats an, verdrahtet sie
-kollisionsfrei, weist Eingabegeräte zu, überwacht und repariert.
+Polyseat implements **neither a compositor, nor an encoder, nor a streaming
+protocol**. The heavy lifting is done by Incus, Sway/wlroots, Sunshine,
+PipeWire, udev and systemd. Polyseat is the orchestrator on top: it creates
+seats, wires them up collision-free, assigns input devices, monitors and repairs.
 
-Ein **Seat** ist ein Incus-System-Container mit eigenem Sway (headless), eigener
-Sunshine-Instanz, eigenem PipeWire und eigenem Steam-Konto.
+A **seat** is an Incus system container with its own headless Sway, its own
+Sunshine instance, its own PipeWire and its own Steam account.
 
 ## Status
 
-**Ein Seat spielt.** Ein Incus-Container mit headless Sway und Sunshine streamt
-mit NVENC an einen Moonlight-Client; Steam läuft darin, ein Spiel startet, Ton
-kommt an, und Tastatur, Maus und Gamepad des Clients erreichen die Session.
-Am 2026-07-28 am echten Gerät bestätigt.
+**One seat plays.** An Incus container running headless Sway and Sunshine
+streams via NVENC to a Moonlight client; Steam runs inside it, a game starts,
+audio arrives, and the client's keyboard, mouse and gamepad reach the session.
+Confirmed on real hardware on 2026-07-28.
 
-Noch kein Produkt: kein Daemon, keine GUI, alles von Hand über Skripte. Die
-Protokolle der einzelnen Schritte liegen in [`spike/`](spike/) und halten fest,
-was funktioniert, was nicht, und warum.
+Not a product yet: no daemon, no GUI, everything driven by hand through scripts.
+The logs of each step live in [`spike/`](spike/) and record what works, what
+does not, and why.
 
-Architektur und die Begründungen dahinter: [`docs/architecture.md`](docs/architecture.md).
+Architecture and the reasoning behind it: [`docs/architecture.md`](docs/architecture.md).
 
-## Fahrplan
+## Roadmap
 
 | | | |
 |---|---|---|
-| **M0** | Input-Spike: trägt die Container-Architektur? | ✅ |
-| **M1** | Ein Seat: Sway + Sunshine + NVENC + Moonlight | ✅ |
-| **M2** | Input-Broker: Tastatur, Maus und Pad erreichen den Seat | ✅ |
-| **M3** | Ein Seat, der wirklich spielt: Steam, Proton, Pad, Ton | ✅ |
-| **M4** | Zwei Seats parallel (Seat-Tag steht: `XDG_SEAT`) | |
-| **M5** | Daemon + GUI: Seats anlegen, starten, koppeln, überwachen | |
-| **M6** | Geteilter Bibliotheks-Pool auf btrfs | |
-| **M7** | Komfort: Auflösung pro Client, Bibliotheks-Scanner, Feinschliff | |
+| **M0** | Input spike: does the container architecture hold up? | ✅ |
+| **M1** | One seat: Sway + Sunshine + NVENC + Moonlight | ✅ |
+| **M2** | Input broker: keyboard, mouse and pad reach the seat | ✅ |
+| **M3** | A seat that actually plays: Steam, Proton, pad, audio | ✅ |
+| **M4** | Two seats in parallel (seat tag solved: `XDG_SEAT`) | |
+| **M5** | Daemon + GUI: create, start, pair and monitor seats | |
+| **M6** | Shared library pool on btrfs | |
+| **M7** | Polish: per-client resolution, library scanner, finishing touches | |
 
-## Lizenz
+## License
 
-GPL-3.0-or-later. Siehe [LICENSE](LICENSE).
+GPL-3.0-or-later. See [LICENSE](LICENSE).

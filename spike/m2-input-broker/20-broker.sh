@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Startet den Broker-Prototyp für einen Seat.
+# Starts the broker prototype for one seat.
 #
-# Muss laufen, WÄHREND gestreamt wird: Sunshine legt seine virtuellen Geräte
-# an, wenn sich ein Client verbindet, und genau die holt der Broker in den
-# Seat. Läuft er nicht, bleibt die Session ohne Tastatur und Maus.
+# It has to run WHILE streaming: Sunshine creates its virtual devices when a
+# client connects, and those are exactly what the broker pulls into the seat.
+# If it is not running, the session stays without keyboard and mouse.
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
-step "fakeudev in den Seat kopieren"
+step "Copying fakeudev into the seat"
 incus file push "$HERE/fakeudev.py" "$CT/root/fakeudev.py" --mode 0755 >/dev/null
-ok "bereit"
+ok "ready"
 
-step "Broker starten"
-echo "  Seat: $CT — Strg-C beendet."
+step "Starting the broker"
+echo "  seat: $CT. Ctrl-C stops it."
 echo
 exec "$HERE/broker.py" --seat "$CT" "$@"

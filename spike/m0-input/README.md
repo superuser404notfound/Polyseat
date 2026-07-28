@@ -1,144 +1,143 @@
-# M0 — Input-Spike
+# M0 - input spike
 
-**Eine Frage:** Trägt die Container-Architektur die Eingabekette?
+**One question:** does the container architecture hold up the input chain?
 
-Wenn nein, kippt der Entwurf und wir landen bei einem Unix-User pro Seat statt
-bei Containern. Das will man nach einem Abend wissen, nicht nach sechs Wochen.
-Deshalb steht dieser Spike vor allem anderen — vor Sway, vor Sunshine, vor Go,
-vor der GUI.
+If not, the design collapses and we end up with one Unix user per seat instead
+of containers. That is something you want to know after an evening, not after
+six weeks. Which is why this comes before everything else - before Sway, before
+Sunshine, before Go, before the GUI.
 
-Der Spike benutzt **kein Sunshine**. Ein synthetisches Pad (`padgen.py`, rohes
-uinput, ~120 Zeilen) isoliert die Variable, die uns interessiert. Sunshine bringt
-Capture, Encoder, Netzwerk und Pairing mit — alles Dinge, die hier nur Rauschen
-wären.
+The spike uses **no Sunshine**. A synthetic pad (`padgen.py`, raw uinput, ~120
+lines) isolates the variable we care about. Sunshine brings capture, encoder,
+networking and pairing along - all of which would just be noise here.
 
-## Hypothesen
+## Hypotheses
 
-| | Hypothese | Erwartung |
+| | Hypothesis | Expectation |
 |---|---|---|
-| **H1** | Ein Incus-Container mit `nvidia.runtime=true` sieht die GPU | `nvidia-smi` läuft im Container |
-| **H2** | Ein *im Container* erzeugtes uinput-Pad erscheint auf dem **Host** unter `/dev/input/` | ja — uinput ist nicht namespaced |
-| **H3** | Dasselbe Pad erscheint **nicht** im `/dev/input` des Containers | ja — das ist die strukturelle Isolation |
-| **H4** | Der Gerätename ist beim Anlegen frei wählbar, eine Host-udev-Regel kann darauf matchen | ja — trägt die Seat-Zuordnung |
-| **H5** | `incus config device add … unix-char` bringt den Node in den **laufenden** Container | ja — laut Incus-Doku hotplug-fähig |
-| **H6** | **SDL im Container erkennt das Pad** — obwohl dort kein udev läuft | **unbekannt. Das ist das Risiko.** |
+| **H1** | An Incus container with `nvidia.runtime=true` sees the GPU | `nvidia-smi` works inside the container |
+| **H2** | A uinput pad created *inside the container* shows up on the **host** under `/dev/input/` | yes - uinput is not namespaced |
+| **H3** | The same pad does **not** show up in the container's `/dev/input` | yes - that is the structural isolation |
+| **H4** | The device name is freely settable, and a host udev rule can match on it | yes - this carries the seat assignment |
+| **H5** | `incus config device add … unix-char` gets the node into the **running** container | yes - hotplug-capable per the Incus docs |
+| **H6** | **SDL inside the container recognises the pad** - even though no udev runs there | **unknown. This is the risk.** |
 
-## Bestehenskriterium
+## Pass criterion
 
-**H6 grün**, notfalls mit `SDL_JOYSTICK_DISABLE_UDEV=1`. Alles andere ist
-Vorbereitung.
+**H6 green**, if need be with `SDL_JOYSTICK_DISABLE_UDEV=1`. Everything else is
+preparation.
 
-Drei mögliche Ausgänge:
+Three possible outcomes:
 
-- **H6 ohne Kniff grün** → Architektur trägt, weiter mit M1.
-- **H6 nur mit `SDL_JOYSTICK_DISABLE_UDEV=1` grün** → trägt, aber jeder Seat
-  braucht die Variable in der Umgebung, und Steam Input muss separat geprüft
-  werden (Steam benutzt nicht nur SDL).
-- **H6 rot** → Fake-udev-Shim nötig (Konzept von Wolf übernehmbar) oder Rückfall
-  auf einen Unix-User pro Seat.
+- **H6 green with no tricks** → the architecture holds, on to M1.
+- **H6 green only with `SDL_JOYSTICK_DISABLE_UDEV=1`** → it holds, but every
+  seat needs the variable in its environment, and Steam Input has to be checked
+  separately (Steam does not only use SDL).
+- **H6 red** → a fake-udev shim is required (concept borrowable from Wolf), or
+  fall back to one Unix user per seat.
 
-## Voraussetzungen
+## Prerequisites
 
-`00-prereqs.sh` prüft alles read-only und druckt die fehlenden Root-Befehle aus.
-Kurzfassung, einmalig als root:
+`00-prereqs.sh` checks everything read-only and prints the missing root
+commands. Short version, once, as root:
 
 ```
 sudo pacman -S --needed incus nvidia-container-toolkit go
 sudo systemctl enable --now incus.socket
-sudo usermod -aG incus-admin $USER      # danach neu einloggen
+sudo usermod -aG incus-admin $USER      # log in again afterwards
 sudo incus admin init --minimal
 ```
 
-`--minimal` legt einen dir-basierten Storage-Pool an. Für M0 reicht das; für
-den Bibliotheks-Pool (M4) wollen wir später btrfs.
+`--minimal` creates a dir-backed storage pool. Good enough for M0; for the
+library pool (M6) we will want btrfs.
 
-## Ablauf
+## Procedure
 
 ```
-./00-prereqs.sh                 # read-only, druckt fehlende Root-Befehle
-./10-create-seat.sh             # Container 'm0' + /dev/uinput + Testwerkzeug
-./20-run-pad.sh                 # padgen.py im Container starten (blockiert)
-./30-observe-host.sh            # in zweiter Shell: H2/H3/H4 prüfen
-./40-inject.sh <eventN>         # H5: Node in den laufenden Container
-./50-verify.sh                  # H6: evtest + SDL im Container
-./60-hide-from-host.sh          # H4: udev-Regel, versteckt Pad vor KDE
+./00-prereqs.sh                 # read-only, prints missing root commands
+./10-create-seat.sh             # container 'm0' + /dev/uinput + test tools
+./20-run-pad.sh                 # start padgen.py in the container (blocks)
+./30-observe-host.sh            # in a second shell: check H2/H3/H4
+./40-inject.sh <eventN>         # H5: node into the running container
+./50-verify.sh                  # H6: evtest + SDL inside the container
+./60-hide-from-host.sh          # H4: udev rule, hides the pad from KDE
 ./99-cleanup.sh
 ```
 
-## Vorab am Host verifiziert
+## Verified up front on the host
 
-`padgen.py` wurde ohne Container direkt am Host getestet (rooky ist in der
-Gruppe `input`, `/dev/uinput` ist damit beschreibbar):
+`padgen.py` was tested directly on the host without a container (rooky is in
+the `input` group, so `/dev/uinput` is writable):
 
-- Gerät wird angelegt, Name ist frei setzbar → **der Seat-Tag trägt.**
-- Meldet sich als `045e:028e`, evtest liest das erwartete Xbox-360-Layout.
-- Host-udev klassifiziert es als `ID_INPUT=1`, `ID_INPUT_JOYSTICK=1` — genau
-  die Eigenschaften, die die Regel in `60-hide-from-host.sh` strippt.
-- Nach `UI_DEV_DESTROY` bleibt nichts zurück.
+- The device gets created and the name is freely settable → **the seat tag
+  works.**
+- It reports as `045e:028e`, and evtest reads the expected Xbox 360 layout.
+- Host udev classifies it as `ID_INPUT=1`, `ID_INPUT_JOYSTICK=1` - exactly the
+  properties the rule in `60-hide-from-host.sh` strips.
+- After `UI_DEV_DESTROY` nothing is left behind.
 
-**Befund für den späteren Broker:** `UI_GET_SYSNAME` liefert `inputNN`, der
-Geräteknoten heißt aber `eventM` — die Zahlen stimmen **nicht** überein
-(beobachtet: `input37` → `/dev/input/event7`). Die Zuordnung führt über
-`/sys/class/input/inputNN/eventM/`. Wenn der Broker die Pads selbst anlegt,
-ist das der zuverlässige Korrelationsweg — dann braucht es das Namens-Tag
-nur noch für die udev-Regel, nicht mehr für die Zuordnung.
+**Finding for the later broker:** `UI_GET_SYSNAME` returns `inputNN`, but the
+device node is called `eventM` - and **the numbers do not match** (observed:
+`input37` → `/dev/input/event7`). The mapping goes through
+`/sys/class/input/inputNN/eventM/`. If the broker creates the pads itself, that
+is the reliable correlation path - the name tag is then only needed for the
+udev rule, no longer for the assignment.
 
-## Protokoll — durchgeführt 2026-07-27
+## Log - run on 2026-07-27
 
-**Ergebnis: die Container-Architektur trägt.** Alle Hypothesen grün, mit einer
-Auflage (siehe H7).
+**Result: the container architecture holds.** All hypotheses green, with one
+condition (see H7).
 
-| Hypothese | Ergebnis | Notiz |
+| Hypothesis | Result | Note |
 |---|---|---|
-| H1 | ✅ | `nvidia-smi` im Container meldet die RTX 4080 |
-| H2 | ✅ | im Container erzeugtes Pad erscheint am Host als `/dev/input/event24` |
-| H3 | ✅ | `/dev/input` existiert im Container **gar nicht** — Isolation per Default |
-| H4 | ✅ | udev-Regel strippt `ID_INPUT`, `libinput list-devices` findet nichts mehr |
-| H5 | ✅ | `unix-char`-Hotplug bringt den Knoten in den laufenden Container |
-| H6 | ✅ | SDL erkennt das Pad als „Xbox 360 Controller" — **auch ohne Kniff** |
-| H7 | ⚠️ | Hotplug zur Laufzeit **nur** mit `SDL_JOYSTICK_DISABLE_UDEV=1` |
+| H1 | ✅ | `nvidia-smi` inside the container reports the RTX 4080 |
+| H2 | ✅ | pad created in the container appears on the host as `/dev/input/event24` |
+| H3 | ✅ | `/dev/input` does **not exist at all** in the container - isolation by default |
+| H4 | ✅ | udev rule strips `ID_INPUT`, `libinput list-devices` finds nothing |
+| H5 | ✅ | `unix-char` hotplug gets the node into the running container |
+| H6 | ✅ | SDL recognises the pad as an "Xbox 360 Controller" - **even with no tricks** |
+| H7 | ⚠️ | hotplug at runtime **only** with `SDL_JOYSTICK_DISABLE_UDEV=1` |
 
-### H7 — die Auflage
+### H7 - the condition
 
-H6 beantwortet nur, ob SDL beim Start findet, was schon da ist. Das reicht
-nicht: Steam läuft im Seat dauerhaft, und Pads entstehen erst, wenn sich
-jemand verbindet.
+H6 only answers whether SDL finds what is already there when it starts. That is
+not enough: Steam runs permanently inside a seat, and pads only come into
+existence once somebody connects.
 
-Gemessen mit `55-hotplug.sh`: ein zweites Pad, das während der Beobachtung
-eingehängt wird, bleibt **unbemerkt**. Der Knoten kommt an — ein anschließend
-neu gestartetes `sdlprobe` sieht beide Pads — aber die *Benachrichtigung*
-fehlt. Grund: libudev enumeriert über `/sys`, das im Container sichtbar ist,
-der udev-*Monitor* hängt dagegen an Netlink-Uevents, und die erreichen den
-Container nicht.
+Measured with `55-hotplug.sh`: a second pad attached while the watcher is
+running goes **unnoticed**. The node does arrive - an `sdlprobe` started
+afterwards sees both pads - but the *notification* is missing. The reason:
+libudev enumerates via `/sys`, which is visible inside the container, while the
+udev *monitor* hangs off netlink uevents, and those do not reach the container.
 
-Mit `SDL_JOYSTICK_DISABLE_UDEV=1` pollt SDL stattdessen `/dev/input` direkt
-und meldet das nachträglich eingehängte Pad zuverlässig.
+With `SDL_JOYSTICK_DISABLE_UDEV=1` SDL polls `/dev/input` directly instead and
+reliably reports the pad attached afterwards.
 
-**Folge für die Architektur:** Die Variable gehört in die Umgebung jedes Seats.
-Ein Fake-udev-Shim wird dadurch vorerst nicht gebraucht.
+**Consequence for the architecture:** the variable belongs in every seat's
+environment. A fake-udev shim is not needed for now.
 
-**Offen:** Steam bringt sein eigenes SDL mit und benutzt udev auch für Steam
-Input. Ob die Variable dort genauso greift, muss in M1 mit echtem Steam
-geprüft werden — `sdlprobe` beantwortet das nicht.
+**Open:** Steam bundles its own SDL and also uses udev for Steam Input. Whether
+the variable works there too has to be checked in M1 with real Steam -
+`sdlprobe` does not answer that.
 
-### Weitere Befunde aus dem Durchlauf
+### Further findings from the run
 
-- **`nvidia.runtime=true` spiegelt nur Bibliotheken**, keine Geräteknoten.
-  Ohne zusätzliches `gpu`-Device läuft `nvidia-smi` und meldet „No devices
-  found". Nebenbei: `nvidia-smi -L` liefert auch dann Exit 0 — Prüfungen
-  müssen die Ausgabe ansehen, nicht den Rückgabewert.
-- **Reihenfolge ist zwingend:** Pakete installieren, *dann* `nvidia.runtime`
-  einschalten. Sonst kollidiert pacman mit den injizierten Treiberdateien
+- **`nvidia.runtime=true` only mirrors libraries**, no device nodes. Without an
+  additional `gpu` device, `nvidia-smi` runs and reports "No devices found". On
+  a related note: `nvidia-smi -L` exits 0 even then - checks have to look at the
+  output, not the return code.
+- **The order is mandatory:** install packages, *then* enable `nvidia.runtime`.
+  Otherwise pacman collides with the injected driver files
   (`mesa: /usr/lib/libGLX_indirect.so.0 exists in filesystem`). `--overwrite`
-  wäre die falsche Antwort — es ersetzt die Treiberdatei.
-- **Incus braucht eigene idmap-Bereiche.** CachyOS liefert nur einen Eintrag
-  für den Benutzer; ohne `root:1000000:1000000000` in `/etc/subuid` und
-  `/etc/subgid` scheitert jeder Containerstart mit „System doesn't have a
-  functional idmap setup".
-- **SDL benennt bekannte Geräte um.** Das Pad heißt im Container „Xbox 360
-  Controller", nicht wie im evdev-Namen. Der Seat-Tag ist also nichts, worauf
-  sich etwas *oberhalb* von evdev verlassen darf — für udev-Regeln taugt er,
-  für Anwendungslogik nicht.
-- `UI_GET_SYSNAME` liefert `inputNN`, der Knoten heißt `eventM`, die Zahlen
-  stimmen nicht überein (`input40` → `event24`). Zuordnung über
+  would be the wrong answer - it replaces the driver file.
+- **Incus needs its own idmap ranges.** CachyOS ships only an entry for the
+  user; without `root:1000000:1000000000` in `/etc/subuid` and `/etc/subgid`
+  every container start fails with "System doesn't have a functional idmap
+  setup".
+- **SDL renames known devices.** Inside the container the pad is called "Xbox
+  360 Controller", not what the evdev name says. So the seat tag is nothing that
+  anything *above* evdev may rely on - it is fine for udev rules, not for
+  application logic.
+- `UI_GET_SYSNAME` returns `inputNN`, the node is called `eventM`, and the
+  numbers do not match (`input40` → `event24`). Map via
   `/sys/class/input/inputNN/eventM/`.

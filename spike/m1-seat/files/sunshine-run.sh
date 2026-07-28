@@ -1,19 +1,19 @@
 #!/bin/sh
-# Startet Sunshine erst, wenn die Wayland-Session wirklich bereit ist.
+# Starts Sunshine only once the Wayland session is really up.
 #
-# Ohne das gibt es eine Race Condition mit hässlicher Nachwirkung: Startet
-# Sunshine, bevor sways Socket existiert, meldet es
+# Without this there is a race with an ugly aftermath: if Sunshine starts
+# before sway's socket exists, it reports
 #     [wayland] Couldn't connect to Wayland display
 #     Platform failed to initialize
-# und danach scheitern ALLE Encoder — auch der Software-Encoder, was die
-# Ursache gut verschleiert. Sunshine beendet sich dabei nicht, sondern läuft
-# kaputt weiter und bedient die Weboberfläche. systemd sieht einen gesunden
-# Dienst, der Client bekommt "Failed to initialize video capture/encoding.
-# Is a display connected and turned on?".
+# and afterwards ALL encoders fail - including the software encoder, which
+# hides the cause nicely. Sunshine does not exit in that state; it keeps
+# running broken and serves the web UI. systemd sees a healthy service, and the
+# client only gets "Failed to initialize video capture/encoding. Is a display
+# connected and turned on?".
 #
-# Deshalb wird der Socket hier selbst gesucht, statt sich auf ein per
-# `systemctl --user import-environment` gesetztes WAYLAND_DISPLAY zu
-# verlassen — das kann nach einem sway-Neustart veraltet sein.
+# That is why the socket is looked up here instead of relying on a
+# WAYLAND_DISPLAY set through `systemctl --user import-environment` - that value
+# can be stale after a sway restart.
 : "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
 
 sock=""
@@ -29,14 +29,14 @@ while [ "$i" -lt 150 ]; do
 done
 
 if [ -z "$sock" ]; then
-    echo "polyseat: kein Wayland-Socket in $XDG_RUNTIME_DIR gefunden" >&2
+    echo "polyseat: no Wayland socket found in $XDG_RUNTIME_DIR" >&2
     exit 1
 fi
 
-# Der Socket entsteht, bevor sway Verbindungen beantwortet.
+# The socket appears before sway starts answering connections.
 sleep 1
 
 WAYLAND_DISPLAY="${sock##*/}"
 export WAYLAND_DISPLAY
-echo "polyseat: Sunshine startet auf $WAYLAND_DISPLAY"
+echo "polyseat: starting Sunshine on $WAYLAND_DISPLAY"
 exec /usr/bin/sunshine "$@"

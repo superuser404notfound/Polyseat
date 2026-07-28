@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
-# Teilfrage: Wie viel fehlt dem Container — das Ereignis oder die
-# udev-Datenbank?
+# Sub-question: what is the container missing, the event or the udev database?
 #
-# libudev baut Geräteeigenschaften nicht aus /sys, sondern aus seiner
-# Datenbank unter /run/udev/data/. Die entsteht im Container nie, weil dort
-# nie ein uevent ankommt. Wenn das Kopieren des Datenbankeintrags vom Host
-# genügt, damit libinput das Gerät sieht, zerfällt das Problem in zwei
-# unabhängige Hälften — und nur die Hotplug-Benachrichtigung braucht dann
-# noch echten Netlink-Aufwand.
+# libudev builds device properties not from /sys but from its database under
+# /run/udev/data/. That database never comes into existence inside the container
+# because no uevent ever arrives. If copying the host's database entry is enough
+# for libinput to see the device, the problem splits into two independent
+# halves, and only the hotplug notification needs real netlink work.
 #
-# Der Gerätename ist bewusst NICHT "polyseat:*", damit die Ausblendregel des
-# Hosts die Eigenschaften nicht wegstrippt und wir einen realistischen
-# Datenbankeintrag bekommen.
+# The device name deliberately is NOT "polyseat:*", so that the host's hide rule
+# does not strip the properties and we get a realistic database entry.
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
@@ -25,7 +22,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-step "Gerät auf dem Host erzeugen"
+step "Creating a device on the host"
 "$HERE/../m0-input/padgen.py" --name "$NAME" --quiet >/dev/null 2>&1 &
 sleep 3
 node=""
@@ -33,35 +30,35 @@ for d in /sys/class/input/event*; do
     [[ -r "$d/device/name" ]] || continue
     [[ "$(<"$d/device/name")" == "$NAME" ]] && node="${d##*/}"
 done
-[[ -n "$node" ]] || { bad "Gerät nicht gefunden"; exit 1; }
+[[ -n "$node" ]] || { bad "device not found"; exit 1; }
 minor=$(cut -d: -f2 "/sys/class/input/$node/dev")
 ok "/dev/input/$node  (c13:$minor)"
 
-step "Datenbankeintrag des Hosts"
+step "The host's database entry"
 sudo cat "/run/udev/data/c13:$minor" | sed 's/^/  /'
 
-step "Knoten in den Seat einhängen"
+step "Attaching the node to the seat"
 incus config device add "$CT" "pad-$node" unix-char \
     source="/dev/input/$node" path="/dev/input/$node" required=false >/dev/null
 sleep 2
 
-step "VORHER — sieht libinput im Container etwas?"
+step "BEFORE: does libinput inside the container see anything?"
 incus exec "$CT" -- sh -c "libinput list-devices 2>/dev/null | grep -c 'm2probe'" \
-    | sed 's/^/  Treffer: /'
+    | sed 's/^/  matches: /'
 
-step "Datenbankeintrag in den Container kopieren"
+step "Copying the database entry into the container"
 sudo cat "/run/udev/data/c13:$minor" | \
     incus exec "$CT" -- sh -c "mkdir -p /run/udev/data && cat > /run/udev/data/c13:$minor"
-ok "kopiert"
+ok "copied"
 
-step "NACHHER — udevadm info im Container"
+step "AFTER: udevadm info inside the container"
 incus exec "$CT" -- udevadm info -q property -n "/dev/input/$node" 2>&1 \
     | grep -E '^(DEVNAME|ID_INPUT|MAJOR)' | sed 's/^/  /'
 
-step "NACHHER — libinput im Container"
+step "AFTER: libinput inside the container"
 if incus exec "$CT" -- sh -c "libinput list-devices 2>/dev/null | grep -q 'm2probe'"; then
-    ok "libinput sieht das Gerät — die Datenbank allein genügt für Enumeration"
+    ok "libinput sees the device: the database alone is enough for enumeration"
     incus exec "$CT" -- sh -c "libinput list-devices 2>/dev/null | grep -A2 'm2probe'" | sed 's/^/  /'
 else
-    bad "libinput sieht es weiterhin nicht"
+    bad "libinput still does not see it"
 fi

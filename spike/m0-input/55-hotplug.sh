@@ -1,53 +1,53 @@
 #!/usr/bin/env bash
-# H7 — Hotplug zur Laufzeit.
+# H7 - hotplug at runtime.
 #
-# H6 zeigt nur, dass SDL beim Start findet, was schon da ist. Steam läuft im
-# Seat aber dauerhaft, und Pads kommen erst dazu, wenn sich jemand verbindet.
-# Ob das bemerkt wird, hängt an udev-Netlink-Uevents — und die erreichen einen
-# Container normalerweise nicht.
+# H6 only shows that SDL finds what is already there when it starts. But Steam
+# runs permanently inside a seat, and pads only appear once somebody connects.
+# Whether that is noticed depends on udev netlink uevents - and those do not
+# reach a container.
 #
-# Voraussetzung: 40-inject.sh gelaufen, erstes Pad läuft.
+# Prerequisite: 40-inject.sh has run, the first pad is alive.
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
-step "sdlprobe im Beobachtungsmodus starten (30 s)"
+step "Starting sdlprobe in watch mode (30 s)"
 incus exec "$CT" -- sh -c \
     'cd /root && nohup ./sdlprobe --watch 30 > /root/watch.log 2>&1 &'
 sleep 4
 incus exec "$CT" -- cat /root/watch.log 2>/dev/null
 
-step "Zweites Pad im Container erzeugen"
-# Eigene vendor:product, damit SDL nicht sein Xbox-Mapping darüberlegt und
-# beide Pads in der Ausgabe unterscheidbar bleiben.
+step "Creating a second pad inside the container"
+# Its own vendor:product so SDL does not put its Xbox mapping on top and both
+# pads stay distinguishable in the output.
 incus exec "$CT" -- sh -c \
     'nohup python3 -u /root/padgen.py --seat m0b --quiet --vendor 0x1234 --product 0x5678 > /root/pad-b.log 2>&1 &'
 sleep 3
 incus exec "$CT" -- cat /root/pad-b.log
 
-step "Host-Knoten des zweiten Pads suchen"
+step "Looking for the host node of the second pad"
 node=""
 for d in /sys/class/input/event*; do
     [[ -r "$d/device/name" ]] || continue
     [[ "$(<"$d/device/name")" == "polyseat:m0b"* ]] && node="${d##*/}"
 done
-[[ -n "$node" ]] || { bad "zweites Pad nicht am Host gefunden"; exit 1; }
-ok "gefunden: /dev/input/$node"
+[[ -n "$node" ]] || { bad "second pad not found on the host"; exit 1; }
+ok "found: /dev/input/$node"
 
-step "Hotplug in den laufenden Container"
+step "Hotplug into the running container"
 incus config device add "$CT" "pad-$node" unix-char \
     source="/dev/input/$node" path="/dev/input/$node" required=false
 
-step "Warten, bis der Beobachter fertig ist"
+step "Waiting for the watcher to finish"
 sleep 25
 
-step "Was hat SDL bemerkt?"
+step "What did SDL notice?"
 incus exec "$CT" -- cat /root/watch.log
 
 cat <<'EOF'
 
-Auswertung:
-  2 gemeldete Geräte  -> Hotplug funktioniert, Steam bemerkt neue Pads.
-  1 gemeldetes Gerät  -> nur Enumeration beim Start. Dann muss entweder das
-                         Pad vor dem Spielstart da sein, oder es braucht einen
-                         Uevent-Weg in den Container (fake-udev).
+Interpretation:
+  2 devices reported -> hotplug works, Steam will notice new pads.
+  1 device reported  -> enumeration at startup only. Then the pad has to exist
+                        before the game starts, or a uevent path into the
+                        container is needed (fake-udev).
 EOF

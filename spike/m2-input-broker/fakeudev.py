@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""fakeudev.py — sendet ein synthetisches udev-Ereignis in den Container.
+"""fakeudev.py - sends a synthetic udev event into the container.
 
-Hintergrund: Ein per `incus config device add` eingehängtes Gerät erzeugt im
-Container kein uevent (in `10-uevent-test.sh` gemessen). Die *Enumeration*
-funktioniert trotzdem, weil libudev dafür `/sys` abläuft — ein Gerät, das
-beim Start schon da ist, sieht sway also. Was fehlt, ist die Benachrichtigung
-über Geräte, die *später* dazukommen. Und genau das ist der Normalfall:
-Sunshine legt seine virtuellen Geräte an, wenn sich ein Client verbindet,
-also lange nachdem sway läuft.
+Background: a device attached through `incus config device add` produces no
+uevent inside the container (measured in `10-uevent-test.sh`). *Enumeration*
+still works, because libudev walks /sys for that, so a device that is already
+present at startup is visible to sway. What is missing is the notification about
+devices that arrive *later*. And that is the normal case: Sunshine creates its
+virtual devices when a client connects, long after sway is up.
 
-Der Kernel-Uevent-Netlink ist an den Netzwerk-Namespace gebunden, deshalb
-erreichen Host-Ereignisse den Container nie. Man kann aber im Namespace des
-Containers selbst eine Nachricht auf die udev-Multicast-Gruppe legen —
-libudev-Clients (libinput, SDL) hören genau darauf. udevd wird dabei
-umgangen; die Clients bekommen das Ereignis direkt.
+The kernel uevent netlink is bound to the network namespace, so host events
+never reach the container. But one can put a message on the udev multicast group
+inside the container's own namespace, and libudev clients (libinput, SDL) listen
+for exactly that. udevd is bypassed; the clients get the event directly.
 
-Muss IM Container als root laufen: libudev verwirft Nachrichten, deren
-Absender nicht uid 0 ist, und die Absenderkennung wird beim Übersetzen in
-den User-Namespace des Containers geprüft. Ein Host-Prozess, der nur per
-setns in den Netzwerk-Namespace wechselt, fiele durch diese Prüfung.
+Must run INSIDE the container as root: libudev discards messages whose sender is
+not uid 0, and the sender credentials are translated into the container's user
+namespace. A host process that only enters the network namespace via setns would
+fail that check.
 
     ./fakeudev.py add /sys/devices/virtual/input/input42/event29 \
         --subsystem input --devname input/event29 --major 13 --minor 93 \
@@ -31,16 +29,16 @@ import struct
 import sys
 
 NETLINK_KOBJECT_UEVENT = 15
-UDEV_MONITOR_UDEV = 2          # Multicast-Gruppe, auf der libudev-Clients hören
+UDEV_MONITOR_UDEV = 2          # multicast group libudev clients listen on
 UDEV_MONITOR_MAGIC = 0xFEEDCAFE
 
 
 def murmur_hash2(key: bytes, seed: int = 0) -> int:
-    """systemds string_hash32 — MurmurHash2 mit Seed 0.
+    """systemd's string_hash32, i.e. MurmurHash2 with seed 0.
 
-    libudev trägt den Hash des Subsystems im Nachrichtenkopf, damit Clients
-    uninteressante Ereignisse verwerfen können, ohne sie zu zerlegen. Stimmt
-    er nicht, filtert der Client die Nachricht weg.
+    libudev carries the hash of the subsystem in the message header so that
+    clients can discard uninteresting events without parsing them. Get it wrong
+    and the client filters the message away.
     """
     m = 0x5BD1E995
     r = 24
@@ -72,17 +70,17 @@ def murmur_hash2(key: bytes, seed: int = 0) -> int:
 def build_message(props: dict) -> bytes:
     payload = b"".join(f"{k}={v}".encode() + b"\0" for k, v in props.items())
 
-    # struct udev_monitor_netlink_header: prefix, dann acht uint32.
-    # magic und die Hashes liegen in Netzwerk-Byteordnung, die Längenfelder
-    # in der des Rechners.
+    # struct udev_monitor_netlink_header: prefix followed by eight uint32.
+    # magic and the hashes are in network byte order, the length fields in
+    # host byte order.
     header_size = 40
     header = (
         b"libudev\0"
         + struct.pack(">I", UDEV_MONITOR_MAGIC)
         + struct.pack("=III", header_size, header_size, len(payload))
         + struct.pack(">I", murmur_hash2(props["SUBSYSTEM"].encode()))
-        + struct.pack(">I", 0)   # devtype-Hash: kein Filter
-        + struct.pack(">II", 0, 0)   # Tag-Bloomfilter: keiner
+        + struct.pack(">I", 0)   # devtype hash: no filter
+        + struct.pack(">II", 0, 0)   # tag bloom filter: none
     )
     return header + payload
 
@@ -90,14 +88,14 @@ def build_message(props: dict) -> bytes:
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("action", choices=["add", "remove", "change"])
-    ap.add_argument("devpath", help="Pfad unterhalb von /sys, mit führendem /devices/…")
+    ap.add_argument("devpath", help="path below /sys, with a leading /devices/...")
     ap.add_argument("--subsystem", default="input")
-    ap.add_argument("--devname", help="z.B. input/event29")
+    ap.add_argument("--devname", help="e.g. input/event29")
     ap.add_argument("--major", type=int)
     ap.add_argument("--minor", type=int)
     ap.add_argument("--seqnum", type=int, default=9000)
     ap.add_argument("--prop", action="append", default=[],
-                    metavar="KEY=VALUE", help="mehrfach verwendbar")
+                    metavar="KEY=VALUE", help="may be given several times")
     args = ap.parse_args()
 
     props = {
@@ -123,11 +121,11 @@ def main():
         sock.bind((0, 0))
         sock.sendto(msg, (0, UDEV_MONITOR_UDEV))
     except PermissionError:
-        sys.exit("Kein Zugriff auf die Multicast-Gruppe — als root im Container ausführen.")
+        sys.exit("No access to the multicast group. Run as root inside the container.")
     finally:
         sock.close()
 
-    print(f"{args.action}: {args.devpath} ({len(msg)} Bytes)")
+    print(f"{args.action}: {args.devpath} ({len(msg)} bytes)")
 
 
 if __name__ == "__main__":

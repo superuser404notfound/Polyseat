@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Entfernt den Seat-Container restlos.
+# Removes the seat container entirely.
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
-step "Container '$CT' entfernen"
+step "Removing container '$CT'"
 if incus info "$CT" >/dev/null 2>&1; then
-    incus delete --force "$CT" && ok "gelöscht"
+    incus delete --force "$CT" && ok "deleted"
 else
-    ok "war nicht vorhanden"
+    ok "was not present"
 fi

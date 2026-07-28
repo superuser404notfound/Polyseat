@@ -1,62 +1,62 @@
 #!/usr/bin/env bash
-# Prüft alle Voraussetzungen für M0. Ändert nichts, druckt nur.
+# Checks every prerequisite for M0. Changes nothing, only prints.
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
 missing_pkgs=()
 need_pkg() {
-    if pacman -Qq "$1" >/dev/null 2>&1; then ok "Paket $1"
-    else bad "Paket $1 fehlt"; missing_pkgs+=("$1"); fi
+    if pacman -Qq "$1" >/dev/null 2>&1; then ok "package $1"
+    else bad "package $1 missing"; missing_pkgs+=("$1"); fi
 }
 
-step "Pakete"
+step "Packages"
 need_pkg incus
 need_pkg nvidia-container-toolkit
 need_pkg evtest
 need_pkg python
 
-step "Incus-Dienst"
+step "Incus service"
 if systemctl is-active --quiet incus.socket || systemctl is-active --quiet incus; then
-    ok "incus läuft"
+    ok "incus is running"
 else
-    bad "incus-Dienst läuft nicht"
+    bad "incus service is not running"
 fi
 
-step "Gruppenmitgliedschaft"
+step "Group membership"
 if id -nG | tr ' ' '\n' | grep -qx incus-admin; then
-    ok "$USER ist in incus-admin"
+    ok "$USER is in incus-admin"
 else
-    bad "$USER ist nicht in incus-admin (nach usermod neu einloggen!)"
+    bad "$USER is not in incus-admin (log in again after usermod!)"
 fi
 
-step "Incus erreichbar"
+step "Incus reachable"
 if incus list >/dev/null 2>&1; then
-    ok "incus list funktioniert"
+    ok "incus list works"
     if incus storage list -f csv 2>/dev/null | grep -q .; then
-        ok "Storage-Pool vorhanden"
+        ok "storage pool present"
     else
-        bad "kein Storage-Pool — 'incus admin init' fehlt"
+        bad "no storage pool - 'incus admin init' is missing"
     fi
 else
-    bad "incus nicht ansprechbar (Dienst? Gruppe? admin init?)"
+    bad "incus not reachable (service? group? admin init?)"
 fi
 
-step "Host-Grundlagen"
-[[ -e /dev/uinput ]] && ok "/dev/uinput vorhanden" || bad "/dev/uinput fehlt (modprobe uinput)"
-[[ -e /dev/nvidiactl ]] && ok "NVIDIA-Devices vorhanden" || bad "keine /dev/nvidia* Devices"
-grep -qs . /etc/subuid && ok "subuid konfiguriert" || warn "/etc/subuid leer"
+step "Host basics"
+[[ -e /dev/uinput ]] && ok "/dev/uinput present" || bad "/dev/uinput missing (modprobe uinput)"
+[[ -e /dev/nvidiactl ]] && ok "NVIDIA devices present" || bad "no /dev/nvidia* devices"
+grep -qs . /etc/subuid && ok "subuid configured" || warn "/etc/subuid is empty"
 
 if ((${#missing_pkgs[@]})); then
-    step "Fehlende Pakete installieren"
+    step "Install missing packages"
     echo "  sudo pacman -S --needed ${missing_pkgs[*]}"
 fi
 
 cat <<'EOF'
 
-Einmalige Root-Einrichtung, falls oben etwas rot ist:
+One-time root setup, if anything above is red:
 
   sudo pacman -S --needed incus nvidia-container-toolkit go
   sudo systemctl enable --now incus.socket
-  sudo usermod -aG incus-admin "$USER"     # danach neu einloggen!
+  sudo usermod -aG incus-admin "$USER"     # log in again afterwards!
   sudo incus admin init --minimal
 EOF

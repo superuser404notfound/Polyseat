@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Räumt den Spike restlos ab.
+# Removes every trace of the spike.
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
-step "Container '$CT' entfernen"
+step "Removing container '$CT'"
 if incus info "$CT" >/dev/null 2>&1; then
-    incus delete --force "$CT" && ok "gelöscht"
+    incus delete --force "$CT" && ok "deleted"
 else
-    ok "war nicht vorhanden"
+    ok "was not present"
 fi
 
-step "udev-Regel"
+step "udev rule"
 if [[ -e /etc/udev/rules.d/70-polyseat-hide.rules ]]; then
-    echo "  Regel liegt noch. Entfernen (root):"
+    echo "  The rule is still installed. Remove it (as root):"
     echo "    sudo rm /etc/udev/rules.d/70-polyseat-hide.rules && sudo udevadm control --reload"
 else
-    ok "keine Regel installiert"
+    ok "no rule installed"
 fi

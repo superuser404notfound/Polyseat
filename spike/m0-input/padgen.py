@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""padgen.py — erzeugt ein virtuelles Gamepad über rohes uinput.
+"""padgen.py - creates a virtual gamepad through raw uinput.
 
-Bewusst ohne python-evdev: die Bibliothek öffnet nach dem Anlegen den
-Geräteknoten unter /dev/input/, um `.device` zu füllen. Genau dieser Knoten
-fehlt im Container — das ist der Zustand, den M0 untersucht. Rohes uinput
-macht diese Annahme nicht.
+Deliberately without python-evdev: after creating the device, that library
+opens the device node under /dev/input/ to populate `.device`. That node is
+precisely what is missing inside a container - which is the very state M0
+investigates. Raw uinput does not make that assumption.
 
-Das Pad meldet sich als Xbox-360-Controller (045e:028e) mit dem üblichen
-Achsen- und Tastenlayout, damit SDL sein eingebautes Mapping anwendet. Der
-Gerätename ist frei setzbar — das ist H4: der Seat-Tag, an dem der Broker
-später erkennt, zu welchem Seat ein Pad gehört.
+The pad identifies itself as an Xbox 360 controller (045e:028e) with the usual
+axis and button layout so that SDL applies its built-in mapping. The device
+name is freely settable - that is H4: the seat tag the broker later uses to
+tell which seat a pad belongs to.
 
     ./padgen.py --seat m0
 """
@@ -22,7 +22,7 @@ import struct
 import sys
 import time
 
-# ---------------------------------------------------------------- ioctl-Codes
+# ---------------------------------------------------------------- ioctl codes
 
 _IOC_WRITE = 1
 _IOC_READ = 2
@@ -31,7 +31,7 @@ UINPUT_IOCTL_BASE = ord("U")
 
 def _ioc(direction, nr, size):
     op = (direction << 30) | (size << 16) | (UINPUT_IOCTL_BASE << 8) | nr
-    # fcntl.ioctl erwartet einen vorzeichenbehafteten 32-Bit-Wert.
+    # fcntl.ioctl expects a signed 32-bit value.
     return op - (1 << 32) if op >= (1 << 31) else op
 
 
@@ -45,17 +45,17 @@ UI_SET_RELBIT = _ioc(_IOC_WRITE, 102, 4)
 UI_SET_ABSBIT = _ioc(_IOC_WRITE, 103, 4)
 UI_GET_SYSNAME = _ioc(_IOC_READ, 44, 32)
 
-# ------------------------------------------------------------- Event-Konstanten
+# ------------------------------------------------------------ event constants
 
 EV_SYN, EV_KEY, EV_REL, EV_ABS = 0x00, 0x01, 0x02, 0x03
 SYN_REPORT = 0x00
 BUS_USB = 0x03
 
-# Tastatur- und Maus-Varianten. libinput ignoriert Gamepads grundsätzlich —
-# die liest ein Spiel direkt über evdev. Für den Compositor zählen nur
-# Tastatur und Maus, und genau die legt Sunshine als "Keyboard passthrough"
-# bzw. "Mouse passthrough" an. Wer die Eingabekette gegen sway prüfen will,
-# braucht deshalb diese beiden Typen, nicht das Pad.
+# Keyboard and mouse variants. libinput ignores gamepads entirely - a game
+# reads those directly through evdev. For the compositor only keyboard and
+# mouse matter, and those are exactly what Sunshine creates as "Keyboard
+# passthrough" and "Mouse passthrough". Anyone testing the input chain against
+# sway therefore needs these two types, not the pad.
 KEYBOARD_KEYS = list(range(1, 128))          # KEY_ESC .. KEY_COMPOSE
 MOUSE_BUTTONS = [0x110, 0x111, 0x112]        # BTN_LEFT, BTN_RIGHT, BTN_MIDDLE
 REL_AXES = [0x00, 0x01, 0x08]                # REL_X, REL_Y, REL_WHEEL
@@ -79,13 +79,13 @@ ABS_X = 0x00
 
 # code -> (min, max, fuzz, flat)
 AXES = {
-    0x00: (-32768, 32767, 16, 128),  # ABS_X   linker Stick
+    0x00: (-32768, 32767, 16, 128),  # ABS_X   left stick
     0x01: (-32768, 32767, 16, 128),  # ABS_Y
-    0x03: (-32768, 32767, 16, 128),  # ABS_RX  rechter Stick
+    0x03: (-32768, 32767, 16, 128),  # ABS_RX  right stick
     0x04: (-32768, 32767, 16, 128),  # ABS_RY
-    0x02: (0, 255, 0, 0),            # ABS_Z   linker Trigger
-    0x05: (0, 255, 0, 0),            # ABS_RZ  rechter Trigger
-    0x10: (-1, 1, 0, 0),             # ABS_HAT0X  D-Pad
+    0x02: (0, 255, 0, 0),            # ABS_Z   left trigger
+    0x05: (0, 255, 0, 0),            # ABS_RZ  right trigger
+    0x10: (-1, 1, 0, 0),             # ABS_HAT0X  D-pad
     0x11: (-1, 1, 0, 0),             # ABS_HAT0Y
 }
 
@@ -95,7 +95,7 @@ class Pad:
         self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
         self.kind = kind
 
-        # UI_SET_*BIT nehmen den Code als Wert, nicht als Zeiger auf einen Puffer.
+        # UI_SET_*BIT take the code by value, not as a pointer to a buffer.
         fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_KEY)
         if kind == "keyboard":
             for code in KEYBOARD_KEYS:
@@ -120,7 +120,7 @@ class Pad:
         )
         fcntl.ioctl(self.fd, UI_DEV_SETUP, setup)
 
-        # struct uinput_abs_setup { __u16 code; <2 Byte Padding>; input_absinfo }
+        # struct uinput_abs_setup { __u16 code; <2 bytes padding>; input_absinfo }
         # struct input_absinfo { value, minimum, maximum, fuzz, flat, resolution }
         if kind == "gamepad":
             for code, (lo, hi, fuzz, flat) in AXES.items():
@@ -133,14 +133,14 @@ class Pad:
         fcntl.ioctl(self.fd, UI_DEV_CREATE)
 
     def sysname(self):
-        """Liefert z.B. 'input42' — die Kennung, über die der Broker später
-        Host-Knoten und erzeugendes Pad korreliert."""
+        """Returns e.g. 'input42' - the identifier the broker later uses to
+        correlate the host node with the pad that created it."""
         buf = bytearray(32)
         try:
             fcntl.ioctl(self.fd, UI_GET_SYSNAME, buf, True)
             return buf.split(b"\x00")[0].decode()
         except OSError as exc:
-            return f"<UI_GET_SYSNAME fehlgeschlagen: {exc}>"
+            return f"<UI_GET_SYSNAME failed: {exc}>"
 
     def emit(self, etype, code, value):
         # struct input_event { struct timeval; __u16 type; __u16 code; __s32 value }
@@ -161,15 +161,15 @@ class Pad:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--seat", default="m0", help="Seat-Tag im Gerätenamen")
-    ap.add_argument("--name", help="voller Gerätename (überschreibt --seat)")
+    ap.add_argument("--seat", default="m0", help="seat tag inside the device name")
+    ap.add_argument("--name", help="full device name (overrides --seat)")
     ap.add_argument("--vendor", type=lambda s: int(s, 0), default=0x045E)
     ap.add_argument("--product", type=lambda s: int(s, 0), default=0x028E)
-    ap.add_argument("--quiet", action="store_true", help="keine Testereignisse senden")
+    ap.add_argument("--quiet", action="store_true", help="send no test events")
     ap.add_argument("--type", dest="kind", default="gamepad",
                     choices=["gamepad", "keyboard", "mouse"],
-                    help="Gerätetyp — libinput ignoriert Gamepads, für sway "
-                         "sind nur keyboard und mouse relevant")
+                    help="device type - libinput ignores gamepads, so only "
+                         "keyboard and mouse are relevant for sway")
     args = ap.parse_args()
 
     suffix = {"gamepad": "Virtual Gamepad",
@@ -180,14 +180,14 @@ def main():
     try:
         pad = Pad(name, args.vendor, args.product, args.kind)
     except PermissionError:
-        sys.exit("Kein Zugriff auf /dev/uinput — als root ausführen bzw. Device durchreichen.")
+        sys.exit("No access to /dev/uinput - run as root or pass the device through.")
     except FileNotFoundError:
-        sys.exit("/dev/uinput fehlt — im Container als unix-char durchreichen.")
+        sys.exit("/dev/uinput is missing - pass it into the container as unix-char.")
 
-    print(f"Pad angelegt: {name!r}")
+    print(f"Pad created: {name!r}")
     print(f"  vendor:product = {args.vendor:04x}:{args.product:04x}")
     print(f"  sysname        = {pad.sysname()}")
-    print("Läuft. Strg-C beendet und räumt auf.", flush=True)
+    print("Running. Ctrl-C stops and cleans up.", flush=True)
 
     running = True
 
@@ -201,8 +201,8 @@ def main():
     tick = 0
     while running:
         if not args.quiet:
-            # Sichtbare Ereignisse, damit evtest und SDL nicht nur ein stummes
-            # Gerät sehen.
+            # Visible events, so that evtest and SDL do not just see a silent
+            # device.
             if args.kind == "gamepad":
                 pad.emit(EV_KEY, BTN_SOUTH, 1)
                 pad.emit(EV_ABS, ABS_X, 12000)
@@ -226,7 +226,7 @@ def main():
         time.sleep(2)
 
     pad.close()
-    print("Pad entfernt.")
+    print("Pad removed.")
 
 
 if __name__ == "__main__":

@@ -1,149 +1,130 @@
-# M1 — ein vollständiger Seat
+# M1 - one complete seat
 
-**Ziel:** Ein Incus-Container, in dem headless Sway, Sunshine und NVENC laufen,
-mit eigener LAN-Adresse, sodass sich Moonlight verbindet.
+**Goal:** an Incus container running headless Sway, Sunshine and NVENC, with its
+own LAN address, so that Moonlight can connect to it.
 
-**Status: erreicht** (2026-07-27). Sunshine meldet `h264_nvenc [nvenc]`,
-Ausgang 1920x1080, ein Audio-Sink, eigene LAN-Adresse.
+**Status: achieved** (2026-07-27). Sunshine reports `h264_nvenc [nvenc]`, output
+1920x1080, one audio sink, its own LAN address.
 
-## Ablauf
+## Procedure
 
 ```
-./10-create-seat.sh        # Container, macvlan, CachyOS-Repo, Pakete, Benutzer
-./15-nvidia-userspace.sh   # was nvidia.runtime NICHT mitliefert
-./20-session.sh            # PipeWire, Sway, Sunshine als User-Units
-./30-verify.sh             # Endkontrolle + Verbindungsdaten
+./10-create-seat.sh        # container, macvlan, CachyOS repo, packages, user
+./15-nvidia-userspace.sh   # what nvidia.runtime does NOT bring along
+./20-session.sh            # PipeWire, Sway, Sunshine as user units
+./30-verify.sh             # final check plus connection details
 ./99-cleanup.sh
 ```
 
-## Netzwerk: zwei Karten, mit Absicht
+## Networking: two interfaces, on purpose
 
-Jeder Seat bekommt **zwei** Netzwerkkarten:
+Every seat gets **two** network interfaces:
 
-- `eth1` — **macvlan** direkt am physischen Uplink. Der Seat holt sich per DHCP
-  eine eigene LAN-Adresse und ist für Moonlight ein eigenständiger Host.
-- `eth0` — an `incusbr0`, der Verwaltungsweg.
+- `eth1`, **macvlan** directly on the physical uplink. The seat gets its own LAN
+  address via DHCP and is an independent host as far as Moonlight is concerned.
+- `eth0`, on `incusbr0`, the management path.
 
-Der Grund für eth1 ist architektonisch bedeutsam: **mit eigener LAN-Adresse pro
-Seat entfällt jede Port-Jonglage.** Jeder Seat lauscht auf den
-Standard-Sunshine-Ports, niemand muss Portversätze pflegen, und Moonlight wird
-auf dem Client ganz normal eingerichtet.
+The reason for eth1 matters architecturally: **with a LAN address per seat,
+all port juggling disappears.** Every seat listens on the standard Sunshine
+ports, nobody has to maintain port offsets, and Moonlight is set up on the
+client the ordinary way.
 
-Der Grund für eth0 ist die bekannte Eigenschaft von macvlan: **Host und
-Container können sich über dieses Interface nicht direkt erreichen.** Die
-Sunshine-Weboberfläche ist vom Host-Browser deshalb nur über die
-Verwaltungsadresse erreichbar — und genau diesen Weg wird später auch der
-Daemon für seinen Pairing-Proxy nutzen.
+The reason for eth0 is the well known property of macvlan: **host and container
+cannot reach each other over that interface.** The Sunshine web UI is therefore
+only reachable from the host browser through the management address, and that is
+exactly the path the daemon will later use for its pairing proxy.
 
-## Der teuerste Befund: was `nvidia.runtime` nicht mitbringt
+## The most expensive finding: what `nvidia.runtime` does not bring
 
-`nvidia.runtime=true` spiegelt die Treiber**bibliotheken** in den Container —
-und sonst nichts. Es fehlen vier Dinge, und ohne sie landet EGL bei Mesa, CUDA
-kann den GL-Kontext nicht übernehmen, und Sunshine fällt still auf
-`libx264 [software]` zurück. Ein Seat sähe dann funktionsfähig aus und wäre
-unbenutzbar.
+`nvidia.runtime=true` mirrors the driver **libraries** into the container, and
+nothing else. Four things are missing, and without them EGL ends up on Mesa,
+CUDA cannot take over the GL context, and Sunshine silently falls back to
+`libx264 [software]`. A seat would look perfectly healthy and be unusable.
 
-| fehlt | woher es normalerweise kommt | Symptom |
+| missing | where it normally comes from | symptom |
 |---|---|---|
-| `/usr/share/glvnd/egl_vendor.d/10_nvidia.json` | `nvidia-utils` | EGL probiert nur Mesa: „failed to create dri2 screen" |
-| `/usr/lib/gbm/nvidia-drm_gbm.so` | `nvidia-utils` (nur ein Symlink!) | GBM findet den NVIDIA-Backend nicht |
-| `egl-gbm`, `egl-wayland` | eigene Arch-Pakete, **kein Treiberbestandteil** | „Couldn't initialize EGL display: [00003001]" |
-| Vulkan-ICD `nvidia_icd.json` | `nvidia-utils` | Vulkan sieht keine GPU |
+| `/usr/share/glvnd/egl_vendor.d/10_nvidia.json` | `nvidia-utils` | EGL only tries Mesa: "failed to create dri2 screen" |
+| `/usr/lib/gbm/nvidia-drm_gbm.so` | `nvidia-utils` (only a symlink!) | GBM cannot find the NVIDIA backend |
+| `egl-gbm`, `egl-wayland` | separate Arch packages, **not part of the driver** | "Couldn't initialize EGL display: [00003001]" |
+| Vulkan ICD `nvidia_icd.json` | `nvidia-utils` | Vulkan sees no GPU |
 
-`nvidia-utils` im Container zu installieren wäre die falsche Antwort — es würde
-eigene `.so`-Dateien gegen die injizierten setzen. Die Manifeste werden deshalb
-erzeugt, die beiden echten Pakete regulär installiert.
+Installing `nvidia-utils` inside the container would be the wrong answer: it
+would put its own `.so` files up against the injected ones. So the manifests get
+generated and the two real packages get installed normally.
 
-**Reihenfolge:** erst die Pakete, dann die Manifeste. Wer die JSONs vorher von
-Hand hineinkopiert, blockiert `pacman` mit einem Dateikonflikt — genau das ist
-hier passiert.
+**Order:** packages first, manifests second. Copying the JSON files in by hand
+beforehand blocks `pacman` with a file conflict, which is exactly what happened
+here.
 
-## Weitere Befunde
+## Further findings
 
-- **`incus launch` kehrt zurück, bevor systemd im Container bereit ist.** Das
-  erste `systemctl` scheitert dann mit „Failed to connect to system scope bus".
-  `10-create-seat.sh` wartet deshalb auf `systemctl is-system-running`.
-- **`/dev/dri/card1` kommt als `root:root 0660` an** — der Spieler kann es nicht
-  öffnen, EGL scheitert mit „Permission denied". `incus config device set gpu
-  mode=0666` löst es.
-- **Der libinput-Backend bricht ohne Eingabegeräte ab.** `/dev/input` ist im
-  Container beim Start leer, also braucht sway `WLR_LIBINPUT_NO_DEVICES=1`.
-- **Sunshine muss nach sway starten**, nicht gleichzeitig. Sonst meldet es
-  `[wayland] Couldn't connect to Wayland display` und `Platform failed to
-  initialize`, und danach scheitern **alle** Encoder — auch der
-  Software-Encoder, was die Ursache gut verschleiert.
+- **`incus launch` returns before systemd inside the container is ready.** The
+  first `systemctl` then fails with "Failed to connect to system scope bus".
+  `10-create-seat.sh` therefore waits for `systemctl is-system-running`.
+- **`/dev/dri/card1` arrives as `root:root 0660`**, so the player cannot open it
+  and EGL fails with "Permission denied". `incus config device set gpu mode=0666`
+  fixes it.
+- **The libinput backend aborts without input devices.** `/dev/input` is empty
+  inside the container at startup, so sway needs `WLR_LIBINPUT_NO_DEVICES=1`.
+- **Sunshine must start after sway**, not at the same time. Otherwise it reports
+  `[wayland] Couldn't connect to Wayland display` and `Platform failed to
+  initialize`, and afterwards **all** encoders fail, including the software
+  encoder, which hides the cause nicely.
 
-  Das Tückische daran: **Sunshine beendet sich nicht.** Es läuft kaputt weiter
-  und bedient die Weboberfläche, systemd sieht einen gesunden Dienst, und der
-  Client bekommt nur „Failed to initialize video capture/encoding. Is a
-  display connected and turned on?". Der Zustand hielt so eine ganze Nacht.
+  The nasty part: **Sunshine does not exit.** It keeps running broken and serves
+  the web UI, systemd sees a healthy service, and the client only gets "Failed to
+  initialize video capture/encoding. Is a display connected and turned on?". The
+  state survived a whole night that way.
 
-  Ein `import-environment` in der sway-Config reicht dagegen nicht, weil ein
-  `BindsTo`-Neustart Sunshine früher hochzieht als sways `exec`, und weil ein
-  einmal importiertes `WAYLAND_DISPLAY` nach einem sway-Neustart veraltet sein
-  kann. `sunshine-run.sh` sucht den Socket deshalb selbst und wartet auf ihn.
-- **Den Null-Sink deklarativ anlegen, nicht per `exec pactl`.** PipeWire
-  überlebt einen sway-Neustart, das `exec` nicht — nach vier Neustarts gab es
-  vier identische Sinks.
-- **Sunshines CSRF-Schutz erlaubt von Haus aus nur `localhost`-Ursprünge.** Wer
-  die Weboberfläche über die LAN- oder Verwaltungsadresse öffnet — also immer —
-  bekommt beim Speichern „CSRF Protection Error", ohne dass Sunshine etwas
-  protokolliert, das darauf hindeutet. `csrf_allowed_origins` erwartet eine
-  kommagetrennte Liste vollständiger URL-Präfixe **mit Schema und Port**;
-  `20-session.sh` erzeugt sie aus den tatsächlichen Adressen des Seats.
+  An `import-environment` in the sway config is not enough, because a `BindsTo`
+  restart pulls Sunshine up earlier than sway's `exec`, and because a
+  `WAYLAND_DISPLAY` imported once can be stale after a sway restart.
+  `sunshine-run.sh` therefore looks for the socket itself and waits for it.
+- **By default Sunshine's CSRF protection only allows `localhost` origins.**
+  Opening the web UI through the LAN or management address, which is what always
+  happens, fails on save with "CSRF Protection Error" without Sunshine logging
+  anything that points at it. `csrf_allowed_origins` expects a comma separated
+  list of full URL prefixes **including scheme and port**; `20-session.sh`
+  generates it from the seat's actual addresses.
 
-  **Folge für den Daemon:** Seat-Adressen müssen stabil sein. Ändert DHCP die
-  Adresse, passt die CSRF-Liste nicht mehr, und die Oberfläche wird
-  unbedienbar. Seats brauchen also eine feste Adresse (DHCP-Reservierung oder
-  statisch konfiguriert) — das ist ohnehin sinnvoll, weil auch die
-  Moonlight-Einrichtung auf dem Client an der Adresse hängt.
-- **Sunshine liegt im CachyOS-Repo, nicht in Arch.** Der Container bindet nur
-  das nicht CPU-optimierte `[cachyos]`-Repo ein, und zwar ans *Ende* der
-  `pacman.conf`, damit Arch bei allen gemeinsamen Paketen gewinnt.
+  **Consequence for the daemon:** seat addresses have to be stable. If DHCP
+  changes the address, the CSRF list no longer matches and the UI becomes
+  unusable. So seats need a fixed address (DHCP reservation or statically
+  configured), which is sensible anyway because the Moonlight setup on the client
+  also depends on the address.
+- **Sunshine lives in the CachyOS repository, not in Arch.** The container only
+  pulls in the non CPU-optimised `[cachyos]` repo, and at the *end* of
+  `pacman.conf`, so that Arch wins for every shared package.
+- **Declare the null sink in PipeWire, do not create it with `exec pactl`.**
+  PipeWire survives a sway restart, the `exec` does not, so after four restarts
+  there were four identical sinks. (The null sink itself was later dropped
+  entirely, see M3.)
 
-## Eingabe: am laufenden Stream gemessen
+## Input, measured on the live stream
 
-Mit verbundenem Moonlight-Client (iPhone, 2026-07-27) nachgesehen, wo Sunshines
-virtuelle Geräte landen:
+With a Moonlight client connected (iPhone, 2026-07-27) we looked at where
+Sunshine's virtual devices end up:
 
-- Im Container existiert **`/dev/input` überhaupt nicht**.
-- Auf dem Host liegen sie: `Mouse passthrough`, `Mouse passthrough (absolute)`,
-  `Keyboard passthrough`.
+- Inside the container **`/dev/input` does not exist at all**.
+- On the host they are there: `Mouse passthrough`, `Mouse passthrough
+  (absolute)`, `Keyboard passthrough`.
 
-**Das ist der M0-Befund, jetzt am echten Sunshine bestätigt:** `uinput` ist
-nicht namespaced, also registriert der Kernel die Geräte global, und der
-Host-udev legt die Knoten an — im Seat, der sie erzeugt hat, sind sie
-unsichtbar. Sway hat damit **null Eingabegeräte**. Tastatur, Maus und Pad im
-Stream können gar nicht funktionieren, bevor der Broker existiert.
+**That is the M0 finding, now confirmed against real Sunshine:** `uinput` is not
+namespaced, so the kernel registers the devices globally and the host's udev
+creates the nodes, while in the seat that created them they are invisible. Sway
+therefore has **zero** input devices. Keyboard, mouse and pad in the stream
+cannot possibly work before the broker exists.
 
-Zwei Anschlussbefunde:
+Two follow-up findings:
 
-- **Die Geräte heißen in jedem Seat gleich.** „Keyboard passthrough" trägt kein
-  Unterscheidungsmerkmal — bei mehreren Seats ist nicht erkennbar, wohin ein
-  Gerät gehört. Eine Suche in der Binärdatei fand keine Konfigurationsoption
-  für den Gerätenamen. Der Seat-Tag braucht also einen Sunshine-Patch oder
-  einen LD_PRELOAD-Shim, wie in M0 vermutet.
-- **Sie erreichen den KDE-Desktop derzeit nicht** — `libinput list-devices`
-  listet sie nicht, weil udev ihnen keine `ID_INPUT`-Eigenschaften gibt,
-  obwohl `input_id` laut `udevadm test` läuft. Die Ursache ist **ungeklärt**.
-  Darauf darf sich der Entwurf nicht verlassen: Wenn diese Geräte auf einem
-  anderen System oder nach einem Update doch klassifiziert werden, greift der
-  Client eines Seats in den Host-Desktop durch. Die Ausblendregel muss sie
-  deshalb ausdrücklich erfassen, statt auf ein unerklärtes Verhalten zu bauen.
-- **Abgestürzte Sunshine-Instanzen hinterlassen ihre Geräte.** Beobachtet
-  wurden zwei vollständige Sätze. Der Broker muss verwaiste Geräte aufräumen.
-
-## Offen — M2
-
-Der Input-Broker. Er muss:
-
-1. neu entstehende virtuelle Geräte erkennen und dem richtigen Seat zuordnen
-   (setzt den Seat-Tag voraus),
-2. sie per `unix-char`-Hotplug in den Seat einhängen (in M0 verifiziert),
-3. sie am Host ausdrücklich vor libinput verstecken,
-4. verwaiste Geräte aufräumen.
-
-Dazu die aus M0 offene Frage: Sways libinput-Backend hängt an udev-Uevents, die
-den Container nicht erreichen. Für SDL half `SDL_JOYSTICK_DISABLE_UDEV=1` — ein
-Gegenstück dazu hat libinput nicht. Für Tastatur und Maus wird der
-Fake-udev-Shim daher vermutlich doch gebraucht.
+- **The devices are named identically in every seat.** "Keyboard passthrough"
+  carries nothing to tell seats apart. (Solved in M2 through `XDG_SEAT`.)
+- **They do not currently reach the KDE desktop**, because `libinput
+  list-devices` does not list them: udev gives them no `ID_INPUT` properties even
+  though `input_id` runs according to `udevadm test`. The cause is **unclear**,
+  and the design must not rely on it. If these devices did get classified on
+  another system or after an update, a seat's client would reach through into the
+  host desktop. The hide rule therefore has to cover them explicitly rather than
+  build on unexplained behaviour.
+- **Crashed Sunshine instances leave their devices behind.** Two complete sets
+  were observed side by side. The broker has to clean up orphans.

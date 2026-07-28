@@ -1,35 +1,34 @@
 #!/usr/bin/env python3
-"""broker.py — Prototyp des polyseat-Input-Brokers.
+"""broker.py - prototype of the Polyseat input broker.
 
-Sunshine legt seine virtuellen Eingabegeräte im Seat an, aber `uinput` ist
-nicht namespaced: der Kernel registriert sie global, der Host-udev legt die
-Knoten an, und ausgerechnet im Seat sind sie unsichtbar. Der Broker schließt
-diese Lücke. Für jedes neue Gerät drei Schritte, alle in M2 einzeln gemessen:
+Sunshine creates its virtual input devices inside the seat, but `uinput` is not
+namespaced: the kernel registers them globally, the host's udev creates the
+nodes, and in the very seat that created them they are invisible. The broker
+closes that gap. Three steps per device, each of them measured separately in M2:
 
-  1. **Knoten einhängen** — `incus config device add … unix-char`, zwingend
-     mit `mode=0666`. Ohne das kommt der Knoten als `root:root 0660` an und
-     sway scheitert mit "Failed to open device: Permission denied".
-  2. **udev-Datenbankeintrag schreiben** — libudev liest Eigenschaften nicht
-     aus `/sys`, sondern aus `/run/udev/data/`. Ohne `ID_INPUT=1` ignoriert
-     libinput das Gerät. Der Eintrag wird *erzeugt*, nicht vom Host kopiert:
-     die Ausblendregel des Hosts strippt dort genau diese Eigenschaft.
-  3. **Synthetisches uevent senden** — sonst bemerkt sway das Gerät erst beim
-     nächsten Neustart. Siehe `fakeudev.py`.
+  1. **Attach the node** with `incus config device add ... unix-char`, and
+     `mode=0666` is mandatory. Without it the node arrives as `root:root 0660`
+     and sway fails with "Failed to open device: Permission denied".
+  2. **Write a udev database entry.** libudev reads properties not from `/sys`
+     but from `/run/udev/data/`. Without `ID_INPUT=1` libinput ignores the
+     device. The entry is *synthesised*, not copied from the host: the host's
+     hide rule strips exactly that property.
+  3. **Send a synthetic uevent**, otherwise sway only notices the device on its
+     next restart. See `fakeudev.py`.
 
-Die Klassifikation (Tastatur/Maus/Pad) leitet der Broker aus den
-Fähigkeits-Bitmaps in `/sys` ab, nicht aus den udev-Eigenschaften des Hosts —
-denn die sind für Sunshines Geräte gar nicht gesetzt und für polyseat-Geräte
-absichtlich gestrippt.
+Classification (keyboard/mouse/pad) is derived from the capability bitmaps in
+`/sys`, not from the host's udev properties, because those are not set at all
+for Sunshine's devices and are deliberately stripped for Polyseat's own.
 
-**Zuordnung Gerät → Seat:** über den Seat-Tag im Gerätenamen. Sunshine liest
-`XDG_SEAT` und hängt den Seat-Namen an, sobald der Seat nicht "seat0" ist —
-aus "Keyboard passthrough" wird "Keyboard passthrough (seat1)". Ein Patch oder
-LD_PRELOAD-Shim, wie zunächst geplant, ist dafür nicht nötig; die Funktion
-gibt es bereits.
+**Device to seat assignment:** through the seat tag in the device name. Sunshine
+reads `XDG_SEAT` and appends the seat name as soon as the seat is not "seat0",
+turning "Keyboard passthrough" into "Keyboard passthrough (seat1)". A patch or
+LD_PRELOAD shim, as originally planned, is not needed; the feature already
+exists.
 
-Der Broker verlangt den Tag standardmäßig. `--tag ""` schaltet ihn ab und
-fällt auf reine Namensmuster zurück — das ist nur für einen einzelnen Seat
-vertretbar, bei mehreren wäre die Zuordnung Raten.
+The broker requires the tag by default. `--tag ""` turns the check off and falls
+back to plain name matching, which is only defensible for a single seat; with
+several it would be guesswork.
 
     ./broker.py --seat seat1
 """
@@ -44,13 +43,13 @@ import time
 
 SYS_INPUT = "/sys/class/input"
 
-# Fähigkeits-Bits, die für die Einordnung reichen.
+# Capability bits that suffice for classification.
 EV_KEY, EV_REL, EV_ABS = 0x01, 0x02, 0x03
 ABS_X, ABS_Y = 0x00, 0x01
 BTN_LEFT, BTN_GAMEPAD = 0x110, 0x130
 BTN_TOOL_PEN, BTN_TOUCH, BTN_TOOL_FINGER = 0x140, 0x14A, 0x145
 BTN_STYLUS = 0x14B
-KEY_Q = 16          # liegt im Block der Buchstabentasten
+KEY_Q = 16          # sits in the block of letter keys
 
 
 def read(path):
@@ -62,7 +61,7 @@ def read(path):
 
 
 def bitmap(path):
-    """Fähigkeits-Bitmaps stehen als Folge von Hex-Wörtern, höchstes zuerst."""
+    """Capability bitmaps are a sequence of hex words, highest first."""
     words = read(path).split()
     value = 0
     for i, word in enumerate(reversed(words)):
@@ -71,12 +70,12 @@ def bitmap(path):
 
 
 def classify(sysdev):
-    """Bildet nach, was udevs input_id tut.
+    """Reimplements what udev's input_id does.
 
-    Die Reihenfolge ist nicht beliebig: Sunshines "Mouse passthrough
-    (absolute)" meldet EV_ABS statt EV_REL. Wer nur auf EV_REL prüft, hält
-    es für eine Tastatur — sway ordnete es dann tatsächlich als solche ein
-    und der Zeiger blieb tot.
+    The order is not arbitrary: Sunshine's "Mouse passthrough (absolute)"
+    reports EV_ABS rather than EV_REL. Checking only for EV_REL makes it look
+    like a keyboard, and sway did indeed classify it as one, leaving the pointer
+    dead.
     """
     ev = bitmap(f"{sysdev}/capabilities/ev")
     key = bitmap(f"{sysdev}/capabilities/key")
@@ -97,7 +96,7 @@ def classify(sysdev):
         elif has(key, BTN_GAMEPAD):
             props.append("ID_INPUT_JOYSTICK=1")
         elif has(key, BTN_LEFT):
-            props.append("ID_INPUT_MOUSE=1")     # absoluter Zeiger
+            props.append("ID_INPUT_MOUSE=1")     # absolute pointer
             is_pointer = True
         elif has(key, BTN_TOOL_FINGER):
             props.append("ID_INPUT_TOUCHPAD=1")
@@ -113,18 +112,17 @@ def classify(sysdev):
     elif has(ev, EV_KEY) and not is_pointer and len(props) == 1:
         props.append("ID_INPUT_KEY=1")
 
-    # Doppelte vermeiden, Reihenfolge erhalten.
+    # Drop duplicates, keep the order.
     return list(dict.fromkeys(props))
 
 
 def scan(pattern, tag=None):
-    """Alle virtuellen Eventgeräte, deren Name auf das Muster passt.
+    """All virtual event devices whose name matches the pattern.
 
-    Der Filter auf `/devices/virtual/` ist die eigentliche Absicherung: nur
-    was per uinput oder uhid erzeugt wurde, darf überhaupt in einen Seat.
-    Ein reiner Namensfilter wäre gefährlich — "Controller" träfe auch den
-    ASRock-LED-Controller des Hosts, und der hat in keinem Seat etwas zu
-    suchen.
+    The filter on `/devices/virtual/` is the real safeguard: only what was
+    created through uinput or uhid may enter a seat at all. A pure name filter
+    would be dangerous, since "Controller" would also match the host's ASRock
+    LED controller, which has no business in any seat.
     """
     rx = re.compile(pattern, re.IGNORECASE)
     needle = f"({tag})" if tag else None
@@ -138,8 +136,8 @@ def scan(pattern, tag=None):
         name = read(f"{sysdev}/device/name")
         if not name or not rx.search(name):
             continue
-        # Der Seat-Tag entscheidet, wem das Gerät gehört. Ohne ihn würde ein
-        # zweiter Seat die Geräte des ersten mit einsammeln.
+        # The seat tag decides who owns the device. Without it a second seat
+        # would collect the first one's devices as well.
         if needle and needle not in name:
             continue
         dev = read(f"{sysdev}/dev")
@@ -158,11 +156,11 @@ def scan(pattern, tag=None):
 
 
 def state_path(seat):
-    """Der Broker muss über einen eigenen Neustart hinweg wissen, was er
-    eingehängt hat — sonst kann er beim Aufräumen kein `remove`-Ereignis
-    senden, weil das Gerät am Host längst weg ist und DEVPATH und Gerätenummer
-    nicht mehr auszulesen sind. Ohne dieses Ereignis behält sway tote
-    Eingabegeräte in seiner Liste."""
+    """The broker has to remember what it attached across a restart of its own.
+    Otherwise it cannot send a `remove` event while cleaning up, because the
+    device is long gone from the host and DEVPATH and device numbers can no
+    longer be read. Without that event sway keeps dead input devices in its
+    list."""
     base = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
     return f"{base}/polyseat-broker-{seat}.json"
 
@@ -193,19 +191,19 @@ def attach(seat, dev):
     print(f"  + {node:<10} {dev['name']}")
     print(f"    {' '.join(dev['props'])}")
 
-    # 1) Knoten einhängen. mode=0666 ist nicht optional.
+    # 1) Attach the node. mode=0666 is not optional.
     incus("config", "device", "add", seat, f"in-{node}", "unix-char",
           f"source=/dev/input/{node}", f"path=/dev/input/{node}",
           "mode=0666", "required=false", check=False)
 
-    # 2) Datenbankeintrag erzeugen.
+    # 2) Synthesise the database entry.
     entry = "I:1\n" + "".join(f"E:{p}\n" for p in dev["props"]) + "G:seat\nQ:seat\nV:1\n"
     subprocess.run(
         ["incus", "exec", seat, "--", "sh", "-c",
          f"mkdir -p /run/udev/data && cat > /run/udev/data/c{dev['major']}:{minor}"],
         input=entry, text=True, check=False)
 
-    # 3) Ereignis senden, damit laufende Clients es bemerken.
+    # 3) Send the event so running clients notice it.
     cmd = ["incus", "exec", seat, "--", "/root/fakeudev.py", "add", dev["syspath"],
            "--subsystem", "input", "--devname", f"input/{node}",
            "--major", str(dev["major"]), "--minor", str(minor)]
@@ -229,37 +227,36 @@ def detach(seat, node, dev):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--seat", required=True, help="Name des Incus-Containers")
+    ap.add_argument("--seat", required=True, help="name of the Incus container")
     ap.add_argument("--match",
                     default=r"passthrough|x-?box|dualsense|dualshock|nintendo|"
                             r"sunshine|gamepad|joystick|controller",
-                    help="regulärer Ausdruck auf den Gerätenamen. Greift nur "
-                         "auf virtuelle Geräte — Tastatur und Maus heißen bei "
-                         "Sunshine '… passthrough', Gamepads dagegen nach dem "
-                         "emulierten Modell (z.B. 'Xbox One')")
+                    help="regular expression on the device name. Only applies "
+                         "to virtual devices. Sunshine calls keyboard and mouse "
+                         "'... passthrough', while gamepads are named after the "
+                         "emulated model (e.g. 'Xbox One')")
     ap.add_argument("--tag", default=None,
-                    help="Seat-Tag, den der Gerätename tragen muss (Vorgabe: "
-                         "der Seat-Name). Sunshine hängt ihn an, wenn XDG_SEAT "
-                         "gesetzt ist. \"\" schaltet die Prüfung ab.")
+                    help="seat tag the device name must carry (default: the "
+                         "seat name). Sunshine appends it when XDG_SEAT is set. "
+                         "\"\" disables the check.")
     ap.add_argument("--interval", type=float, default=0.5)
     args = ap.parse_args()
 
     if os.geteuid() != 0 and not os.access("/run/udev/data", os.R_OK):
-        print("Hinweis: ohne root sind manche udev-Daten nicht lesbar.",
-              file=sys.stderr)
+        print("Note: without root some udev data is unreadable.", file=sys.stderr)
 
     tag = args.seat if args.tag is None else (args.tag or None)
     if tag:
-        print(f"Broker läuft für Seat '{args.seat}', verlangt Tag '({tag})'.")
+        print(f"Broker running for seat '{args.seat}', requiring tag '({tag})'.")
     else:
-        print(f"Broker läuft für Seat '{args.seat}' OHNE Tag-Prüfung — "
-              f"nur bei einem einzelnen Seat vertretbar.")
-    print("Strg-C beendet.\n")
+        print(f"Broker running for seat '{args.seat}' WITHOUT a tag check, "
+              f"which is only defensible for a single seat.")
+    print("Ctrl-C stops it.\n")
 
-    # Verwaiste Einhängungen aus früheren Läufen abräumen. Sunshine-Instanzen,
-    # die abstürzen oder neu starten, hinterlassen ihre Geräte am Host; die
-    # zugehörigen Einhängungen im Seat zeigen danach ins Leere und tauchen in
-    # sway weiter als tote Eingabegeräte auf.
+    # Clean up orphaned attachments from earlier runs. Sunshine instances that
+    # crash or restart leave their devices behind on the host; the matching
+    # attachments in the seat then point at nothing and keep showing up in sway
+    # as dead input devices.
     stale = 0
     remembered = load_state(args.seat)
     listing = incus("config", "device", "list", args.seat, check=False)
@@ -270,16 +267,16 @@ def main():
         sysdev = f"{SYS_INPUT}/{node}"
         name = read(f"{sysdev}/device/name")
         if not name or (tag and f"({tag})" not in name):
-            print(f"  ~ {node:<10} verwaist, wird entfernt")
+            print(f"  ~ {node:<10} orphaned, removing")
             if node in remembered:
                 detach(args.seat, node, remembered[node])
             else:
-                # Ohne Erinnerung bleibt nur die Einhängung; sway behält das
-                # tote Gerät dann bis zum nächsten Neustart in seiner Liste.
+                # Without a memory only the attachment can go; sway then keeps
+                # the dead device in its list until its next restart.
                 incus("config", "device", "remove", args.seat, dev_name, check=False)
             stale += 1
     if stale:
-        print(f"{stale} verwaiste Einhängung(en) entfernt.\n")
+        print(f"{stale} orphaned attachment(s) removed.\n")
 
     known = {}
     try:
@@ -296,7 +293,7 @@ def main():
             known = current
             time.sleep(args.interval)
     except KeyboardInterrupt:
-        print("\nBeendet. Eingehängte Geräte bleiben bestehen.")
+        print("\nStopped. Attached devices stay in place.")
 
 
 if __name__ == "__main__":

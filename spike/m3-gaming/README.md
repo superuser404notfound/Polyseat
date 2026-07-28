@@ -1,23 +1,24 @@
-# M3 — ein Seat, der wirklich spielt
+# M3 - a seat that actually plays
 
-**Ziel:** Steam, ein echtes Spiel, Ton und Gamepad im Seat.
+**Goal:** Steam, a real game, audio and a gamepad inside the seat.
 
-**Status: erreicht** (2026-07-28). Steam läuft im Seat, ein Spiel startet, Ton
-kommt beim Client an, der Controller wird erkannt.
+**Status: achieved** (2026-07-28). Steam runs in the seat, a game starts, audio
+arrives at the client, the controller is recognised.
 
-Dieser Schritt hat kein eigenes Skript — die Änderungen sind in
-[`../m1-seat/`](../m1-seat/) und [`../m2-input-broker/`](../m2-input-broker/)
-eingeflossen. Hier steht, was dabei gelernt wurde.
+This step has no scripts of its own; the changes went into
+[`../m1-seat/`](../m1-seat/) and [`../m2-input-broker/`](../m2-input-broker/).
+What follows is what was learned.
 
-## Steam installieren: drei Fallen
+## Installing Steam: three traps
 
-**1. Steam zieht sonst einen zehn Jahre alten Treiber herein.** Es hängt an den
-Virtualpaketen `vulkan-driver` und `lib32-vulkan-driver`, und pacman nimmt den
-erstbesten Anbieter — im CachyOS-Repo ist das `lib32-nvidia-390xx-utils`. Das
-Paket würde genau die injizierten Treiberdateien überschreiben.
+**1. Otherwise Steam pulls in a ten year old driver.** It depends on the virtual
+packages `vulkan-driver` and `lib32-vulkan-driver`, and pacman picks the first
+provider it finds, which in the CachyOS repository is
+`lib32-nvidia-390xx-utils`. That package would overwrite exactly the injected
+driver files.
 
-Richtig ist, diese Abhängigkeiten als erfüllt zu **erklären**, denn in einem
-Seat kommt der Treiber grundsätzlich vom Host:
+The right move is to **declare** those dependencies satisfied, because inside a
+seat the driver always comes from the host:
 
 ```
 pacman -S --assume-installed vulkan-driver \
@@ -26,89 +27,89 @@ pacman -S --assume-installed vulkan-driver \
           steam lib32-libglvnd lib32-vulkan-icd-loader
 ```
 
-**2. `lib32-libglvnd` verlangt hart `lib32-mesa`**, und dessen
-`/usr/lib32/libGLX_indirect.so.0` kollidiert mit einem Symlink der
-NVIDIA-Injektion. Das führt zur nächsten Falle.
+**2. `lib32-libglvnd` hard-depends on `lib32-mesa`**, whose
+`/usr/lib32/libGLX_indirect.so.0` collides with a symlink from the NVIDIA
+injection. Which leads to the next trap.
 
-**3. `nvidia.runtime` räumt seine Symlinks nicht wieder weg.** Beim ersten
-Start legt libnvidia-container echte Symlinks im Container-Dateisystem an. Ein
-späteres `nvidia.runtime=false` entfernt sie **nicht** — nur die
-bind-gemounteten Bibliotheken verschwinden.
+**3. `nvidia.runtime` does not clean up its symlinks.** On first start
+libnvidia-container creates real symlinks in the container filesystem. Setting
+`nvidia.runtime=false` later does **not** remove them; only the bind-mounted
+libraries disappear.
 
-Damit gilt der M1-Merksatz „erst Pakete, dann NVIDIA einschalten" **nur für
-einen frischen Container**. Bei einem bereits gestarteten Seat bleiben die
-Symlinks als Dateikonflikte liegen und müssen einzeln weggeräumt werden.
-Konsequenz für den Daemon: **Steam gehört in die Grundinstallation des
-Seat-Images**, nicht in eine Nachinstallation.
+So the M1 rule "packages first, then enable NVIDIA" only holds **for a fresh
+container**. On a seat that has already been started, the symlinks stay behind as
+file conflicts and have to be cleared one by one. Consequence for the daemon:
+**Steam belongs in the base installation of the seat image**, not in a later
+add-on install.
 
-## Steam braucht `DISPLAY`
+## Steam needs `DISPLAY`
 
-Steam ist eine X11-Anwendung. sway startet Xwayland erst beim ersten X-Client,
-und sways eigene Umgebung enthält bis dahin **kein** `DISPLAY`. Ohne die
-Variable erscheint nur ein Fenster „Unable to open a connection to X" — kein
-Fehler im Log, nur ein Dialog, den man im Stream sieht.
+Steam is an X11 application. sway only starts Xwayland when the first X client
+appears, and until then sway's own environment contains **no** `DISPLAY`.
+Without the variable all you get is a window saying "Unable to open a connection
+to X", with nothing in the log, only a dialog visible in the stream.
 
-Mit `DISPLAY=:0` startet Xwayland sauber nach. Die Variable gehört damit in die
-Session-Umgebung des Seats.
+With `DISPLAY=:0` Xwayland starts up cleanly. The variable therefore belongs in
+the seat's session environment.
 
-## Ton: der Sink gehört Sunshine
+## Audio: the sink belongs to Sunshine
 
-Der Null-Sink aus M1 war ein Fehler, mitgeschleppt aus einem Aufbau ohne
-Container. **Sunshine legt beim Streamen seinen eigenen Sink an**
-(`sink-sunshine-stereo`, dazu Surround-Varianten) und setzt ihn als Standard,
-damit Anwendungen dorthin spielen. Wer in der Konfiguration `audio_sink` auf
-einen anderen Sink setzt, lässt Sunshine den falschen abgreifen: das Spiel
-spielt in Sunshines Sink, übertragen wird **Stille**.
+The null sink from M1 was a mistake, carried over from a setup without
+containers. **When streaming, Sunshine creates its own sink**
+(`sink-sunshine-stereo`, plus surround variants) and makes it the default so
+that applications play into it. Setting `audio_sink` in the configuration to a
+different sink makes Sunshine capture the wrong one: the game plays into
+Sunshine's sink and what gets transmitted is **silence**.
 
-Im Log ist das eindeutig zu sehen und trotzdem leicht zu übersehen, weil alles
-gesund aussieht — Opus initialisiert, ein Sink-Input läuft, nur eben in einen
-anderen Sink als den abgegriffenen.
+The log shows this unambiguously and it is still easy to miss, because
+everything looks healthy: Opus initialised, a sink input running, just into a
+different sink than the one being captured.
 
-Im Container gibt es keine echte Soundkarte. Der Grund, aus dem man auf einem
-Host den Standard-Sink schützt, existiert hier also gar nicht. `audio_sink`
-bleibt leer, Sunshine regelt es selbst.
+There is no real sound card inside the container. The reason one protects the
+default sink on a host therefore does not exist here at all. `audio_sink` stays
+empty and Sunshine handles it itself.
 
-## Gamepad: `/dev/uhid` ist nicht optional
+## Gamepad: `/dev/uhid` is not optional
 
-Sunshine benutzt **inputtino** und legt Gamepads als **HID-Geräte über
-`/dev/uhid`** an, nicht über uinput. Wird uhid nicht durchgereicht, meldet
-Sunshine zwar „Gamepad 0 will be Xbox One controller", aber im Seat entsteht
-nie ein Gerät. Tastatur, Maus, Touch und Pen funktionieren dabei völlig normal
-— der Fehler sieht deshalb nach einem Gamepad-Problem des Clients aus.
+Sunshine uses **inputtino** and creates gamepads as **HID devices through
+`/dev/uhid`**, not through uinput. If uhid is not passed through, Sunshine
+happily logs "Gamepad 0 will be Xbox One controller" while no device ever
+appears inside the seat. Keyboard, mouse, touch and pen work perfectly
+throughout, which makes the failure look like a gamepad problem on the client
+side.
 
-Beide Geräte gehören in jeden Seat:
+Both devices belong in every seat:
 
 ```
 incus config device add SEAT uinput unix-char source=/dev/uinput mode=0666
 incus config device add SEAT uhid   unix-char source=/dev/uhid   mode=0666
 ```
 
-## Der Broker musste zweimal nachgebessert werden
+## The broker needed two fixes
 
-- **Das Namensmuster war zu eng.** `passthrough` trifft Tastatur und Maus, ein
-  Gamepad heißt aber nach dem emulierten Modell. Das Muster ist jetzt ein
-  regulärer Ausdruck.
-- **Und dadurch zu gefährlich:** Ein Muster mit „Controller" hätte auch den
-  ASRock-LED-Controller des Hosts erfasst. Der Broker fasst deshalb nur noch
-  Geräte unterhalb von `/devices/virtual/` an — nur was per uinput oder uhid
-  entstanden ist, darf überhaupt in einen Seat.
+- **The name pattern was too narrow.** `passthrough` matches keyboard and mouse,
+  but a gamepad is named after the emulated model. The pattern is now a regular
+  expression.
+- **And thereby too dangerous:** a pattern containing "Controller" would also
+  have matched the host's ASRock LED controller. The broker therefore only
+  touches devices below `/devices/virtual/`: only what was created through
+  uinput or uhid may enter a seat at all.
 
-## Ein Betriebsproblem, das den Daemon betrifft
+## An operational problem that concerns the daemon
 
-Beim Container-Neustart hat sich Incus verhakt: Der Container war tot — keine
-Prozesse, keine cgroup — aber Incus meldete weiter `RUNNING` und hing an einem
-nicht abbrechbaren „Stopping instance". Erst ein Neustart des Incus-Daemons
-löste es.
+During a container restart Incus got stuck: the container was dead, no
+processes, no cgroup, yet Incus kept reporting `RUNNING` and hung on a
+non-cancellable "Stopping instance". Only a restart of the Incus daemon resolved
+it.
 
-Der Verdacht liegt beim Broker-Prototyp, der im halben Sekundentakt
-`incus exec` aufruft und in den Stopp hineingelaufen sein dürfte. **Der Daemon
-darf nicht blind pollen**, sondern muss den Lebenszyklus des Containers kennen
-und während eines Stopps stillhalten.
+The suspicion falls on the broker prototype, which calls `incus exec` twice a
+second and probably ran into the stop. **The daemon must not poll blindly**; it
+has to know the container lifecycle and hold still during a stop.
 
-## Offen
+## Open
 
-- **Proton im Detail** — getestet wurde ein startendes Spiel, nicht Shader-
-  Kompilierung, Controller-Rumble oder Steam Overlay.
-- **Steam Input** benutzt neben SDL auch hidraw. Der Broker reicht bisher nur
-  `event*`-Knoten durch, keine `hidraw*`. Bisher hat nichts gefehlt, aber die
-  Lücke ist bekannt.
+- **Proton in detail.** What was tested is a game that starts, not shader
+  compilation, controller rumble or the Steam overlay.
+- **Steam Input** uses hidraw alongside SDL. The broker so far only passes
+  through `event*` nodes, no `hidraw*`. Nothing has been missing so far, but the
+  gap is known.

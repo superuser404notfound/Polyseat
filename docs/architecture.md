@@ -1,199 +1,200 @@
-# Architektur
+# Architecture
 
-Dieses Dokument hält fest, **was** gebaut wird und vor allem **warum so** — damit
-spätere Entscheidungen nicht gegen bereits bezahlte Erkenntnisse laufen.
+This document records **what** is being built and, more importantly, **why it is
+built this way** - so that later decisions do not run against insights that have
+already been paid for.
 
-## Randbedingungen
+## Constraints
 
-Aus denen sich fast alles Weitere ergibt:
+Almost everything else follows from these:
 
-- **Alle Spielenden sitzen an Moonlight-Clients**, niemand an der Konsole des
-  Hosts. Es gibt daher keine physischen Controller am Host, die zugeordnet
-  werden müssten — nur virtuelle Pads, die Sunshine im jeweiligen Seat anlegt.
-- **Der Host-Desktop (KDE/Wayland) läuft normal weiter** und darf durch keinen
-  Seat gestört werden.
-- **Feste Seats pro Person.** Kein dynamischer Pool: Anna hat ihren Seat, er hat
-  immer denselben Port, sie richtet Moonlight einmal ein.
-- **Seats laufen dauerhaft** (idle ≈ 400 MB). On-demand-Start ist ein späteres
-  Feature, kein Designzwang.
-- **SDR**, kein HDR. HDR ist auf Linux/wlroots/NVIDIA der teuerste Wunsch und
-  bringt für den Start nichts.
-- **N Seats**, nicht fest zwei. Realistisch begrenzt die Hardware auf 2–3
-  spielende Seats (siehe Kapazität).
+- **Everyone plays on a Moonlight client**, nobody sits at the host's console.
+  There are therefore no physical controllers on the host that would need
+  assigning - only the virtual pads Sunshine creates inside each seat.
+- **The host desktop (KDE/Wayland) keeps running normally** and must not be
+  disturbed by any seat.
+- **Fixed seats per person.** No dynamic pool: Anna has her seat, it always has
+  the same address, she sets up Moonlight once.
+- **Seats run permanently** (idle ≈ 400 MB). On-demand start is a later feature,
+  not a design constraint.
+- **SDR**, no HDR. On Linux/wlroots/NVIDIA, HDR is the most expensive wish on
+  the list and buys nothing for the start.
+- **N seats**, not a fixed two. Realistically the hardware caps this at 2-3
+  actively playing seats (see Capacity).
 
-## Warum Container — und warum Incus
+## Why containers - and why Incus
 
-Ein Seat braucht ein eigenes `$HOME` (Steam-Single-Instance-Lock, getrennte
-Konten), eigenes Audio, eigene Session. Ein eigener Unix-User pro Seat würde das
-lösen. Container lösen zusätzlich das, was ein User nicht löst: ein **privates,
-leeres `/dev/input`**. Isolation entsteht dann strukturell, statt über udev-Regeln
-gegen einen global sichtbaren Gerätebaum.
+A seat needs its own `$HOME` (Steam's single-instance lock, separate accounts),
+its own audio, its own session. One Unix user per seat would solve that.
+Containers additionally solve what a user does not: a **private, empty
+`/dev/input`**. Isolation then arises structurally instead of through udev rules
+fighting a globally visible device tree.
 
-Incus statt Podman oder systemd-nspawn, aus drei konkreten Gründen:
+Incus rather than Podman or systemd-nspawn, for three concrete reasons:
 
-1. **`unix-char` mit `required=false` unterstützt Hotplug in laufende Container.**
-   Genau das braucht der Input-Broker: Client verbindet sich → Pad entsteht →
-   Node muss in den *laufenden* Seat. Podman kann Devices nicht zu laufenden
-   Containern hinzufügen. Das allein entscheidet die Wahl.
-2. **`nvidia.runtime=true`** injiziert die Treiberbibliotheken des Hosts über
-   libnvidia-container. Auf einem Rolling Release ist das essenziell — sonst
-   driftet nach jedem `nvidia-utils`-Update der Container-Userspace gegen das
-   Host-Kernelmodul. Mit nspawn müsste man libnvidia-container nachbauen.
-3. **System-Container** bringen eigenes systemd, eigene User, eigenes PipeWire
-   mit. Ein Seat *ist* eine kleine Maschine, statt eine zu simulieren. Dazu
-   `limits.cpu` / `limits.memory` pro Seat und ein btrfs-Storage-Pool.
+1. **`unix-char` with `required=false` supports hotplug into running
+   containers.** That is exactly what the input broker needs: client connects →
+   pad appears → node must go into the *running* seat. Podman cannot add devices
+   to running containers. That alone decides it.
+2. **`nvidia.runtime=true`** injects the host's driver libraries via
+   libnvidia-container. On a rolling release this is essential - otherwise the
+   container userspace drifts against the host kernel module after every
+   `nvidia-utils` update. With nspawn you would have to rebuild
+   libnvidia-container by hand.
+3. **System containers** bring their own systemd, their own users, their own
+   PipeWire. A seat *is* a small machine instead of simulating one. On top of
+   that, `limits.cpu` / `limits.memory` per seat and a btrfs storage pool.
 
-VMs mit GPU-Passthrough scheiden aus: eine einzelne Consumer-GPU lässt sich
-nicht sinnvoll auf mehrere VMs aufteilen.
+VMs with GPU passthrough are out: a single consumer GPU cannot be meaningfully
+split across several VMs.
 
-## Was die Randbedingungen wegräumen
+## What the constraints eliminate
 
-Weil niemand am Host sitzt und niemand physische Pads einsteckt:
+Because nobody sits at the host and nobody plugs in physical pads:
 
-- **Kein Broker für physische Geräte.** Es gibt nur virtuelle Pads.
-- **Kein Audio-Passthrough.** PipeWire läuft vollständig im Container, der Ton
-  verlässt ihn nur als Stream. Kein `/dev/snd` im Container, keine Konflikte um
-  den Default-Sink, Host-Audio bleibt strukturell unberührt.
-- **Host-Peripherie ist unerreichbar**, weil sie nie in einen Container gemappt
-  wird.
+- **No broker for physical devices.** There are only virtual pads.
+- **No audio passthrough.** PipeWire runs entirely inside the container; sound
+  leaves it only as a stream. No `/dev/snd` in the container, no fights over the
+  default sink, host audio structurally untouched.
+- **Host peripherals are unreachable**, because they are never mapped into a
+  container.
 
-Übrig bleibt am Host genau ein Problem: die virtuellen Pads der Seats dürfen
-nicht auf dem KDE-Desktop auftauchen.
+That leaves exactly one problem on the host: the seats' virtual pads must not
+show up on the KDE desktop.
 
-## Die Eingabekette — das Kernrisiko
+## The input chain - the core risk
 
-`uinput` ist **nicht namespaced**. Ein Pad, das Sunshine in Seat 3 anlegt,
-registriert der Kernel global; der Host-udev legt den Node in der Host-devtmpfs
-an. Der Container hat ein minimales `/dev`, dort passiert also erstmal nichts —
-das ist die gewünschte Isolation, aber es heißt auch, dass der Node aktiv
-zurückgereicht werden muss.
+`uinput` is **not namespaced**. A pad that Sunshine creates in seat 3 is
+registered globally by the kernel; the host's udev creates the node in the host
+devtmpfs. The container has a minimal `/dev`, so nothing happens there at first
+- that is the isolation we want, but it also means the node has to be handed
+back actively.
 
-Die Kette hat zwei Hälften:
+The chain has two halves:
 
-**Hälfte 1 — Node in den richtigen Seat.**
+**Half 1 - get the node into the right seat.**
 
-1. **Seat-Tag im Gerätenamen.** Kein Eingriff nötig: Sunshine liest `XDG_SEAT`
-   und hängt den Seat-Namen selbst an, sobald der Seat nicht `seat0` ist —
-   aus "Keyboard passthrough" wird "Keyboard passthrough (seat1)".
-2. **Host-udev-Regel** matcht auf das Tag, macht das Gerät für KDE/libinput
-   unsichtbar und meldet es dem Broker.
-3. **Broker** fährt `incus config device add <seat> padN unix-char …` und beim
-   Trennen wieder `remove`.
+1. **Seat tag in the device name.** No patching required: Sunshine reads
+   `XDG_SEAT` and appends the seat name itself as soon as the seat is not
+   `seat0` - "Keyboard passthrough" becomes "Keyboard passthrough (seat1)".
+2. **Host udev rule** matches the tag, hides the device from KDE/libinput and
+   notifies the broker.
+3. **Broker** runs `incus config device add <seat> padN unix-char …` and
+   `remove` on disconnect.
 
-**Hälfte 2 — Enumeration im Container.** In Incus-Containern läuft kein
-funktionierendes udev. Der Node ist da, aber Steam und SDL *enumerieren*
-Gamepads über libudev, nicht durch Scannen von `/dev/input`. Auswege:
-`SDL_JOYSTICK_DISABLE_UDEV=1`, und/oder ein Fake-udev-Shim, der libudev-Aufrufe
-abfängt. Wolf (games-on-whales) hat für genau dieses Problem eine Komponente —
-das Konzept ist übernehmbar, auch ohne Wolf als Produkt zu nutzen.
+**Half 2 - enumeration inside the container.** Incus containers have no working
+udev. The node is there, but Steam and SDL *enumerate* gamepads through libudev
+rather than by scanning `/dev/input`. Ways out: `SDL_JOYSTICK_DISABLE_UDEV=1`,
+and/or a fake-udev shim that intercepts libudev calls. Wolf (games-on-whales)
+has a component for exactly this problem - the concept is reusable even without
+adopting Wolf as a product.
 
-**Deshalb ist das der allererste Spike.** Trägt Hälfte 2 nicht, kippt die
-Container-Architektur und wir landen bei einem Unix-User pro Seat.
+**This is why it is the very first spike.** If half 2 does not hold, the
+container architecture collapses and we end up with one Unix user per seat.
 
-### Ergebnis von M0 (2026-07-27): sie trägt
+### Result of M0 (2026-07-27): it holds
 
-Gemessen, nicht vermutet — Protokoll in [`spike/m0-input/README.md`](../spike/m0-input/README.md).
+Measured, not assumed - log in [`spike/m0-input/README.md`](../spike/m0-input/README.md).
 
-- Ein im Container erzeugtes Pad erscheint am Host, im Container dagegen
-  existiert `/dev/input` gar nicht. Die Isolation entsteht also tatsächlich
-  strukturell.
-- `unix-char`-Hotplug bringt den Knoten in den laufenden Container.
-- SDL erkennt das Pad dort als Controller.
-- Eine udev-Regel auf `ATTRS{name}=="polyseat:*"` hält die Pads zuverlässig
-  vom Host-Desktop fern.
+- A pad created inside the container appears on the host, while inside the
+  container `/dev/input` does not exist at all. The isolation really does arise
+  structurally.
+- `unix-char` hotplug gets the node into the running container.
+- SDL recognises the pad there as a controller.
+- A udev rule on `ATTRS{name}=="polyseat:*"` reliably keeps the pads off the
+  host desktop.
 
-**Eine Auflage:** Ein Pad, das *während* eines laufenden Prozesses eingehängt
-wird, bleibt unbemerkt — libudev enumeriert über `/sys` (im Container
-sichtbar), der udev-Monitor hängt aber an Netlink-Uevents (erreichen den
-Container nicht). Mit `SDL_JOYSTICK_DISABLE_UDEV=1` pollt SDL `/dev/input`
-direkt und bemerkt Hotplug zuverlässig. **Die Variable gehört damit in die
-Umgebung jedes Seats.** Ein Fake-udev-Shim wird vorerst nicht gebraucht — ob
-Steam mit seinem eigenen SDL und Steam Input genauso reagiert, ist die erste
-offene Frage von M1.
+**One condition:** a pad attached *while* a process is already running goes
+unnoticed - libudev enumerates via `/sys` (visible in the container), but the
+udev monitor hangs off netlink uevents (which never reach the container). With
+`SDL_JOYSTICK_DISABLE_UDEV=1` SDL polls `/dev/input` directly and notices
+hotplug reliably. **That variable therefore belongs in every seat's
+environment.** A fake-udev shim is not needed for SDL - whether Steam, with its
+own bundled SDL and Steam Input, behaves the same way is the first open question
+of M1.
 
-Sunshine legt Gamepads übrigens nicht über uinput an, sondern über
-**`/dev/uhid`** (via inputtino). Beide Geräte gehören also in jeden Seat —
-ohne uhid entstehen Tastatur und Maus normal, aber nie ein Pad.
+Note that Sunshine does not create gamepads through uinput but through
+**`/dev/uhid`** (via inputtino). Both devices therefore belong in every seat -
+without uhid, keyboard and mouse appear normally but a pad never does.
 
-## Aufbau
+## Layout
 
 ```
-┌─ Host: CachyOS, KDE-Desktop läuft normal weiter ─────────┐
+┌─ Host: CachyOS, KDE desktop keeps running ───────────────┐
 │                                                          │
-│  polyseatd  — Go, System-Service, privilegiert           │
-│   ├─ HTTP/JSON + WebSocket API (Unix-Socket, optional    │
-│   │    TCP mit Token-Auth für Zugriff vom Handy)         │
-│   ├─ Incus-Go-Client  → Seats anlegen/starten/limitieren │
-│   ├─ Input-Broker     → udev-Monitor, Pad → richtiger    │
-│   │                      Seat via unix-char-Hotplug      │
-│   ├─ Sunshine-Proxy   → Pairing/PIN aller Seats an einem │
-│   │                      Ort, Config-Generierung         │
-│   └─ Doctor           → Health-Checks, Selbstdiagnose    │
+│  polyseatd  - Go, system service, privileged             │
+│   ├─ HTTP/JSON + WebSocket API (unix socket, optionally  │
+│   │    TCP with token auth for access from a phone)      │
+│   ├─ Incus Go client  → create/start/limit seats         │
+│   ├─ Input broker     → udev monitor, pad → correct      │
+│   │                      seat via unix-char hotplug      │
+│   ├─ Sunshine proxy   → pairing/PIN for all seats in one │
+│   │                      place, config generation        │
+│   └─ Doctor           → health checks, self-diagnosis    │
 │                                                          │
-│  polyseat GUI — vom Daemon ausgeliefert                  │
+│  Polyseat GUI - served by the daemon                     │
 └──────────────────────────────────────────────────────────┘
-              │ Incus-API
+              │ Incus API
    ┌──────────┼──────────┬───────────┐
- seat:rooky  seat:anna  seat:gast   …
- (je: Sway headless + Sunshine + PipeWire + Steam)
+ seat:rooky  seat:anna  seat:guest  …
+ (each: headless Sway + Sunshine + PipeWire + Steam)
 ```
 
-Pro Seat: Sway headless (`WLR_BACKENDS=headless`, `LIBSEAT_BACKEND=noop`) als
-Session-Shell, weil Sunshine dort über `wlr-screencopy`/`export-dmabuf` capturen
-kann — KMS-Capture ist auf NVIDIA proprietär tot. Optional gamescope nested pro
-Spiel für Skalierung und FPS-Cap.
+Per seat: headless Sway (`WLR_BACKENDS=headless`, `LIBSEAT_BACKEND=noop`) as the
+session shell, because Sunshine can capture there via
+`wlr-screencopy`/`export-dmabuf` - KMS capture is dead on the proprietary NVIDIA
+driver. Optionally gamescope nested per game for scaling and FPS caps.
 
-## GUI statt CLI
+## GUI instead of CLI
 
-Das Herz ist ein **Daemon mit API**; die GUI ist ein Client davon. Web-UI, nicht
-nativ: Seats sollen vom Sofa oder vom Handy aus einrichtbar sein, Go ist stark
-bei HTTP und schwach bei nativen GUIs, und Sunshine selbst arbeitet genauso.
-Ein späteres Einpacken in ein natives Fenster (Wails) bleibt möglich, ohne die
-Codebasis zu spalten.
+The heart is a **daemon with an API**; the GUI is a client of it. A web UI, not
+a native one: seats should be configurable from the couch or from a phone, Go is
+strong at HTTP and weak at native GUIs, and Sunshine itself works the same way.
+Wrapping it in a native window later (Wails) stays possible without splitting
+the codebase.
 
-Das wichtigste UX-Ziel: **eine Oberfläche für alle Seats.** Ohne sie jongliert
-man N Sunshine-Web-UIs auf N Ports mit N Pairing-Dialogen.
+The most important UX goal: **one interface for all seats.** Without it you
+juggle N Sunshine web UIs on N ports with N pairing dialogs.
 
-Ein dünner CLI-Client (`status`, `doctor`) bleibt erhalten — als reiner
-API-Client für den Moment, in dem die GUI nicht startet. Diagnose, kein
-Bedienkonzept.
+A thin CLI client (`status`, `doctor`) stays - as a pure API client for the
+moment when the GUI will not start. Diagnostics, not a way to operate the thing.
 
-## Prinzip: Der Daemon besitzt die Konfiguration
+## Principle: the daemon owns the configuration
 
-Incus-Profile, Sunshine-Configs, udev-Regeln und systemd-Units sind **generierte
-Artefakte, niemals Eingaben**. Wer sie von Hand editiert, verliert die Änderung
-beim nächsten Schreiben — dafür ist der Zustand jederzeit erklärbar und
-reproduzierbar. Ohne diese Regel wird eine GUI-zentrierte Verwaltung
-unweigerlich inkonsistent.
+Incus profiles, Sunshine configs, udev rules and systemd units are **generated
+artifacts, never inputs**. Edit them by hand and you lose the change on the next
+write - in exchange, the state is always explainable and reproducible. Without
+this rule, GUI-centred management inevitably drifts out of sync.
 
-## Bibliotheks-Pool
+## Library pool
 
-Root ist btrfs. Statt OverlayFS: `/srv/steam-pool` als Subvolume, **pro Seat ein
-beschreibbarer Snapshot**. Copy-on-Write heißt, fünf Seats kosten einmal
-Speicher, und Steam sieht eine voll beschreibbare Bibliothek. `compatdata/` und
-`shadercache/` zeigen per Symlink auf Seat-privaten Speicher — sonst landen sie
-im Snapshot und fressen die Deduplizierung auf. Pool zentral pflegen, Seats
-periodisch neu snapshotten.
+Root is btrfs. Instead of OverlayFS: `/srv/steam-pool` as a subvolume, and **one
+writable snapshot per seat**. Copy-on-write means five seats cost storage once,
+and Steam sees a fully writable library. `compatdata/` and `shadercache/` are
+symlinked to seat-private storage - otherwise they land in the snapshot and eat
+the deduplication. Maintain the pool centrally, re-snapshot the seats
+periodically.
 
-Die Lizenzrealität bleibt: dasselbe Spiel gleichzeitig braucht zwei Kopien im
-jeweiligen Konto. Das löst keine Software.
+The licensing reality remains: the same game played simultaneously needs two
+copies in two accounts. No software solves that.
 
-## Kapazität
+## Capacity
 
-Referenzmaschine: RTX 4080 (16 GB), 24 Kerne, **31 GB RAM**, btrfs.
+Reference machine: RTX 4080 (16 GB), 24 cores, **31 GB RAM**, btrfs.
 
-RAM ist der Flaschenhals, nicht die GPU. Ein AAA-Seat will 8–16 GB — fünf
-gleichzeitig spielende Seats gehen damit nicht, realistisch sind 2–3 plus einige
-leichte. NVENC und CPU reichen locker; VRAM wird bei drei modernen Titeln knapp.
-Die Software wird N-fähig gebaut, die Hardware deckelt.
+RAM is the bottleneck, not the GPU. An AAA seat wants 8-16 GB - five
+simultaneously playing seats do not fit; realistically 2-3 plus a few light
+ones. NVENC and CPU have plenty of headroom; VRAM gets tight with three modern
+titles. The software is built for N, the hardware sets the cap.
 
-## Verworfene Alternativen
+## Rejected alternatives
 
-- **Wolf (games-on-whales) übernehmen.** Löst dasselbe Problem container-first
-  und spricht Moonlight direkt. Bewusst nicht genommen: eigener Stack gewollt,
-  Host-Desktop soll parallel weiterlaufen. Als Ideengeber (`inputtino`,
-  fake-udev) weiterhin relevant.
-- **Ein Unix-User pro Seat ohne Container.** Bleibt der Rückfallplan, falls die
-  Eingabekette in M0 scheitert.
-- **VM pro Seat.** Eine GPU, nicht teilbar.
-- **Ein User, mehrere Compositor-Instanzen.** Löst weder Steam-Lock noch Input.
+- **Adopting Wolf (games-on-whales).** Solves the same problem container-first
+  and speaks Moonlight directly. Deliberately not taken: we want our own stack,
+  and the host desktop must keep running alongside. Still relevant as a source
+  of ideas (`inputtino`, fake-udev).
+- **One Unix user per seat without containers.** Remains the fallback plan
+  should the input chain fail in M0.
+- **One VM per seat.** One GPU, not divisible.
+- **One user, several compositor instances.** Solves neither the Steam lock nor
+  input.

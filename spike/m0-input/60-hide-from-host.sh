@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
-# H4 — die Regel, die Seat-Pads vor dem KDE-Desktop versteckt.
-# Schreibt nichts selbst: druckt die Regel und den Root-Befehl.
+# H4 - the rule that hides seat pads from the KDE desktop.
+# Writes nothing itself: prints the rule and the root command.
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
-rule='# polyseat: virtuelle Pads der Seats gehören nicht auf den Host-Desktop.
-# ID_INPUT-Strip versteckt das Gerät vor allen libinput-Compositoren,
-# LIBINPUT_IGNORE_DEVICE zusätzlich vor libinput selbst.
+rule='# polyseat: the seats'"'"' virtual pads do not belong on the host desktop.
+# Stripping ID_INPUT hides the device from every libinput compositor,
+# LIBINPUT_IGNORE_DEVICE additionally hides it from libinput itself.
 SUBSYSTEM=="input", ATTRS{name}=="polyseat:*", \
   ENV{ID_INPUT}="", ENV{ID_INPUT_JOYSTICK}="", ENV{LIBINPUT_IGNORE_DEVICE}="1"'
 
-step "udev-Regel für /etc/udev/rules.d/70-polyseat-hide.rules"
+step "udev rule for /etc/udev/rules.d/70-polyseat-hide.rules"
 echo "$rule"
 
 cat <<EOF
 
-Installieren (root):
+Install it (as root):
 
   sudo tee /etc/udev/rules.d/70-polyseat-hide.rules >/dev/null <<'RULE'
 $rule
 RULE
   sudo udevadm control --reload
-  # Pad in 20-run-pad.sh einmal neu starten, damit die Regel greift.
+  # Restart the pad in 20-run-pad.sh once so the rule takes effect.
 
-Danach prüfen: das Pad darf in den KDE-Systemeinstellungen unter
-Gamecontroller nicht mehr auftauchen, in 30-observe-host.sh aber schon.
+Then verify: the pad must no longer appear in the KDE system settings under
+Game Controller, while 30-observe-host.sh still finds it.
 EOF

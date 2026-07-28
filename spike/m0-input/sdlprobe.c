@@ -1,12 +1,12 @@
-/* sdlprobe.c — zählt, was SDL an Gamepads sieht.
+/* sdlprobe.c - counts the gamepads SDL can see.
  *
- * Das ist der eigentliche Test von H6: der Geräteknoten kann im Container
- * vorhanden sein und trotzdem für Spiele unsichtbar bleiben, weil SDL über
- * libudev enumeriert und im Container kein udev läuft.
+ * This is the actual test for H6: the device node can be present inside the
+ * container and still be invisible to games, because SDL enumerates through
+ * libudev and no udev runs inside the container.
  *
  *   gcc -o sdlprobe sdlprobe.c $(pkg-config --cflags --libs sdl2)
  *
- * Exit 0 = mindestens ein Joystick erkannt, 2 = keiner, 1 = SDL-Fehler.
+ * Exit 0 = at least one joystick detected, 2 = none, 1 = SDL error.
  */
 
 #include <SDL2/SDL.h>
@@ -14,14 +14,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Beobachtungsmodus: meldet Gerätewechsel, solange er läuft. Damit wird
- * geprüft, ob ein Pad, das ERST NACH dem Programmstart in den Container
- * kommt, überhaupt bemerkt wird — Enumeration beim Start und Hotplug zur
- * Laufzeit sind zwei verschiedene Mechanismen. SDL horcht dafür auf
- * udev-Netlink-Uevents, und die erreichen einen Container normalerweise
- * nicht. Für Steam, das dauerhaft läuft, ist genau das der relevante Fall. */
+/* Watch mode: reports device changes for as long as it runs. This checks
+ * whether a pad that arrives in the container only AFTER program start is
+ * noticed at all - enumeration at startup and hotplug at runtime are two
+ * different mechanisms. SDL listens for udev netlink uevents to do the
+ * latter, and those normally never reach a container. For Steam, which runs
+ * permanently, that is exactly the relevant case. */
 static int watch(int seconds) {
-    printf("beobachte %d s ...\n", seconds);
+    printf("watching for %d s ...\n", seconds);
     fflush(stdout);
     Uint32 start = SDL_GetTicks();
     int added = 0;
@@ -30,28 +30,28 @@ static int watch(int seconds) {
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_JOYDEVICEADDED) {
                 const char *n = SDL_JoystickNameForIndex(ev.jdevice.which);
-                printf("  + hinzugefügt: index=%d  %s\n",
-                       ev.jdevice.which, n ? n : "(namenlos)");
+                printf("  + added: index=%d  %s\n",
+                       ev.jdevice.which, n ? n : "(unnamed)");
                 fflush(stdout);
                 added++;
             } else if (ev.type == SDL_JOYDEVICEREMOVED) {
-                printf("  - entfernt: id=%d\n", ev.jdevice.which);
+                printf("  - removed: id=%d\n", ev.jdevice.which);
                 fflush(stdout);
             }
         }
         SDL_Delay(100);
     }
-    printf("Ende. %d Gerät(e) währenddessen gemeldet.\n", added);
+    printf("Done. %d device(s) reported while watching.\n", added);
     return added;
 }
 
 int main(int argc, char **argv) {
     const char *disable_udev = SDL_getenv("SDL_JOYSTICK_DISABLE_UDEV");
     printf("SDL_JOYSTICK_DISABLE_UDEV = %s\n",
-           disable_udev ? disable_udev : "(nicht gesetzt)");
+           disable_udev ? disable_udev : "(not set)");
 
     if (SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
-        fprintf(stderr, "SDL_Init fehlgeschlagen: %s\n", SDL_GetError());
+        fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
 
@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
     }
 
     int n = SDL_NumJoysticks();
-    printf("SDL sieht %d Joystick(s)\n", n);
+    printf("SDL sees %d joystick(s)\n", n);
 
     for (int i = 0; i < n; i++) {
         const char *name = SDL_JoystickNameForIndex(i);
@@ -71,8 +71,8 @@ int main(int argc, char **argv) {
         char guid_str[64];
         SDL_JoystickGetGUIDString(guid, guid_str, sizeof guid_str);
         printf("  [%d] %-40s  gamecontroller=%s  guid=%s\n",
-               i, name ? name : "(namenlos)",
-               SDL_IsGameController(i) ? "ja" : "nein", guid_str);
+               i, name ? name : "(unnamed)",
+               SDL_IsGameController(i) ? "yes" : "no", guid_str);
     }
 
     SDL_Quit();

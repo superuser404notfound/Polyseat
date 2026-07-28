@@ -1,11 +1,12 @@
-# gemeinsame Definitionen für die M0-Skripte
-CT="${CT:-m0}"                     # Name des Incus-Containers
-SEAT="${SEAT:-m0}"                 # Seat-Tag im Gerätenamen
+# Shared definitions for the M0 scripts.
+CT="${CT:-m0}"                     # name of the Incus container
+SEAT="${SEAT:-m0}"                 # seat tag inside the device name
 PAD_NAME_PREFIX="polyseat:${SEAT}"
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-# Nach `usermod -aG incus-admin` fehlt die Gruppe der laufenden Session bis zur
-# nächsten Anmeldung. Statt daran zu erinnern: einmal unter der Gruppe neu starten.
+# After `usermod -aG incus-admin` the running session is still missing the
+# group until the next login. Rather than reminding people: re-exec once under
+# the group.
 if ! id -nG | tr ' ' '\n' | grep -qx incus-admin \
    && getent group incus-admin | grep -qw "$USER"; then
     exec sg incus-admin -c "$(printf '%q ' "$0" "$@")"

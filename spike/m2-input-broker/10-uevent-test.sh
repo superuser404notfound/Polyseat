@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Die Frage, die über den ganzen Broker-Entwurf entscheidet:
-# Erreicht ein per `incus config device add` eingehängtes Gerät den udev
-# des Containers als Ereignis?
+# The question that decides the whole broker design:
+# does a device attached through `incus config device add` reach the
+# container's udev as an event?
 #
-# Wenn ja, sehen libinput (also sway) und SDL das Gerät ohne jeden Kniff, und
-# der Fake-udev-Shim entfällt. Wenn nein, braucht sway einen Ersatzweg.
+# If it does, libinput (and therefore sway) and SDL see the device with no
+# tricks at all, and the fake-udev shim is unnecessary. If it does not, sway
+# needs a substitute path.
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
@@ -19,12 +20,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-step "udev-Monitor im Container starten"
+step "Starting the udev monitor inside the container"
 incus exec "$CT" -- sh -c \
     'nohup udevadm monitor --udev --kernel --subsystem-match=input > /root/uevents.log 2>&1 &'
 sleep 2
 
-step "Gerät auf dem Host erzeugen"
+step "Creating a device on the host"
 "$HERE/../m0-input/padgen.py" --seat uevent-test --quiet > /tmp/padgen-m2.log 2>&1 &
 sleep 3
 
@@ -33,30 +34,30 @@ for d in /sys/class/input/event*; do
     [[ -r "$d/device/name" ]] || continue
     [[ "$(<"$d/device/name")" == "$PADNAME"* ]] && node="${d##*/}"
 done
-[[ -n "$node" ]] || { bad "Gerät nicht am Host gefunden"; exit 1; }
-ok "Host-Knoten: /dev/input/$node"
+[[ -n "$node" ]] || { bad "device not found on the host"; exit 1; }
+ok "host node: /dev/input/$node"
 
-step "In den laufenden Seat einhängen"
+step "Attaching it to the running seat"
 incus config device add "$CT" "pad-$node" unix-char \
     source="/dev/input/$node" path="/dev/input/$node" required=false
 sleep 4
 
-step "Hat der Container ein Ereignis gesehen?"
+step "Did the container see an event?"
 events=$(incus exec "$CT" -- cat /root/uevents.log 2>/dev/null | grep -c "$node" || true)
 incus exec "$CT" -- cat /root/uevents.log 2>/dev/null | tail -20
 
 if (( events > 0 )); then
-    ok "JA — $events Ereignis(se) für $node. Kein Fake-udev nötig."
+    ok "YES: $events event(s) for $node. No fake-udev needed."
 else
-    bad "NEIN — kein Ereignis. sway/libinput bemerkt das Gerät nicht."
+    bad "NO: no event. sway/libinput will not notice the device."
 fi
 
-step "Kennt der udev des Containers das Gerät überhaupt?"
+step "Does the container's udev know the device at all?"
 incus exec "$CT" -- udevadm info -q property -n "/dev/input/$node" 2>&1 \
     | grep -E '^(DEVNAME|ID_INPUT|MAJOR)' | head -6 \
-    || warn "udevadm info kennt es nicht"
+    || warn "udevadm info does not know it"
 
-step "Sieht libinput im Container es?"
+step "Does libinput inside the container see it?"
 incus exec "$CT" -- sh -c 'command -v libinput >/dev/null || pacman -S --noconfirm --needed libinput >/dev/null 2>&1
     libinput list-devices 2>/dev/null | grep -A1 -i polyseat | head -6' \
-    || warn "libinput listet es nicht"
+    || warn "libinput does not list it"
