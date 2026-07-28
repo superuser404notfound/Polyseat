@@ -6,9 +6,10 @@ namespaced: the kernel registers them globally, the host's udev creates the
 nodes, and in the very seat that created them they are invisible. The broker
 closes that gap. Three steps per device, each of them measured separately in M2:
 
-  1. **Attach the node** with `incus config device add ... unix-char`, and
-     `mode=0666` is mandatory. Without it the node arrives as `root:root 0660`
-     and sway fails with "Failed to open device: Permission denied".
+  1. **Attach the node** to the container, world readable and writable.
+     `mode=0666` is mandatory: without it the node arrives as `root:root 0660`
+     and sway fails with "Failed to open device: Permission denied". How the
+     node gets there is the backend's business, see ContainerBackend.
   2. **Write a udev database entry.** libudev reads properties not from `/sys`
      but from `/run/udev/data/`. Without `ID_INPUT=1` libinput ignores the
      device. The entry is *synthesised*, not copied from the host: the host's
@@ -181,53 +182,140 @@ def save_state(seat, devices):
         pass
 
 
-def incus(*args, check=True):
-    return subprocess.run(["incus", *args], capture_output=True, text=True,
-                          check=check)
+# --------------------------------------------------------- container backend
+#
+# Everything runtime specific lives behind this seam. The broker itself never
+# mentions Incus; it only needs four operations from a backend. Swapping in a
+# different container runtime, or replacing the whole mechanism with something
+# like vuinputd, is then one class rather than a rewrite.
+#
+# Only IncusBackend exists and only it has been exercised, so the seam is a
+# claim about the shape of the problem, not a tested abstraction over several
+# runtimes. What a second backend would have to solve is written down at the
+# bottom of this section.
 
 
-def attach(seat, dev):
+class ContainerBackend:
+    """Contract every backend has to fulfil.
+
+    attach_node   make the host device node available inside the container,
+                  world readable and writable, without restarting it
+    detach_node   remove it again
+    attached_nodes  which nodes this backend currently has attached, so
+                  orphans from an earlier run can be found
+    run           run a command inside the container as root, optionally
+                  feeding it stdin
+    """
+
+    def attach_node(self, container, node, major, minor):
+        raise NotImplementedError
+
+    def detach_node(self, container, node):
+        raise NotImplementedError
+
+    def attached_nodes(self, container):
+        raise NotImplementedError
+
+    def run(self, container, argv, stdin=None):
+        raise NotImplementedError
+
+
+class IncusBackend(ContainerBackend):
+    """Incus, which supports device hotplug into running containers.
+
+    That was the deciding property when the runtime was chosen: Podman and
+    Docker cannot add devices to a running container, so a backend for those
+    would have to create the node itself with mknod inside the container, which
+    needs CAP_MKNOD and a matching device cgroup rule. See the note below.
+    """
+
+    PREFIX = "in-"      # marks the devices this broker owns
+
+    def _incus(self, *args, check=True):
+        return subprocess.run(["incus", *args], capture_output=True, text=True,
+                              check=check)
+
+    def attach_node(self, container, node, major, minor):
+        # mode=0666 is not optional: without it the node arrives as
+        # root:root 0660 and the compositor cannot open it.
+        self._incus("config", "device", "add", container, f"{self.PREFIX}{node}",
+                    "unix-char", f"source=/dev/input/{node}",
+                    f"path=/dev/input/{node}", "mode=0666", "required=false",
+                    check=False)
+
+    def detach_node(self, container, node):
+        self._incus("config", "device", "remove", container,
+                    f"{self.PREFIX}{node}", check=False)
+
+    def attached_nodes(self, container):
+        listing = self._incus("config", "device", "list", container, check=False)
+        return [name[len(self.PREFIX):] for name in listing.stdout.split()
+                if name.startswith(self.PREFIX)]
+
+    def run(self, container, argv, stdin=None):
+        return subprocess.run(["incus", "exec", container, "--", *argv],
+                              input=stdin, text=True, capture_output=True,
+                              check=False)
+
+
+# A second backend, for a runtime without device hotplug, would have to:
+#
+#   attach_node     enter the container's mount namespace and mknod the node
+#                   itself, which needs CAP_MKNOD and a device cgroup rule
+#                   allowing that major:minor
+#   detach_node     unlink it again
+#   attached_nodes  keep its own record, since there is no runtime to ask
+#   run             nsenter into the container's namespaces
+#
+# The remaining two steps, the udev database entry and the synthetic uevent,
+# are backend independent: they only need `run`.
+
+
+# ------------------------------------------------------------------ the steps
+
+# Where fakeudev.py is expected inside the container. It has to run there
+# rather than on the host, because libudev checks the sender's credentials
+# after translating them into the container's user namespace.
+FAKEUDEV = "/root/fakeudev.py"
+
+
+def attach(backend, seat, dev):
     node, minor = dev["node"], dev["minor"]
     print(f"  + {node:<10} {dev['name']}")
     print(f"    {' '.join(dev['props'])}")
 
-    # 1) Attach the node. mode=0666 is not optional.
-    incus("config", "device", "add", seat, f"in-{node}", "unix-char",
-          f"source=/dev/input/{node}", f"path=/dev/input/{node}",
-          "mode=0666", "required=false", check=False)
+    # 1) Make the node available inside the container.
+    backend.attach_node(seat, node, dev["major"], minor)
 
-    # 2) Synthesise the database entry.
+    # 2) Synthesise the udev database entry. libudev reads properties from
+    #    there, not from /sys, and without ID_INPUT libinput ignores the device.
     entry = "I:1\n" + "".join(f"E:{p}\n" for p in dev["props"]) + "G:seat\nQ:seat\nV:1\n"
-    subprocess.run(
-        ["incus", "exec", seat, "--", "sh", "-c",
-         f"mkdir -p /run/udev/data && cat > /run/udev/data/c{dev['major']}:{minor}"],
-        input=entry, text=True, check=False)
+    backend.run(seat, ["sh", "-c",
+                       f"mkdir -p /run/udev/data && cat > /run/udev/data/c{dev['major']}:{minor}"],
+                stdin=entry)
 
-    # 3) Send the event so running clients notice it.
-    cmd = ["incus", "exec", seat, "--", "/root/fakeudev.py", "add", dev["syspath"],
-           "--subsystem", "input", "--devname", f"input/{node}",
-           "--major", str(dev["major"]), "--minor", str(minor)]
+    # 3) Send the event, so that clients already running notice the device.
+    argv = [FAKEUDEV, "add", dev["syspath"], "--subsystem", "input",
+            "--devname", f"input/{node}",
+            "--major", str(dev["major"]), "--minor", str(minor)]
     for p in dev["props"]:
-        cmd += ["--prop", p]
-    subprocess.run(cmd, capture_output=True, check=False)
+        argv += ["--prop", p]
+    backend.run(seat, argv)
 
 
-def detach(seat, node, dev):
+def detach(backend, seat, node, dev):
     print(f"  - {node:<10} {dev['name']}")
-    cmd = ["incus", "exec", seat, "--", "/root/fakeudev.py", "remove",
-           dev["syspath"], "--subsystem", "input", "--devname", f"input/{node}",
-           "--major", str(dev["major"]), "--minor", str(dev["minor"])]
-    subprocess.run(cmd, capture_output=True, check=False)
-    incus("config", "device", "remove", seat, f"in-{node}", check=False)
-    subprocess.run(
-        ["incus", "exec", seat, "--", "rm", "-f",
-         f"/run/udev/data/c{dev['major']}:{dev['minor']}"], check=False,
-        capture_output=True)
+    # Event first, while the node still exists inside the container.
+    backend.run(seat, [FAKEUDEV, "remove", dev["syspath"], "--subsystem", "input",
+                       "--devname", f"input/{node}",
+                       "--major", str(dev["major"]), "--minor", str(dev["minor"])])
+    backend.detach_node(seat, node)
+    backend.run(seat, ["rm", "-f", f"/run/udev/data/c{dev['major']}:{dev['minor']}"])
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--seat", required=True, help="name of the Incus container")
+    ap.add_argument("--seat", required=True, help="name of the container")
     ap.add_argument("--match",
                     default=r"passthrough|x-?box|dualsense|dualshock|nintendo|"
                             r"sunshine|gamepad|joystick|controller",
@@ -241,6 +329,8 @@ def main():
                          "\"\" disables the check.")
     ap.add_argument("--interval", type=float, default=0.5)
     args = ap.parse_args()
+
+    backend = IncusBackend()
 
     if os.geteuid() != 0 and not os.access("/run/udev/data", os.R_OK):
         print("Note: without root some udev data is unreadable.", file=sys.stderr)
@@ -259,21 +349,17 @@ def main():
     # as dead input devices.
     stale = 0
     remembered = load_state(args.seat)
-    listing = incus("config", "device", "list", args.seat, check=False)
-    for dev_name in listing.stdout.split():
-        if not dev_name.startswith("in-"):
-            continue
-        node = dev_name[3:]
+    for node in backend.attached_nodes(args.seat):
         sysdev = f"{SYS_INPUT}/{node}"
         name = read(f"{sysdev}/device/name")
         if not name or (tag and f"({tag})" not in name):
             print(f"  ~ {node:<10} orphaned, removing")
             if node in remembered:
-                detach(args.seat, node, remembered[node])
+                detach(backend, args.seat, node, remembered[node])
             else:
                 # Without a memory only the attachment can go; sway then keeps
                 # the dead device in its list until its next restart.
-                incus("config", "device", "remove", args.seat, dev_name, check=False)
+                backend.detach_node(args.seat, node)
             stale += 1
     if stale:
         print(f"{stale} orphaned attachment(s) removed.\n")
@@ -284,10 +370,10 @@ def main():
             current = scan(args.match, tag)
             for node, dev in current.items():
                 if node not in known:
-                    attach(args.seat, dev)
+                    attach(backend, args.seat, dev)
             for node, dev in list(known.items()):
                 if node not in current:
-                    detach(args.seat, node, dev)
+                    detach(backend, args.seat, node, dev)
             if current != known:
                 save_state(args.seat, current)
             known = current

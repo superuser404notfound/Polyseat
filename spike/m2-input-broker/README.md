@@ -109,6 +109,34 @@ and the blocker for multiple seats disappeared before it ever became one.
 The lesson: **check whether the feature already exists before patching.** Half a
 day of shim tinkering would have been for nothing.
 
+## The container backend is a seam
+
+Everything runtime specific sits behind `ContainerBackend`, four operations:
+
+```
+attach_node      make the host node available inside the container, 0666,
+                 without restarting it
+detach_node      remove it again
+attached_nodes   what this broker currently has attached, so orphans from an
+                 earlier run can be found
+run              run a command inside the container as root, optionally with
+                 stdin
+```
+
+The broker itself no longer mentions Incus anywhere. Steps two and three, the
+udev database entry and the synthetic uevent, are backend independent: they only
+need `run`.
+
+The point is not elegance. If vuinputd grows uhid support, or if a runtime other
+than Incus becomes interesting, the change is one class rather than a rewrite.
+
+**Only `IncusBackend` exists and only it has been exercised**, so this is a claim
+about the shape of the problem, not a tested abstraction over several runtimes.
+A backend for a runtime without device hotplug, meaning Docker or Podman, would
+have to create the node itself with `mknod` inside the container, which needs
+`CAP_MKNOD` and a matching device cgroup rule. That is written down in the code
+next to the interface.
+
 ## Open
 
 - **The prototype polls** `/sys` twice a second. The daemon should hang off the
