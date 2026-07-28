@@ -25,6 +25,8 @@ The logs of each step live in [`spike/`](spike/) and record what works, what
 does not, and why.
 
 Architecture and the reasoning behind it: [`docs/architecture.md`](docs/architecture.md).
+What the isolation actually guarantees, measured rather than assumed:
+[`docs/security.md`](docs/security.md).
 
 ## Roadmap
 
