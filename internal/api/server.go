@@ -18,6 +18,7 @@ import (
 	"github.com/superuser404notfound/Polyseat/internal/auth"
 	"github.com/superuser404notfound/Polyseat/internal/config"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
+	"github.com/superuser404notfound/Polyseat/internal/sunshine"
 	"github.com/superuser404notfound/Polyseat/internal/web"
 )
 
@@ -48,6 +49,10 @@ func New(manager *seat.Manager, credentials *auth.Store, logger *slog.Logger) ht
 	guarded.HandleFunc("PATCH /api/seats/{name}", s.updateSeat)
 	guarded.HandleFunc("DELETE /api/seats/{name}", s.deleteSeat)
 	guarded.HandleFunc("GET /api/seats/{name}/log", s.seatLog)
+	guarded.HandleFunc("GET /api/seats/{name}/clients", s.pairedClients)
+	guarded.HandleFunc("GET /api/seats/{name}/sunshine", s.sunshineAccess)
+	guarded.HandleFunc("POST /api/seats/{name}/pair", s.pair)
+	guarded.HandleFunc("POST /api/seats/{name}/unpair", s.unpair)
 	guarded.HandleFunc("POST /api/seats/{name}/{action}", s.seatAction)
 
 	mux.Handle("/api/", s.requireSession(guarded))
@@ -434,6 +439,91 @@ func (s *Server) seatLog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"lines": s.manager.Log(r.PathValue("name")),
 	})
+}
+
+// ------------------------------------------------------------------ pairing
+
+func (s *Server) pairedClients(w http.ResponseWriter, r *http.Request) {
+	devices, err := s.manager.PairedDevices(r.Context(), r.PathValue("name"))
+	if err != nil {
+		fail(w, http.StatusBadGateway, err)
+
+		return
+	}
+
+	if devices == nil {
+		devices = []sunshine.Device{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"devices": devices})
+}
+
+// sunshineAccess hands out a seat's own Sunshine login.
+//
+// Its own endpoint rather than a field in the state, so a password is fetched
+// when somebody asks for it instead of travelling with every refresh the
+// interface makes.
+func (s *Server) sunshineAccess(w http.ResponseWriter, r *http.Request) {
+	access, err := s.manager.SunshineCredentials(r.PathValue("name"))
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, access)
+}
+
+type pairRequest struct {
+	Pin  string `json:"pin"`
+	Name string `json:"name"`
+}
+
+func (s *Server) pair(w http.ResponseWriter, r *http.Request) {
+	var req pairRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if req.Pin == "" {
+		fail(w, http.StatusBadRequest, errors.New("Moonlight shows a PIN, it goes here"))
+
+		return
+	}
+
+	if req.Name == "" {
+		req.Name = "device"
+	}
+
+	if err := s.manager.Pair(r.Context(), r.PathValue("name"), req.Pin, req.Name); err != nil {
+		fail(w, http.StatusBadGateway, err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) unpair(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UUID string `json:"uuid"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if err := s.manager.Unpair(r.Context(), r.PathValue("name"), req.UUID); err != nil {
+		fail(w, http.StatusBadGateway, err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) seatAction(w http.ResponseWriter, r *http.Request) {

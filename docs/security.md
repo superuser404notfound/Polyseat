@@ -92,6 +92,19 @@ The static page is served without a session on purpose. It is the same markup
 for everybody and useless without the API behind it, and serving it openly is
 what lets the page render a login form at all.
 
+**Each seat's Sunshine login belongs to the daemon.** It generates one while
+provisioning and keeps it in `/var/lib/polyseat/secrets/`, `0600` and root only.
+Deliberately not part of the seat definition, because that is what the interface
+reads on every refresh and a password has no business travelling with it; it is
+fetched from its own endpoint when somebody asks to see it.
+
+The daemon reaches Sunshine over the Incus bridge with **certificate
+verification off**. Sunshine serves a certificate it generated for itself, so
+there is nothing to verify against. What makes that acceptable is the path
+rather than the certificate: the connection runs from the host to a container of
+its own over a local bridge, and anything positioned to intercept it is already
+root on this machine.
+
 ## What is deliberately accepted
 
 ### Passwordless sudo for the desktop user

@@ -28,10 +28,9 @@ older recipe.
 Confirmed on real hardware on 2026-07-28. The logs of each step live in
 [`spike/`](spike/) and record what works, what does not, and why.
 
-**Not done yet.** Pairing still happens in each seat's own Sunshine interface,
-one per seat, which is exactly the juggling the project set out to remove. Named
-in [`docs/architecture.md`](docs/architecture.md) rather than left to be
-discovered.
+Pairing happens here too, for every seat, rather than in one Sunshine page per
+seat on a port of its own. The daemon owns each seat's Sunshine login and talks
+to it on your behalf.
 
 Architecture and the reasoning behind it: [`docs/architecture.md`](docs/architecture.md).
 What the isolation actually guarantees, measured rather than assumed:
@@ -62,8 +61,12 @@ journalctl -u polyseatd | grep password
 Sign in, change it under *Account*, then add a seat and press provision. The
 daemon downloads the image, installs the packages, repairs the NVIDIA userspace
 that the driver injection leaves incomplete, generates the Sunshine
-configuration and starts the session. Pairing with Moonlight happens in the
-seat's own Sunshine interface, which the seat card links to.
+configuration and starts the session.
+
+**Pairing a device** happens under *Devices and pairing* on the seat's card.
+Point Moonlight at the seat, type the PIN it shows into that field, done. The
+same panel lists what is already paired and can unpair it, and shows the seat's
+own Sunshine login for when you want to go there directly.
 
 It answers on the whole network, so seats can be managed from the same phone
 that runs Moonlight. The certificate is self signed, so the browser asks once,

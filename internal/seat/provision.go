@@ -28,7 +28,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 1
+const Generation = 2
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -47,6 +47,12 @@ type Provisioner struct {
 	Uplink string
 	Image  string
 	Log    Logger
+
+	// Secrets are the credentials to apply inside the seat. Prepared by the
+	// caller, because they have to survive a rebuild: a seat whose container
+	// is recreated has to come back with the same Sunshine password, or every
+	// device paired with it would have to be paired again.
+	Secrets Secrets
 
 	uid int64 // the player's uid inside the container, learned during the run
 }
@@ -78,6 +84,7 @@ func Steps() []Step {
 		{"gpu", (*Provisioner).stepGPU},
 		{"nvidia userspace", (*Provisioner).stepNvidiaUserspace},
 		{"session", (*Provisioner).stepSession},
+		{"sunshine credentials", (*Provisioner).stepCredentials},
 	}
 }
 
@@ -734,6 +741,33 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 	} else if code != 0 {
 		p.Log("! avahi could not be started, Moonlight will need the address typed in")
 	}
+
+	return nil
+}
+
+// stepCredentials hands Sunshine the login the daemon chose for it.
+//
+// The daemon owns these rather than asking somebody to type them in, for the
+// same reason it owns everything else generated here: it needs them itself.
+// Pairing a device from one interface instead of one per seat means the daemon
+// talking to each seat's Sunshine on the user's behalf, and it can only do that
+// if it knows how to log in. The interface shows the password, so the seat's
+// own Sunshine page stays reachable by hand.
+func (p *Provisioner) stepCredentials(ctx context.Context) error {
+	if p.Secrets.SunshineUser == "" || p.Secrets.SunshinePassword == "" {
+		return fmt.Errorf("no Sunshine credentials were prepared for this seat")
+	}
+
+	// Run as the player with HOME set: sunshine writes the credentials next to
+	// its configuration, and as root it would write them into the wrong home
+	// and leave the seat unable to read its own login.
+	_, err := p.run(ctx, "sudo", "-u", Player, "env", "HOME=/home/"+Player,
+		"sunshine", "--creds", p.Secrets.SunshineUser, p.Secrets.SunshinePassword)
+	if err != nil {
+		return err
+	}
+
+	p.Log("Sunshine login set to %s", p.Secrets.SunshineUser)
 
 	return nil
 }

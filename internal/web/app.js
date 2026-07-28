@@ -8,6 +8,7 @@ const el = (id) => document.getElementById(id);
 
 let state = null;
 let openLogs = new Set();
+let openPairing = new Set();
 let stream = null;
 
 // A page that renders nothing is worse than one that says what broke. Without
@@ -125,9 +126,180 @@ function card(seat) {
   status.textContent = seat.busy || seat.state;
 
   head.append(title, name, spacer, status);
-  node.append(head, facts(seat), actions(seat), logPanel(seat));
+  node.append(head, facts(seat), actions(seat), pairingPanel(seat), logPanel(seat));
 
   return node;
+}
+
+// Pairing, in one place instead of one Sunshine page per seat.
+//
+// Loaded when the panel is opened rather than with the rest of the state: each
+// of these is a call into that seat's Sunshine, and doing three of them every
+// time anything changes would be rude to something that is busy encoding video.
+function pairingPanel(seat) {
+  const details = document.createElement("details");
+  details.className = "log";
+  details.open = openPairing.has(seat.name);
+
+  const summary = document.createElement("summary");
+  summary.textContent = "Devices and pairing";
+
+  const body = document.createElement("div");
+  body.className = "pairing";
+
+  details.append(summary, body);
+
+  details.ontoggle = () => {
+    if (details.open) {
+      openPairing.add(seat.name);
+      loadPairing(seat, body);
+    } else {
+      openPairing.delete(seat.name);
+    }
+  };
+
+  if (details.open) loadPairing(seat, body);
+
+  return details;
+}
+
+async function loadPairing(seat, body) {
+  body.replaceChildren(note("loading"));
+
+  if (seat.state !== "running") {
+    body.replaceChildren(
+      note("The seat has to be running before a device can be paired with it."),
+    );
+    return;
+  }
+
+  try {
+    const [clients, access] = await Promise.all([
+      api("GET", `/api/seats/${seat.name}/clients`),
+      api("GET", `/api/seats/${seat.name}/sunshine`),
+    ]);
+
+    body.replaceChildren(
+      deviceList(seat, clients.devices, body),
+      pairForm(seat, body),
+      sunshineAccess(access),
+    );
+  } catch (err) {
+    if (err.unauthorized) {
+      showLogin();
+      return;
+    }
+
+    body.replaceChildren(note(err.message));
+  }
+}
+
+function note(text) {
+  const p = document.createElement("p");
+  p.className = "note";
+  p.textContent = text;
+  return p;
+}
+
+function deviceList(seat, devices, body) {
+  const wrap = document.createElement("div");
+
+  if (!devices || devices.length === 0) {
+    wrap.append(note("No device is paired with this seat yet."));
+    return wrap;
+  }
+
+  const list = document.createElement("ul");
+  list.className = "devices";
+
+  devices.forEach((device) => {
+    const item = document.createElement("li");
+
+    const name = document.createElement("span");
+    name.textContent = device.name || "unnamed";
+
+    const remove = document.createElement("button");
+    remove.textContent = "Unpair";
+    remove.className = "danger";
+    remove.onclick = () =>
+      run(async () => {
+        await api("POST", `/api/seats/${seat.name}/unpair`, { uuid: device.uuid });
+        await loadPairing(seat, body);
+      });
+
+    item.append(name, remove);
+    list.append(item);
+  });
+
+  wrap.append(list);
+
+  return wrap;
+}
+
+function pairForm(seat, body) {
+  const form = document.createElement("form");
+  form.className = "pair";
+
+  const pin = document.createElement("input");
+  pin.placeholder = "PIN";
+  pin.inputMode = "numeric";
+  pin.autocomplete = "off";
+  pin.required = true;
+
+  const label = document.createElement("input");
+  label.placeholder = "Name of the device";
+  label.autocomplete = "off";
+
+  const submit = document.createElement("button");
+  submit.className = "primary";
+  submit.textContent = "Pair";
+
+  form.append(pin, label, submit);
+
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+
+    run(async () => {
+      try {
+        await api("POST", `/api/seats/${seat.name}/pair`, {
+          pin: pin.value.trim(),
+          name: label.value.trim(),
+        });
+        await loadPairing(seat, body);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+  };
+
+  return form;
+}
+
+function sunshineAccess(access) {
+  const wrap = document.createElement("p");
+  wrap.className = "note";
+
+  wrap.append("Moonlight shows the PIN. This seat's own Sunshine page is at ");
+
+  if (access.url) {
+    const link = document.createElement("a");
+    link.href = access.url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = access.url;
+    wrap.append(link);
+  } else {
+    wrap.append("its LAN address");
+  }
+
+  wrap.append(", sign in there with ");
+
+  const creds = document.createElement("code");
+  creds.textContent = `${access.username} / ${access.password}`;
+  wrap.append(creds, ".");
+
+  return wrap;
 }
 
 function facts(seat) {

@@ -186,6 +186,64 @@ pre.log {
   word-break: break-word;
 }
 
+/* ---------------------------------------------------------------- pairing */
+
+.pairing { margin-top: 0.7rem; }
+
+.note {
+  margin: 0 0 0.7rem;
+  font-size: 0.83rem;
+  color: var(--dim);
+  line-height: 1.5;
+}
+
+.note code {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  padding: 0.05rem 0.35rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  word-break: break-all;
+}
+
+ul.devices {
+  list-style: none;
+  margin: 0 0 0.8rem;
+  padding: 0;
+}
+
+ul.devices li {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.88rem;
+}
+
+ul.devices li span { flex: 1; font-family: var(--mono); font-size: 0.82rem; }
+
+form.pair {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.8rem;
+}
+
+form.pair input {
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.88rem;
+}
+
+form.pair input:first-child { width: 6rem; font-family: var(--mono); }
+form.pair input:nth-child(2) { flex: 1; min-width: 9rem; }
+
 /* --------------------------------------------------------------- warnings */
 
 .warning {

@@ -161,10 +161,17 @@ they are worth is in [`security.md`](security.md).
 The most important UX goal: **one interface for all seats.** Without it you
 juggle N Sunshine web UIs on N ports with N pairing dialogs.
 
-That goal is only half met. The interface shows every seat in one place and
-links to each one's Sunshine, but pairing still happens there, once per seat.
-Doing it properly means the daemon driving Sunshine's own API on the seat's
-behalf, which needs credentials it does not have yet.
+That is met. The daemon sets each seat's Sunshine login while provisioning it,
+which is what lets it drive that seat's own API on the user's behalf: submitting
+a PIN, listing paired devices, unpairing one. It uses the same calls Sunshine's
+own page makes, read out of the bundle it ships.
+
+Two things about that path are worth writing down. It goes over the **Incus
+bridge, never the LAN address**, because the seats reach the LAN through macvlan
+and a macvlan interface cannot talk to its own host; using the address Moonlight
+uses produces a timeout that looks like Sunshine being down. And the seat's
+Sunshine password is **generated once and kept**, because paired devices are
+stored against it and a rebuilt container has to come back with the same one.
 
 There is no CLI at all, not even a thin one. The daemon takes three flags and
 none of them operate anything: `-config`, `-listen`, `-version`. A second way in

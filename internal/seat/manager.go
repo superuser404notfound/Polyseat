@@ -12,6 +12,7 @@ import (
 
 	"github.com/superuser404notfound/Polyseat/internal/config"
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
+	"github.com/superuser404notfound/Polyseat/internal/sunshine"
 	"github.com/superuser404notfound/Polyseat/internal/supervise"
 )
 
@@ -618,6 +619,11 @@ func (m *Manager) Provision(name string) error {
 		}
 	}
 
+	secrets, err := m.ensureSecrets(name)
+	if err != nil {
+		return err
+	}
+
 	return m.operate(name, "provisioning", func(ctx context.Context) error {
 		m.setState(name, StateBuilding)
 
@@ -626,11 +632,12 @@ func (m *Manager) Provision(name string) error {
 		m.stopBroker(name)
 
 		p := &Provisioner{
-			Client: m.client,
-			Seat:   seat,
-			Uplink: uplink,
-			Image:  m.cfg.Image,
-			Log:    func(f string, a ...any) { m.logf(name, f, a...) },
+			Client:  m.client,
+			Seat:    seat,
+			Uplink:  uplink,
+			Image:   m.cfg.Image,
+			Secrets: secrets,
+			Log:     func(f string, a ...any) { m.logf(name, f, a...) },
 		}
 
 		if err := p.Run(ctx); err != nil {
@@ -947,12 +954,161 @@ func (m *Manager) Delete(name string, keepContainer bool) error {
 			return err
 		}
 
+		if err := m.store.DeleteSecrets(name); err != nil {
+			return err
+		}
+
 		m.mu.Lock()
 		delete(m.rt, name)
 		m.mu.Unlock()
 
 		return nil
 	})
+}
+
+// ------------------------------------------------------------------ pairing
+
+// SunshineAccess is what somebody needs to open a seat's own Sunshine page.
+type SunshineAccess struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	URL      string `json:"url"`
+}
+
+// ensureSecrets returns the seat's credentials, generating them the first time.
+//
+// Generated once and then kept, deliberately. A seat whose container is rebuilt
+// has to come back with the same Sunshine password, because the paired devices
+// are stored against it and would otherwise all have to be paired again.
+func (m *Manager) ensureSecrets(name string) (Secrets, error) {
+	secrets, err := m.store.Secrets(name)
+	if err != nil {
+		return secrets, err
+	}
+
+	if secrets.SunshineUser != "" && secrets.SunshinePassword != "" {
+		return secrets, nil
+	}
+
+	password, err := RandomPassword()
+	if err != nil {
+		return secrets, err
+	}
+
+	secrets = Secrets{SunshineUser: "polyseat", SunshinePassword: password}
+
+	return secrets, m.store.PutSecrets(name, secrets)
+}
+
+// SunshineCredentials returns a seat's login and the address to use it at.
+func (m *Manager) SunshineCredentials(name string) (SunshineAccess, error) {
+	secrets, err := m.store.Secrets(name)
+	if err != nil {
+		return SunshineAccess{}, err
+	}
+
+	if secrets.SunshineUser == "" {
+		return SunshineAccess{}, fmt.Errorf("this seat has no Sunshine login yet, provision it")
+	}
+
+	access := SunshineAccess{
+		Username: secrets.SunshineUser,
+		Password: secrets.SunshinePassword,
+	}
+
+	// The LAN address, because this is the one somebody types into a browser.
+	// The daemon itself uses the other one, see sunshineClient.
+	if addr := m.addressOn(name, "eth1"); addr != "" {
+		access.URL = fmt.Sprintf("https://%s:%d", addr, sunshine.Port)
+	}
+
+	return access, nil
+}
+
+func (m *Manager) addressOn(name, iface string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	rt, ok := m.rt[name]
+	if !ok {
+		return ""
+	}
+
+	if addrs := rt.addresses[iface]; len(addrs) > 0 {
+		return addrs[0]
+	}
+
+	return ""
+}
+
+// sunshineClient builds a client for a seat's Sunshine.
+func (m *Manager) sunshineClient(name string) (*sunshine.Client, error) {
+	if _, err := m.store.Get(name); err != nil {
+		return nil, err
+	}
+
+	secrets, err := m.store.Secrets(name)
+	if err != nil {
+		return nil, err
+	}
+
+	if secrets.SunshineUser == "" {
+		return nil, fmt.Errorf("this seat has no Sunshine login yet, provision it")
+	}
+
+	// eth0, the Incus bridge, never eth1. The seats reach the LAN through
+	// macvlan, and a macvlan interface cannot talk to its own host, so the
+	// address Moonlight uses is precisely the one that does not work here.
+	address := m.addressOn(name, "eth0")
+	if address == "" {
+		return nil, fmt.Errorf("this seat is not running")
+	}
+
+	return sunshine.New(address, secrets.SunshineUser, secrets.SunshinePassword), nil
+}
+
+// PairedDevices lists the clients paired with a seat.
+func (m *Manager) PairedDevices(ctx context.Context, name string) ([]sunshine.Device, error) {
+	client, err := m.sunshineClient(name)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.Devices(ctx)
+}
+
+// Pair hands a seat the PIN Moonlight is showing.
+func (m *Manager) Pair(ctx context.Context, name, pin, label string) error {
+	client, err := m.sunshineClient(name)
+	if err != nil {
+		return err
+	}
+
+	if err := client.Pair(ctx, pin, label); err != nil {
+		m.logf(name, "! pairing %q failed: %v", label, err)
+
+		return err
+	}
+
+	m.logf(name, "paired %q", label)
+
+	return nil
+}
+
+// Unpair removes a paired client from a seat.
+func (m *Manager) Unpair(ctx context.Context, name, uuid string) error {
+	client, err := m.sunshineClient(name)
+	if err != nil {
+		return err
+	}
+
+	if err := client.Unpair(ctx, uuid); err != nil {
+		return err
+	}
+
+	m.logf(name, "unpaired a device")
+
+	return nil
 }
 
 // --------------------------------------------------------------------- view
