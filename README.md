@@ -14,22 +14,28 @@ Sunshine-Instanz, eigenem PipeWire und eigenem Steam-Konto.
 
 ## Status
 
-**M0 — Input-Spike.** Noch kein Produkt, keine GUI, kein Daemon. Aktuell wird
-genau eine Frage beantwortet: Trägt die Container-Architektur die Eingabekette?
-Siehe [`spike/m0-input/`](spike/m0-input/).
+**Ein Seat funktioniert vollständig.** Ein Incus-Container mit headless Sway und
+Sunshine streamt mit NVENC an einen Moonlight-Client, und Tastatur, Maus und
+Pad des Clients erreichen die Session. Am 2026-07-28 am echten Gerät bestätigt.
+
+Noch kein Produkt: kein Daemon, keine GUI, alles von Hand über Skripte. Die
+Protokolle der einzelnen Schritte liegen in [`spike/`](spike/) und halten fest,
+was funktioniert, was nicht, und warum.
 
 Architektur und die Begründungen dahinter: [`docs/architecture.md`](docs/architecture.md).
 
 ## Fahrplan
 
-| | |
-|---|---|
-| **M0** | Input-Spike: Ein Container, ein virtuelles Pad, SDL erkennt es |
-| **M1** | Ein Seat vollständig von Hand: Sway + Sunshine + NVENC + Moonlight |
-| **M2** | Zwei Seats parallel — Port-, mDNS- und Ressourcenkollisionen |
-| **M3** | Daemon + GUI: Seats anlegen, starten, koppeln, überwachen |
-| **M4** | Geteilter Bibliotheks-Pool auf btrfs |
-| **M5** | Komfort: Auflösung pro Client, Bibliotheks-Scanner, Feinschliff |
+| | | |
+|---|---|---|
+| **M0** | Input-Spike: trägt die Container-Architektur? | ✅ |
+| **M1** | Ein Seat: Sway + Sunshine + NVENC + Moonlight | ✅ |
+| **M2** | Input-Broker: Tastatur, Maus und Pad erreichen den Seat | ✅ |
+| **M3** | Ein Seat, der wirklich spielt: Steam, Proton, Pad, Ton | |
+| **M4** | Zwei Seats parallel — braucht den Seat-Tag im Gerätenamen | |
+| **M5** | Daemon + GUI: Seats anlegen, starten, koppeln, überwachen | |
+| **M6** | Geteilter Bibliotheks-Pool auf btrfs | |
+| **M7** | Komfort: Auflösung pro Client, Bibliotheks-Scanner, Feinschliff | |
 
 ## Lizenz
 

@@ -3,8 +3,10 @@
 **Ziel:** Tastatur, Maus und Pad aus dem Moonlight-Client erreichen die
 Seat-Session.
 
-**Status: gelöst** (2026-07-27). sway im Seat listet Sunshines Geräte als
-Zeiger und Tastaturen, sowohl beim Start als auch bei Hotplug zur Laufzeit.
+**Status: gelöst und am echten Gerät bestätigt** (2026-07-28). sway im Seat
+listet Sunshines Geräte als Zeiger und Tastaturen, sowohl beim Start als auch
+bei Hotplug zur Laufzeit. Vom iPhone aus lässt sich der Mauszeiger bewegen und
+im Terminal der Session tippen.
 
 ## Das Problem
 
