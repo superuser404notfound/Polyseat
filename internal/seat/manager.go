@@ -812,7 +812,7 @@ func (m *Manager) Stop(name string) error {
 			return nil
 		}
 
-		if err := m.client.Stop(ctx, name, 30); err != nil {
+		if err := m.haltContainer(ctx, name); err != nil {
 			return err
 		}
 
@@ -820,6 +820,42 @@ func (m *Manager) Stop(name string) error {
 
 		return nil
 	})
+}
+
+// haltContainer brings a running container down, the session first.
+//
+// The order and the timeout are both from experience. A seat whose Sway and
+// Sunshine are still running takes far longer to shut down, because the
+// container's systemd waits out its own stop jobs for the lingering user
+// manager; asking the session to go first cuts that. And thirty seconds was not
+// enough: the stop reported a failure while the container was in fact still on
+// its way down, and it stopped by itself a minute later, which is a confusing
+// thing to be told.
+func (m *Manager) haltContainer(ctx context.Context, name string) error {
+	m.logf(name, "stopping the session")
+
+	if _, _, err := m.client.Try(ctx, name, m.asPlayer(name,
+		"systemctl", "--user", "stop", "polyseat-sway.service")...); err != nil {
+		m.logf(name, "! could not stop the session cleanly: %v", err)
+	}
+
+	m.logf(name, "stopping the container")
+
+	err := m.client.Stop(ctx, name, 90)
+	if err == nil {
+		return nil
+	}
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	// Nothing inside is worth waiting for any longer. The session has already
+	// been asked to stop, and a seat holds no state that a clean unmount
+	// protects.
+	m.logf(name, "! it did not shut down in time (%v), forcing it", err)
+
+	return m.client.Kill(ctx, name)
 }
 
 // Create records a new seat. If a container of that name already exists it is
@@ -895,7 +931,7 @@ func (m *Manager) Delete(name string, keepContainer bool) error {
 
 		if status != "" && !keepContainer {
 			if status == "Running" {
-				if err := m.client.Stop(ctx, name, 30); err != nil {
+				if err := m.haltContainer(ctx, name); err != nil {
 					return err
 				}
 			}

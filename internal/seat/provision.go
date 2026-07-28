@@ -188,7 +188,7 @@ func (p *Provisioner) stepNetwork(ctx context.Context) error {
 	// Known property of macvlan: host and container cannot reach each other
 	// over it. That is what eth0 is for, and it is also a large part of why a
 	// seat cannot attack the host over the network.
-	err := p.Client.Configure(ctx, p.name(), nil, map[string]map[string]string{
+	_, err := p.Client.Configure(ctx, p.name(), nil, map[string]map[string]string{
 		"eth1": {
 			"type":    "nic",
 			"nictype": "macvlan",
@@ -533,19 +533,26 @@ func (p *Provisioner) stepGPU(ctx context.Context) error {
 		},
 	}
 
-	if err := p.Client.Configure(ctx, p.name(), config, devices); err != nil {
+	changed, err := p.Client.Configure(ctx, p.name(), config, devices)
+	if err != nil {
 		return err
 	}
 
-	// nvidia.runtime only takes effect on a fresh start.
-	p.Log("restarting the container so the driver injection takes effect")
+	// nvidia.runtime only takes effect on a fresh start, so a change here costs
+	// a restart. Nothing changed means nothing to restart, which is what keeps
+	// re-provisioning a healthy seat from interrupting it.
+	if changed {
+		p.Log("restarting the container so the driver injection takes effect")
 
-	if err := p.Client.Restart(ctx, p.name(), 30); err != nil {
-		return err
-	}
+		// Ninety seconds rather than thirty: a seat with a session in it takes
+		// longer to shut down than an empty container does.
+		if err := p.Client.Restart(ctx, p.name(), 90); err != nil {
+			return err
+		}
 
-	if err := p.waitSystemd(ctx); err != nil {
-		return err
+		if err := p.waitSystemd(ctx); err != nil {
+			return err
+		}
 	}
 
 	out, err := p.run(ctx, "nvidia-smi", "-L")

@@ -155,6 +155,11 @@ the codebase.
 The most important UX goal: **one interface for all seats.** Without it you
 juggle N Sunshine web UIs on N ports with N pairing dialogs.
 
+That goal is only half met. The interface shows every seat in one place and
+links to each one's Sunshine, but pairing still happens there, once per seat.
+Doing it properly means the daemon driving Sunshine's own API on the seat's
+behalf, which needs credentials it does not have yet.
+
 There is no CLI at all, not even a thin one. The daemon takes three flags and
 none of them operate anything: `-config`, `-listen`, `-version`. A second way in
 would mean a second author for the generated files, which is exactly what the

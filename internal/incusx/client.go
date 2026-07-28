@@ -171,6 +171,11 @@ func (c *Client) Stop(ctx context.Context, name string, timeout int) error {
 	return c.changeState(ctx, name, "stop", timeout, false)
 }
 
+// Kill stops the instance without waiting for anything inside it.
+func (c *Client) Kill(ctx context.Context, name string) error {
+	return c.changeState(ctx, name, "stop", 0, true)
+}
+
 // Restart stops and starts in one operation.
 func (c *Client) Restart(ctx context.Context, name string, timeout int) error {
 	return c.changeState(ctx, name, "restart", timeout, false)
@@ -185,13 +190,13 @@ func (c *Client) Instance(name string) (*api.Instance, string, error) {
 	return c.srv.GetInstance(name)
 }
 
-// Configure merges configuration keys and devices into the instance. A device
-// mapped to nil is removed. Absent keys are left untouched, so this converges
-// rather than replaces.
-func (c *Client) Configure(ctx context.Context, name string, config map[string]string, devices map[string]map[string]string) error {
+// Configure merges configuration keys and devices into the instance and reports
+// whether anything actually changed. A device mapped to nil is removed. Absent
+// keys are left untouched, so this converges rather than replaces.
+func (c *Client) Configure(ctx context.Context, name string, config map[string]string, devices map[string]map[string]string) (bool, error) {
 	inst, etag, err := c.srv.GetInstance(name)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	put := inst.Writable()
@@ -228,19 +233,20 @@ func (c *Client) Configure(ctx context.Context, name string, config map[string]s
 		}
 	}
 
-	// Nothing to do is the common case once a seat is provisioned, and an
-	// update with no change still restarts nothing but does write to the
-	// database and emit an event.
+	// Nothing to do is the common case once a seat is provisioned. Reporting
+	// that back matters: it is what lets provisioning skip the container
+	// restart that enabling the driver injection needs, so re-provisioning a
+	// healthy seat does not interrupt it for no reason.
 	if !changed {
-		return nil
+		return false, nil
 	}
 
 	op, err := c.srv.UpdateInstance(name, put, etag)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	return op.WaitContext(ctx)
+	return true, op.WaitContext(ctx)
 }
 
 // UnsetConfig removes configuration keys. Separate from Configure because a

@@ -28,6 +28,13 @@ older recipe.
 Confirmed on real hardware on 2026-07-28. The logs of each step live in
 [`spike/`](spike/) and record what works, what does not, and why.
 
+**Not done yet.** Pairing still happens in each seat's own Sunshine interface,
+one per seat, which is exactly the juggling the project set out to remove. The
+web interface has no authentication and therefore listens on localhost only.
+Both are named in [`docs/security.md`](docs/security.md) and
+[`docs/architecture.md`](docs/architecture.md) rather than left to be
+discovered.
+
 Architecture and the reasoning behind it: [`docs/architecture.md`](docs/architecture.md).
 What the isolation actually guarantees, measured rather than assumed:
 [`docs/security.md`](docs/security.md). Who installs what, and where the line
