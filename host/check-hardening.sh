@@ -81,6 +81,33 @@ else
     ok "no getty on the free VTs"
 fi
 
+step "Is the window open right now?"
+# The exposure only materialises while a text console is the active VT and a
+# seat holds input devices. That combination is worth calling out when it
+# actually happens, rather than only describing it.
+graphical_vt=$(loginctl list-sessions --no-legend 2>/dev/null \
+    | awk '{print $1}' \
+    | while read -r sid; do
+          [ -n "$sid" ] || continue
+          if [ "$(loginctl show-session "$sid" -p Type --value 2>/dev/null)" != tty ]; then
+              loginctl show-session "$sid" -p VTNr --value 2>/dev/null
+          fi
+      done | head -1)
+attached=0
+for d in /sys/class/input/event*; do
+    [ -r "$d/device/name" ] || continue
+    [[ "$(readlink -f "$d")" == */devices/virtual/* ]] || continue
+    attached=1
+    break
+done
+if [[ "$attached" == 0 ]]; then
+    ok "no seat devices exist at the moment, nothing to expose"
+elif [[ -n "$graphical_vt" && "$active" == "$graphical_vt" ]]; then
+    ok "the graphical session holds the active VT (tty$active), console is not reachable"
+else
+    bad "active VT is tty$active while seat devices exist: a client types along here"
+fi
+
 cat <<'EOF'
 
   The window that stays open: while the desktop holds the active VT its K_OFF

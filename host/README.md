@@ -29,7 +29,23 @@ itself. **The window that stays open is the host switching to a text console by
 hand while a seat is streaming.** From then on that client types along, and with
 `getty@.service` enabled there is a login prompt waiting there.
 
-Setting unused VTs to `K_OFF` would close it, and is deliberately **not**
-recommended here: it disables the real keyboard on those consoles too, which
-removes the recovery path you want when the desktop is broken. Knowing about the
-window is the better trade than losing the console.
+Three ways to close it were weighed, and none is taken today:
+
+* **`K_OFF` on the free VTs.** Closes it hardest, and locks you out: on a K_OFF
+  console the kernel ignores `Ctrl+Alt+F2` as well, so you cannot get back to
+  the desktop. Only viable with a watchdog that undoes it, and a crash of that
+  watchdog strands you.
+* **Masking the gettys**, so a free console has no shell to type into. Costs the
+  local text login, which is precisely the recovery path you want on a machine
+  under active development.
+* **SSH as the replacement recovery path**, which would make masking acceptable.
+  Not today: opening a network service is a larger hole than the console while
+  the account password is weak.
+
+So the trade taken is: leave the consoles usable, and **detect the state instead
+of describing it**. `check-hardening.sh` reports when the exposure is actually
+open, meaning a text console holds the active VT while seat devices exist.
+
+**Revisit this when a guest gets a seat.** Then the client is no longer somebody
+you trust and the arithmetic changes. The order would be: change the password,
+set up SSH with keys, then mask the gettys.
