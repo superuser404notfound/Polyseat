@@ -5,6 +5,14 @@
 # udev rule, register systemd units. Creating and configuring seats is not done
 # here, that belongs to the daemon and its web interface.
 #
+# Deliberately small for now. What the finished installer has to cover, and why
+# each step exists, is written down in docs/installation.md. It is finished
+# after the daemon rather than before, because its main job will be installing
+# the daemon and its bootstrap steps cannot be tested on a machine that is
+# already bootstrapped.
+#
+# Arch-based only: it queries pacman.
+#
 #   sudo ./install.sh            install
 #   sudo ./install.sh --uninstall
 set -euo pipefail

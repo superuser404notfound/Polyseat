@@ -26,7 +26,9 @@ does not, and why.
 
 Architecture and the reasoning behind it: [`docs/architecture.md`](docs/architecture.md).
 What the isolation actually guarantees, measured rather than assumed:
-[`docs/security.md`](docs/security.md).
+[`docs/security.md`](docs/security.md). Who installs what, and where the line
+between installer, daemon and interface runs:
+[`docs/installation.md`](docs/installation.md).
 
 ## Running it
 
