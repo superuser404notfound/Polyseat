@@ -1,8 +1,8 @@
 # Installation: who does what
 
 Three layers, and the boundary between them is the point of this document.
-`host/install.sh` exists today in a deliberately small form; this records what
-it must eventually cover, and what must not end up in it.
+`host/install.sh` covers the host side; this records what it must eventually
+cover as well, and what must not end up in it.
 
 ## The rule
 
@@ -21,12 +21,15 @@ hard way, so the reasons are kept with the steps.
 daemon is built from source.
 
 **This binds the installer to Arch.** It queries `pacman`. Rather than claiming
-a portability nobody has tested, it should say so and refuse elsewhere. A second
+a portability nobody has tested, it says so and refuses elsewhere. A second
 distribution is a later decision, not a guess to encode now.
 
-Watch out for mirror lag: an install once failed because two CachyOS mirrors
-served a stale index, which looks like a broken package rather than a broken
-mirror. Worth a clear error rather than a confusing one.
+Note that this binds only the *host*. Inside a seat nothing CachyOS specific is
+left: Sunshine comes from LizardByte's own Arch package with each release, so a
+seat is a plain Arch container. The M1 spike bootstrapped the CachyOS keyring
+into every seat out of the host's package cache, which tied the seats to a
+CachyOS host and was where the mirror lag problem came from. Provisioning
+removes that repository from seats that still carry it.
 
 ### idmap ranges
 
@@ -60,9 +63,13 @@ one option that is not acceptable.
 
 ### Host-side pieces
 
-The udev rule under `/etc/udev/rules.d/`, the broker and observer under
-`/usr/local/lib/polyseat/`, their systemd units, and later the daemon binary
-with its own unit and configuration directory.
+The udev rule under `/etc/udev/rules.d/`, the input helpers under
+`/usr/local/lib/polyseat/`, the daemon at `/usr/local/bin/polyseatd` and its
+systemd unit.
+
+One unit, not three. The per-seat broker template and the observer unit are
+gone; `polyseatd` supervises both itself so that the seat lifecycle has exactly
+one owner. An installer that finds the old units removes them.
 
 ### Optional hardening
 

@@ -122,17 +122,16 @@ without uhid, keyboard and mouse appear normally but a pad never does.
 ```
 ┌─ Host: CachyOS, KDE desktop keeps running ───────────────┐
 │                                                          │
-│  polyseatd  - Go, system service, privileged             │
-│   ├─ HTTP/JSON + WebSocket API (unix socket, optionally  │
-│   │    TCP with token auth for access from a phone)      │
-│   ├─ Incus Go client  → create/start/limit seats         │
-│   ├─ Input broker     → udev monitor, pad → correct      │
-│   │                      seat via unix-char hotplug      │
-│   ├─ Sunshine proxy   → pairing/PIN for all seats in one │
-│   │                      place, config generation        │
-│   └─ Doctor           → health checks, self-diagnosis    │
+│  polyseatd  - Go, one systemd unit, runs as root         │
+│   ├─ HTTP/JSON API + server sent events                  │
+│   ├─ Incus Go client  → create/start/configure seats,    │
+│   │                      lifecycle events instead of     │
+│   │                      polling                         │
+│   ├─ Provisioner      → the whole seat recipe, idempotent│
+│   ├─ Supervisor       → one input broker per running     │
+│   │                      seat, one uhid observer         │
+│   └─ Web interface    → embedded in the binary           │
 │                                                          │
-│  Polyseat GUI - served by the daemon                     │
 └──────────────────────────────────────────────────────────┘
               │ Incus API
    ┌──────────┼──────────┬───────────┐
@@ -156,8 +155,11 @@ the codebase.
 The most important UX goal: **one interface for all seats.** Without it you
 juggle N Sunshine web UIs on N ports with N pairing dialogs.
 
-A thin CLI client (`status`, `doctor`) stays - as a pure API client for the
-moment when the GUI will not start. Diagnostics, not a way to operate the thing.
+There is no CLI at all, not even a thin one. The daemon takes three flags and
+none of them operate anything: `-config`, `-listen`, `-version`. A second way in
+would mean a second author for the generated files, which is exactly what the
+next section forbids. When the interface will not start, the thing to read is
+`journalctl -u polyseatd`.
 
 ## Principle: the daemon owns the configuration
 
@@ -165,6 +167,45 @@ Incus profiles, Sunshine configs, udev rules and systemd units are **generated
 artifacts, never inputs**. Edit them by hand and you lose the change on the next
 write - in exchange, the state is always explainable and reproducible. Without
 this rule, GUI-centred management inevitably drifts out of sync.
+
+## How the daemon is built
+
+Four decisions worth writing down, each of them made by something that went
+wrong first.
+
+**Events, never polling.** The daemon learns what containers are doing from the
+Incus lifecycle stream. It polls only *inside* a container it knows is running,
+every ten seconds, to read what the session is doing, and never while a seat is
+stopping. The M2 broker prototype polled `incus exec` twice a second regardless
+of state; an exec landed inside a shutdown and the Incus daemon hung in
+"Stopping instance" with the container already dead.
+
+The first version of the event handler reacted to every lifecycle event, and
+Incus emits one for every exec. Each read of a seat caused the next read: a
+hundred events in ten seconds, all of them the daemon watching itself. Only the
+four actions that change what a seat is get through now.
+
+**One owner for the seat lifecycle.** The broker and the uhid observer used to
+be systemd units. That put the lifecycle in two places: systemd knew when a
+broker should run, the daemon knew when a seat was up, and neither could see the
+other. The daemon supervises both as child processes now, which is what lets it
+stop a broker *before* the container it talks to, rather than hoping the
+ordering works out.
+
+**Provisioning is a list of idempotent steps.** Not a script that runs once, but
+a recipe that converges. Running it against a seat that already exists is the
+normal case, and it is also how a seat built by hand comes under the daemon: the
+daemon adopts an existing container rather than refusing it. A generation number
+marks seats built by an older recipe, which is the direct answer to the drift
+found at the end of M4, where `seat1` carried `security.nesting` and `seat2` did
+not for no better reason than the order they were built in.
+
+**The session is started by the daemon, not by the container.** The session
+units exist but are deliberately not enabled. If a seat brought itself up when
+its container booted, Sunshine would read a configuration written before the
+seat had an address, and its allowed web origins are derived from exactly that
+address. Starting an already running seat is a no-op that only makes sure the
+broker is there, so restarting the daemon never interrupts a game.
 
 ## Library pool
 

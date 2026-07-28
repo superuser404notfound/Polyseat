@@ -111,6 +111,18 @@ is inherent to putting several tenants on one consumer card.
 `0.0.0.0:27036` for Remote Play discovery. Reachable from the LAN like any other
 seat port.
 
+### The daemon's web interface has no authentication
+
+`polyseatd` runs as root and serves an unauthenticated API that can create,
+delete and reconfigure containers. It binds `127.0.0.1` by default, so reaching
+it means already running code on the host as some user.
+
+On this machine that grants nothing new: the desktop user has passwordless sudo,
+so anything that could talk to the daemon could already become root directly.
+The moment either of those changes, the other has to as well. In particular,
+moving the listener off localhost so a phone can reach it needs authentication
+in front of it first, and that does not exist yet.
+
 ### The kernel console
 
 Virtual keyboards reach the kernel VT and sysrq handlers exactly like a physical
@@ -130,12 +142,17 @@ things keep that from being a hole:
 * **The name no longer decides anything.** Since attribution became structural,
   a crafted name can at most produce a misleading log line.
 
-## One inconsistency found
+## The inconsistency that was found here is gone
 
-`seat1` has `security.nesting=true`, `seat2` does not. Both can create user
-namespaces (`unshare --user` succeeds in each), so there is no functional
-difference today, but the seats should not differ. `seat1` was built before the
-provisioning scripts settled; the daemon should make them identical.
+`seat1` used to carry `security.nesting=true` while `seat2` did not, for no
+better reason than the order the two were built in. The daemon now sets the key
+explicitly to `false` on every seat rather than leaving it implicit, and all
+seats report the same configuration.
+
+That is the general shape of the fix rather than a one-off: provisioning is a
+recipe that converges, and a generation number marks seats built by an older
+one, so drift like this shows up in the interface instead of waiting to be
+noticed.
 
 ## If a seat is ever given to somebody untrusted
 

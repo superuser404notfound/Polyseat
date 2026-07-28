@@ -14,15 +14,19 @@ Sunshine instance, its own PipeWire and its own Steam account.
 
 ## Status
 
-**Two seats play in parallel.** Two Incus containers, each running headless Sway
-and Sunshine, stream via NVENC to their own Moonlight client. Steam runs inside
-them, games start, audio arrives, and each client's keyboard, mouse and gamepad
-reach exactly its own session. Confirmed on real hardware on 2026-07-28: no
-crossover between the seats, and the host desktop sees none of their devices.
+**Seats are created from the web interface and play in parallel.** Each seat is
+an Incus container running headless Sway and Sunshine, streaming via NVENC to
+its own Moonlight client. Steam runs inside them, games start, audio arrives,
+and each client's keyboard, mouse and gamepad reach exactly its own session. No
+crossover between seats, and the host desktop sees none of their devices.
 
-Not a product yet: no daemon, no GUI, everything driven by hand through scripts.
-The logs of each step live in [`spike/`](spike/) and record what works, what
-does not, and why.
+`polyseatd` builds a seat from nothing in one click: container, network, driver
+userspace, Steam, session, input broker. It supervises the brokers, follows the
+Incus event stream instead of polling, and converges seats that were built by an
+older recipe.
+
+Confirmed on real hardware on 2026-07-28. The logs of each step live in
+[`spike/`](spike/) and record what works, what does not, and why.
 
 Architecture and the reasoning behind it: [`docs/architecture.md`](docs/architecture.md).
 What the isolation actually guarantees, measured rather than assumed:
@@ -32,47 +36,48 @@ between installer, daemon and interface runs:
 
 ## Running it
 
-Not a product yet, so this is the manual route. The daemon will replace all of
-it.
-
 **Once per machine:**
 
 ```
 sudo host/install.sh
-sudo systemctl enable --now polyseat-uhid-observer.service
+sudo systemctl enable --now polyseatd
 ```
 
-That places the host-side pieces under `/usr/local/lib/polyseat`, installs the
-udev rule that keeps seat devices off the host desktop, and registers the
-systemd units. It creates no seats.
+That builds the daemon, places the input helpers under `/usr/local/lib/polyseat`,
+installs the udev rule that keeps seat devices off the host desktop, and
+registers one systemd unit. It creates no seats.
 
-**Per seat**, until the daemon exists, through the M1 scripts:
+**Everything else happens at <http://127.0.0.1:47800>.** Add a seat, press
+provision, watch the log. The daemon downloads the image, installs the packages,
+repairs the NVIDIA userspace that the driver injection leaves incomplete,
+generates the Sunshine configuration and starts the session. Pairing with
+Moonlight happens in the seat's own Sunshine interface, which the seat card
+links to.
 
-```
-cd spike/m1-seat
-CT=seat1 SEAT=seat1 ./10-create-seat.sh
-CT=seat1 SEAT=seat1 ./15-nvidia-userspace.sh
-CT=seat1 SEAT=seat1 ./20-session.sh
-CT=seat1 SEAT=seat1 ./30-verify.sh          # prints the addresses to connect to
-sudo systemctl enable --now polyseat-broker@seat1.service
-incus config set seat1 boot.autostart=true
-```
+It listens on localhost only, because the daemon creates containers as root.
+Putting it on the network is a deliberate change in
+`/etc/polyseat/polyseatd.json`.
 
-**Checking afterwards:**
-
-```
-host/check-hardening.sh                     # host-side exposures
-cd spike/m1-seat && CT=seat1 ./30-verify.sh # the seat itself
-journalctl -fu polyseat-broker@seat1        # which device went where and why
-```
-
-The broker log is the useful one. It says for every device whether its owner was
-verified, correlated or merely claimed:
+**Reading what happened.** Each seat card carries its own log, and the useful
+lines in it come from the input broker. It says for every device whether its
+owner was verified structurally, correlated, or merely claimed by name:
 
 ```
 + event29    Keyboard passthrough (seat2)
   creator verified: ID_INPUT=1 ID_INPUT_KEY=1 ID_INPUT_KEYBOARD=1
 ! event260   refused: name claims (seat1) but the kernel says 'seat2' created it
+```
+
+The other line worth watching is the encoder. A seat whose EGL landed on Mesa
+still starts, still streams and still looks healthy; it just encodes in
+software. The card shows `h264_nvenc` when it is right and says so plainly when
+it is not.
+
+For the host itself:
+
+```
+host/check-hardening.sh     # console and device exposures
+journalctl -fu polyseatd
 ```
 
 ## Roadmap
@@ -84,7 +89,7 @@ verified, correlated or merely claimed:
 | **M2** | Input broker: keyboard, mouse and pad reach the seat | ✅ |
 | **M3** | A seat that actually plays: Steam, Proton, pad, audio | ✅ |
 | **M4** | Two seats in parallel, input strictly separated | ✅ |
-| **M5** | Daemon + GUI: create, start, pair and monitor seats | |
+| **M5** | Daemon + GUI: create, start, pair and monitor seats | ✅ |
 | **M6** | Shared library pool on btrfs | |
 | **M7** | Polish: per-client resolution, library scanner, finishing touches | |
 

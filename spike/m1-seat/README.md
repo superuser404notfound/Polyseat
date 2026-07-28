@@ -6,6 +6,12 @@ own LAN address, so that Moonlight can connect to it.
 **Status: achieved** (2026-07-27). Sunshine reports `h264_nvenc [nvenc]`, output
 1920x1080, one audio sink, its own LAN address.
 
+**Superseded by the daemon.** These scripts are kept as the record of how the
+recipe was found, not as the way to build a seat. `polyseatd` does all of it
+now, idempotently, from `internal/seat/provision.go`, and it no longer needs the
+CachyOS repository inside the seat: Sunshine comes from LizardByte's own Arch
+package.
+
 ## Procedure
 
 ```
