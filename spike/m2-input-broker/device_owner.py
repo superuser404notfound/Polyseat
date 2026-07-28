@@ -38,8 +38,9 @@ import re
 import stat
 import sys
 
-# /dev/uinput is a fixed misc device.
+# Both are fixed misc devices.
 UINPUT_MAJOR, UINPUT_MINOR = 10, 223
+UHID_MAJOR, UHID_MINOR = 10, 239
 
 SYS_PIDFD_OPEN = 434
 SYS_PIDFD_GETFD = 438
@@ -69,8 +70,8 @@ def sysname_of_fd(fd):
     return buf.split(b"\0")[0].decode()
 
 
-def uinput_descriptors():
-    """Every (pid, fd) in the system that points at the uinput device.
+def descriptors(major, minor):
+    """Every (pid, fd) in the system pointing at that character device.
 
     Matched by device number rather than by path: inside a container the node
     is a different path, and tools that match on "/dev/uinput" miss it. This is
@@ -92,8 +93,16 @@ def uinput_descriptors():
                 continue
             if not stat.S_ISCHR(st.st_mode):
                 continue
-            if (os.major(st.st_rdev), os.minor(st.st_rdev)) == (UINPUT_MAJOR, UINPUT_MINOR):
+            if (os.major(st.st_rdev), os.minor(st.st_rdev)) == (major, minor):
                 yield pid, int(name)
+
+
+def uinput_descriptors():
+    return descriptors(UINPUT_MAJOR, UINPUT_MINOR)
+
+
+def uhid_descriptors():
+    return descriptors(UHID_MAJOR, UHID_MINOR)
 
 
 CGROUP_RE = re.compile(r"(?:lxc|incus)\.payload\.([A-Za-z0-9_.-]+)")
@@ -140,6 +149,22 @@ def owners():
             os.close(pidfd)
         found[sysname] = container_of(pid)
     return found
+
+
+def uhid_holders():
+    """Which container holds each open uhid descriptor: {(pid, fd): container}.
+
+    uhid offers no counterpart to UI_GET_SYSNAME, in fact no ioctls at all, so a
+    descriptor cannot be asked what it created. What can be used instead is that
+    uhid ties one device to one descriptor exactly like uinput does: UHID_CREATE2
+    acts on the descriptor and closing it destroys the device. So a gamepad that
+    appears belongs to whichever container just opened a new descriptor.
+
+    That is correlation by ordering rather than a structural fact, and it is
+    written down as such. A proxy that sees the creation itself would be exact;
+    this is the part that stays a heuristic until then.
+    """
+    return {(pid, fd): container_of(pid) for pid, fd in uhid_descriptors()}
 
 
 def sysname_of_node(node):

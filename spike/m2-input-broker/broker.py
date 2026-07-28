@@ -161,6 +161,11 @@ def scan(pattern):
 # twice a second.
 _reported = set()
 
+# uhid descriptors seen in the previous cycle. A gamepad that appears belongs to
+# whichever container opened a descriptor since then, because uhid ties one
+# device to one descriptor just as uinput does.
+_uhid_seen = {}
+
 
 def attribute(candidates, seat, tag):
     """Decide which of the candidates belong to this seat.
@@ -180,15 +185,41 @@ def attribute(candidates, seat, tag):
     descriptor what it made. Until a proxy sees the creation itself, these keep
     relying on the name that Sunshine writes when XDG_SEAT is set.
     """
+    global _uhid_seen
     owners = device_owner.owners()
+
+    holders = device_owner.uhid_holders()
+    fresh = {k: v for k, v in holders.items() if k not in _uhid_seen}
+    # Distinct containers that opened a uhid descriptor since the last cycle.
+    candidates_from_fresh = {c for c in fresh.values() if c}
+    _uhid_seen = holders
+
     mine = {}
     for node, dev in candidates.items():
         owner = owners.get(dev["sysname"], "unknown")
         if owner == "unknown":
-            # No uinput descriptor claims it: created through uhid, or gone.
-            dev["attribution"] = "tag"
-            if tag and f"({tag})" in dev["name"]:
-                mine[node] = dev
+            # No uinput descriptor claims it, so it came through uhid.
+            claimed = tag and f"({tag})" in dev["name"]
+            if len(candidates_from_fresh) == 1:
+                # Exactly one container just opened a descriptor: correlate.
+                correlated = next(iter(candidates_from_fresh))
+                dev["attribution"] = "uhid-correlated"
+                if correlated == seat:
+                    if claimed or not tag:
+                        mine[node] = dev
+                    elif node not in _reported:
+                        _reported.add(node)
+                        print(f"  ! {node:<10} refused: descriptor says '{seat}' "
+                              f"but the name claims otherwise ({dev['name']})")
+                elif claimed and node not in _reported:
+                    _reported.add(node)
+                    print(f"  ! {node:<10} refused: name claims ({seat}) but the "
+                          f"uhid descriptor belongs to '{correlated}'")
+            else:
+                # Nothing new, or several at once: fall back to the name and say so.
+                dev["attribution"] = "tag"
+                if claimed:
+                    mine[node] = dev
         elif owner is None:
             # Created by a process on the host. Never belongs to a seat.
             dev["attribution"] = "host"
@@ -334,7 +365,9 @@ FAKEUDEV = "/root/fakeudev.py"
 
 def attach(backend, seat, dev):
     node, minor = dev["node"], dev["minor"]
-    how = {"owner": "creator verified", "tag": "name tag only"}.get(
+    how = {"owner": "creator verified",
+           "uhid-correlated": "uhid descriptor correlated",
+           "tag": "name tag only, unverified"}.get(
         dev.get("attribution", ""), dev.get("attribution", ""))
     print(f"  + {node:<10} {dev['name']}")
     print(f"    {how}: {' '.join(dev['props'])}")

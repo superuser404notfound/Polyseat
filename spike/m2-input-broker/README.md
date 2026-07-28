@@ -142,11 +142,30 @@ by path, because inside a container `/dev/uinput` is a different path and
 `lsof /dev/uinput` shows nothing while seats are streaming. And the broker now
 needs root, since reading foreign descriptors is privileged.
 
-**This covers uinput only.** Gamepads are created through `/dev/uhid`, which has
-no ioctls at all, so there is no way to ask a descriptor what it made. They keep
-using the name tag until a proxy sees the creation itself. A forged gamepad is
-also the least dangerous forgery: a fake pad in somebody's game, rather than a
-keyboard in their session.
+### Gamepads: correlated, not proven
+
+uhid has no counterpart to `UI_GET_SYSNAME`, in fact no ioctls at all, so a
+descriptor cannot be asked what it created. What can be used instead is that
+**uhid ties one device to one descriptor exactly like uinput does**:
+`UHID_CREATE2` acts on the descriptor and closing it destroys the device. So a
+gamepad that appears belongs to whichever container opened a uhid descriptor
+since the previous cycle.
+
+The broker uses that, and cross-checks it against the name tag. If the
+descriptor says one seat and the name claims another, the device is refused and
+the disagreement logged. If several containers opened descriptors at once, or
+none did, it falls back to the name and labels the attribution
+`name tag only, unverified` rather than pretending.
+
+**This is correlation by ordering, not a structural fact.** A determined
+attacker could race it. It is a large improvement over trusting a string and it
+is not the same thing as the uinput case, which is why the log distinguishes
+`creator verified` from `uhid descriptor correlated`.
+
+Being exact here needs a proxy that sees the creation itself, which is the open
+piece across this whole problem space: neither Wolf nor vuinputd has it either.
+A forged gamepad is also the least dangerous forgery, a fake pad in somebody's
+game rather than a keyboard in their session.
 
 ## The container backend is a seam
 
