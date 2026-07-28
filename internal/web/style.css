@@ -1,0 +1,258 @@
+/* Polyseat interface.
+ *
+ * One column of seat cards. Everything about a seat that can be wrong has to be
+ * visible without clicking, because the failures this project actually has are
+ * quiet ones: a session that streams in software, a broker that is not running,
+ * a seat whose address moved.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #f6f6f4;
+  --card: #ffffff;
+  --line: #e0e0dc;
+  --text: #1b1b19;
+  --dim: #6b6b66;
+  --accent: #3b6ea5;
+  --good: #2e7d4f;
+  --warn: #a86a1a;
+  --bad: #b3382f;
+  --mono: ui-monospace, "JetBrains Mono", "DejaVu Sans Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16171a;
+    --card: #1e2024;
+    --line: #2e3238;
+    --text: #e7e7e4;
+    --dim: #949aa2;
+    --accent: #6ea8e0;
+    --good: #6ecb8f;
+    --warn: #e0b062;
+    --bad: #e97c72;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  letter-spacing: -0.01em;
+}
+
+.host {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+main {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+/* ------------------------------------------------------------------ pills */
+
+.pill {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.pill.running, .pill.online { color: var(--good); border-color: currentColor; }
+.pill.stopped, .pill.absent, .pill.offline { color: var(--dim); }
+.pill.starting, .pill.building, .pill.stopping, .pill.restarting { color: var(--warn); border-color: currentColor; }
+.pill.error, .pill.failed { color: var(--bad); border-color: currentColor; }
+
+/* ------------------------------------------------------------------ cards */
+
+.seats { display: grid; gap: 1rem; }
+
+.seat {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem 1.15rem;
+}
+
+.seat header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0;
+  border: 0;
+}
+
+.seat h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.seat .name {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.spacer { flex: 1; }
+
+dl.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 1rem;
+  margin: 0.9rem 0 0;
+  font-size: 0.87rem;
+}
+
+dl.facts dt { color: var(--dim); }
+dl.facts dd { margin: 0; font-family: var(--mono); font-size: 0.82rem; }
+
+dd a { color: var(--accent); }
+
+.flag { color: var(--warn); }
+.flag.bad { color: var(--bad); }
+
+/* ---------------------------------------------------------------- buttons */
+
+button {
+  font: inherit;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: 0.4; cursor: default; }
+
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover:not(:disabled) { color: #fff; filter: brightness(1.1); }
+button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.add { margin-top: 1.25rem; }
+
+/* -------------------------------------------------------------------- log */
+
+details.log { margin-top: 0.9rem; }
+details.log summary { cursor: pointer; color: var(--dim); font-size: 0.85rem; }
+
+pre.log {
+  margin: 0.6rem 0 0;
+  padding: 0.7rem 0.8rem;
+  max-height: 20rem;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* --------------------------------------------------------------- warnings */
+
+.warning {
+  border: 1px solid var(--warn);
+  border-left-width: 3px;
+  border-radius: 7px;
+  padding: 0.6rem 0.9rem;
+  margin-bottom: 1rem;
+  font-size: 0.88rem;
+  color: var(--warn);
+}
+
+.empty {
+  color: var(--dim);
+  text-align: center;
+  padding: 3rem 1rem;
+}
+
+/* ----------------------------------------------------------------- dialog */
+
+dialog {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text);
+  padding: 1.25rem 1.4rem;
+  width: min(30rem, calc(100vw - 2rem));
+}
+
+dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+
+dialog h2 { margin: 0 0 1rem; font-size: 1.1rem; }
+
+dialog label {
+  display: block;
+  margin-bottom: 0.9rem;
+  font-size: 0.85rem;
+  color: var(--dim);
+}
+
+dialog label.check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text);
+}
+
+dialog input[type="text"], dialog input:not([type]) {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+dialog small { display: block; margin-top: 0.25rem; font-size: 0.78rem; }
+
+dialog menu {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin: 1.2rem 0 0;
+  padding: 0;
+}
+
+.error { color: var(--bad); font-size: 0.85rem; min-height: 1.2em; margin: 0; }

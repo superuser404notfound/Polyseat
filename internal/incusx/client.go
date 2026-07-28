@@ -1,0 +1,629 @@
+// Package incusx wraps the Incus client with the handful of operations the
+// daemon actually needs.
+//
+// Everything container runtime specific is meant to live behind this package.
+// The rest of the daemon speaks about seats, not about instances, devices or
+// operations. That is the same seam the M2 broker prototype drew, for the same
+// reason: Incus was chosen for one concrete property, hotplugging device nodes
+// into a running container, and if that property ever arrives somewhere else
+// the replacement should be one package rather than a rewrite.
+//
+// The official client is used rather than the REST API by hand. It brings a
+// large dependency tree for what is in the end a Unix socket, which is a real
+// cost for a daemon running as root, but it also brings the asynchronous
+// operation model and the event stream correct on the first try. The trade is
+// deliberate and reversible, which is what the seam is for.
+package incusx
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+	"time"
+
+	incus "github.com/lxc/incus/v7/client"
+	"github.com/lxc/incus/v7/shared/api"
+)
+
+// ImagesRemote is the default image server Incus ships with.
+const ImagesRemote = "https://images.linuxcontainers.org"
+
+// Client talks to the local Incus daemon.
+type Client struct {
+	srv incus.InstanceServer
+}
+
+// Connect opens the local Unix socket. The daemon runs as root, so no
+// certificate handling is involved.
+func Connect() (*Client, error) {
+	srv, err := incus.ConnectIncusUnix("", nil)
+	if err != nil {
+		return nil, fmt.Errorf("connect to Incus: %w", err)
+	}
+
+	return &Client{srv: srv}, nil
+}
+
+// Close releases the connection.
+func (c *Client) Close() {
+	if c.srv != nil {
+		c.srv.Disconnect()
+	}
+}
+
+// ServerVersion reports what the daemon on the other end is, for the doctor.
+func (c *Client) ServerVersion() (string, error) {
+	info, _, err := c.srv.GetServer()
+	if err != nil {
+		return "", err
+	}
+
+	return info.Environment.ServerVersion, nil
+}
+
+// ---------------------------------------------------------------- instances
+
+// Status returns the instance status, or an empty string if there is no such
+// instance. Callers distinguish "absent" from "stopped" that way without
+// having to inspect an error.
+func (c *Client) Status(name string) (string, error) {
+	state, _, err := c.srv.GetInstanceState(name)
+	if err != nil {
+		if isNotFound(err) {
+			return "", nil
+		}
+
+		return "", err
+	}
+
+	return state.Status, nil
+}
+
+// Exists reports whether the instance is present in any state.
+func (c *Client) Exists(name string) (bool, error) {
+	status, err := c.Status(name)
+
+	return status != "", err
+}
+
+// Create makes a container from a remote image and leaves it stopped.
+//
+// Stopped rather than launched on purpose: provisioning wants to set the
+// devices and configuration before anything inside starts, and the caller
+// knows better than this package when the container should first come up.
+func (c *Client) Create(ctx context.Context, name, image string) error {
+	remote, err := incus.ConnectSimpleStreams(ImagesRemote, nil)
+	if err != nil {
+		return fmt.Errorf("reach the image server: %w", err)
+	}
+
+	alias, _, err := remote.GetImageAlias(image)
+	if err != nil {
+		return fmt.Errorf("look up image %q: %w", image, err)
+	}
+
+	img, _, err := remote.GetImage(alias.Target)
+	if err != nil {
+		return fmt.Errorf("fetch image %q: %w", image, err)
+	}
+
+	op, err := c.srv.CreateInstanceFromImage(remote, *img, api.InstancesPost{
+		Name: name,
+		Type: api.InstanceTypeContainer,
+	})
+	if err != nil {
+		return err
+	}
+
+	// A remote operation has no context aware Wait, and this one downloads an
+	// image, so it is the single call in the daemon that can run for minutes.
+	// Cancelling has to be wired up by hand.
+	done := make(chan error, 1)
+	go func() { done <- op.Wait() }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		_ = op.CancelTarget()
+
+		return ctx.Err()
+	}
+}
+
+// Delete removes a stopped instance.
+func (c *Client) Delete(ctx context.Context, name string) error {
+	op, err := c.srv.DeleteInstance(name)
+	if err != nil {
+		return err
+	}
+
+	return op.WaitContext(ctx)
+}
+
+func (c *Client) changeState(ctx context.Context, name, action string, timeout int, force bool) error {
+	op, err := c.srv.UpdateInstanceState(name, api.InstanceStatePut{
+		Action:  action,
+		Timeout: timeout,
+		Force:   force,
+	}, "")
+	if err != nil {
+		return err
+	}
+
+	return op.WaitContext(ctx)
+}
+
+// Start boots the instance.
+func (c *Client) Start(ctx context.Context, name string) error {
+	return c.changeState(ctx, name, "start", -1, false)
+}
+
+// Stop asks the instance to shut down, giving it timeout seconds before it is
+// killed. Callers are expected to have stopped anything that talks to the
+// instance first, see the note on Exec.
+func (c *Client) Stop(ctx context.Context, name string, timeout int) error {
+	return c.changeState(ctx, name, "stop", timeout, false)
+}
+
+// Restart stops and starts in one operation.
+func (c *Client) Restart(ctx context.Context, name string, timeout int) error {
+	return c.changeState(ctx, name, "restart", timeout, false)
+}
+
+// ------------------------------------------------------------------ config
+
+// Instance returns the current configuration together with its ETag, which
+// every update has to carry back so concurrent writers cannot overwrite each
+// other silently.
+func (c *Client) Instance(name string) (*api.Instance, string, error) {
+	return c.srv.GetInstance(name)
+}
+
+// Configure merges configuration keys and devices into the instance. A device
+// mapped to nil is removed. Absent keys are left untouched, so this converges
+// rather than replaces.
+func (c *Client) Configure(ctx context.Context, name string, config map[string]string, devices map[string]map[string]string) error {
+	inst, etag, err := c.srv.GetInstance(name)
+	if err != nil {
+		return err
+	}
+
+	put := inst.Writable()
+	if put.Config == nil {
+		put.Config = map[string]string{}
+	}
+
+	if put.Devices == nil {
+		put.Devices = map[string]map[string]string{}
+	}
+
+	changed := false
+
+	for k, v := range config {
+		if put.Config[k] != v {
+			put.Config[k] = v
+			changed = true
+		}
+	}
+
+	for name, dev := range devices {
+		if dev == nil {
+			if _, ok := put.Devices[name]; ok {
+				delete(put.Devices, name)
+				changed = true
+			}
+
+			continue
+		}
+
+		if !sameDevice(put.Devices[name], dev) {
+			put.Devices[name] = dev
+			changed = true
+		}
+	}
+
+	// Nothing to do is the common case once a seat is provisioned, and an
+	// update with no change still restarts nothing but does write to the
+	// database and emit an event.
+	if !changed {
+		return nil
+	}
+
+	op, err := c.srv.UpdateInstance(name, put, etag)
+	if err != nil {
+		return err
+	}
+
+	return op.WaitContext(ctx)
+}
+
+// UnsetConfig removes configuration keys. Separate from Configure because a
+// merge cannot express "absent" without giving up the ability to set an empty
+// value.
+func (c *Client) UnsetConfig(ctx context.Context, name string, keys ...string) error {
+	inst, etag, err := c.srv.GetInstance(name)
+	if err != nil {
+		return err
+	}
+
+	put := inst.Writable()
+
+	changed := false
+
+	for _, k := range keys {
+		if _, ok := put.Config[k]; ok {
+			delete(put.Config, k)
+			changed = true
+		}
+	}
+
+	if !changed {
+		return nil
+	}
+
+	op, err := c.srv.UpdateInstance(name, put, etag)
+	if err != nil {
+		return err
+	}
+
+	return op.WaitContext(ctx)
+}
+
+func sameDevice(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+
+	return true
+}
+
+// Addresses reports the IPv4 addresses per interface of a running instance.
+// Used to generate Sunshine's allowed CSRF origins, which is why it is the
+// running address that matters rather than anything configured.
+func (c *Client) Addresses(name string) (map[string][]string, error) {
+	state, _, err := c.srv.GetInstanceState(name)
+	if err != nil {
+		return nil, err
+	}
+
+	out := map[string][]string{}
+
+	for iface, net := range state.Network {
+		if iface == "lo" {
+			continue
+		}
+
+		for _, addr := range net.Addresses {
+			if addr.Family == "inet" && addr.Scope == "global" {
+				out[iface] = append(out[iface], addr.Address)
+			}
+		}
+	}
+
+	return out, nil
+}
+
+// -------------------------------------------------------------------- exec
+
+// ErrExec reports a command that ran but failed.
+type ErrExec struct {
+	Argv     []string
+	ExitCode int
+	Output   string
+}
+
+// Error reports the command, its exit code and the END of its output.
+//
+// The end, not the beginning. The first version kept the first 400 characters,
+// and a failing pacman spends those on warnings about packages that are already
+// up to date while the actual reason sits in the last line. That turned a clear
+// file conflict into a message that said nothing.
+func (e *ErrExec) Error() string {
+	out := strings.TrimSpace(e.Output)
+	if len(out) > 600 {
+		out = "... " + out[len(out)-600:]
+	}
+
+	return fmt.Sprintf("%s: exit %d: %s", strings.Join(e.Argv, " "), e.ExitCode, out)
+}
+
+// Exec runs a command inside the instance as root and returns its exit code.
+//
+// One warning that cost a wedged Incus daemon once: do not run this against an
+// instance that is shutting down. The M2 broker prototype polled with `incus
+// exec` on a half second interval, an exec landed in the middle of a stop, and
+// the whole daemon hung in "Stopping instance" while the container was already
+// gone. Whoever calls this is responsible for knowing the instance is running,
+// which is why the daemon tracks lifecycle events rather than polling.
+func (c *Client) Exec(ctx context.Context, name string, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	req := api.InstanceExecPost{
+		Command:     argv,
+		WaitForWS:   true,
+		Interactive: false,
+		Environment: map[string]string{
+			"HOME":            "/root",
+			"PATH":            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			"DEBIAN_FRONTEND": "noninteractive",
+		},
+	}
+
+	if stdin == nil {
+		stdin = bytes.NewReader(nil)
+	}
+
+	if stdout == nil {
+		stdout = io.Discard
+	}
+
+	if stderr == nil {
+		stderr = io.Discard
+	}
+
+	done := make(chan bool)
+
+	op, err := c.srv.ExecInstance(name, req, &incus.InstanceExecArgs{
+		Stdin:    stdin,
+		Stdout:   stdout,
+		Stderr:   stderr,
+		DataDone: done,
+	})
+	if err != nil {
+		return -1, err
+	}
+
+	if err := op.WaitContext(ctx); err != nil {
+		return -1, err
+	}
+
+	// The operation finishes before the streams have drained. Without this
+	// wait the last lines of output are lost, which turns a useful error
+	// message into an empty one.
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return -1, ctx.Err()
+	case <-time.After(30 * time.Second):
+	}
+
+	code := -1
+	if raw, ok := op.Get().Metadata["return"]; ok {
+		if f, ok := raw.(float64); ok {
+			code = int(f)
+		}
+	}
+
+	return code, nil
+}
+
+// Run executes a command and returns its combined output, treating a non-zero
+// exit as an error. This is the form nearly all provisioning uses.
+func (c *Client) Run(ctx context.Context, name string, argv ...string) (string, error) {
+	return c.RunInput(ctx, name, "", argv...)
+}
+
+// RunInput is Run with something on standard input.
+func (c *Client) RunInput(ctx context.Context, name, stdin string, argv ...string) (string, error) {
+	out := &syncBuffer{}
+
+	var in io.Reader
+	if stdin != "" {
+		in = strings.NewReader(stdin)
+	}
+
+	code, err := c.Exec(ctx, name, argv, in, out, out)
+	if err != nil {
+		return out.String(), err
+	}
+
+	if code != 0 {
+		return out.String(), &ErrExec{Argv: argv, ExitCode: code, Output: out.String()}
+	}
+
+	return out.String(), nil
+}
+
+// Try is Run for commands whose failure is information rather than a problem.
+// It returns the output and the exit code and only errors when the command
+// could not be run at all.
+func (c *Client) Try(ctx context.Context, name string, argv ...string) (string, int, error) {
+	out := &syncBuffer{}
+
+	code, err := c.Exec(ctx, name, argv, nil, out, out)
+
+	return out.String(), code, err
+}
+
+// syncBuffer collects standard output and standard error together.
+//
+// It has to be locked. The client copies the two streams from two goroutines,
+// and handing both the same bytes.Buffer loses output: this first showed up as
+// `id -u player` returning nothing at all, which read like a missing user
+// rather than a data race.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
+// -------------------------------------------------------------------- files
+
+// PushFile writes a file inside the instance, creating parent directories.
+func (c *Client) PushFile(name, path string, content []byte, mode int, uid, gid int64) error {
+	if dir := parentDir(path); dir != "" {
+		if err := c.MakeDir(name, dir, 0o755, uid, gid); err != nil {
+			return err
+		}
+	}
+
+	return c.srv.CreateInstanceFile(name, path, incus.InstanceFileArgs{
+		Content:   bytes.NewReader(content),
+		UID:       uid,
+		GID:       gid,
+		Mode:      mode,
+		Type:      "file",
+		WriteMode: "overwrite",
+	})
+}
+
+// MakeDir creates a directory inside the instance, and every parent it needs.
+//
+// The Incus file API creates exactly one level, so pushing a file into a path
+// like /usr/share/glvnd/egl_vendor.d fails with a bare "Not Found" that says
+// nothing about which component was missing. Existing directories are left
+// alone rather than reported, so provisioning stays idempotent.
+func (c *Client) MakeDir(name, path string, mode int, uid, gid int64) error {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+
+	for i := range parts {
+		current := "/" + strings.Join(parts[:i+1], "/")
+
+		err := c.srv.CreateInstanceFile(name, current, incus.InstanceFileArgs{
+			UID:  uid,
+			GID:  gid,
+			Mode: mode,
+			Type: "directory",
+		})
+		// Only the last component's failure is worth reporting. If it was
+		// created, every parent was there; and asking Incus to create a
+		// directory that already exists is not reliably one recognisable
+		// error across versions.
+		if err != nil && i == len(parts)-1 &&
+			!strings.Contains(strings.ToLower(err.Error()), "exists") {
+			return fmt.Errorf("create %s: %w", current, err)
+		}
+	}
+
+	return nil
+}
+
+// ReadFile returns the contents of a file inside the instance.
+func (c *Client) ReadFile(name, path string) ([]byte, error) {
+	reader, _, err := c.srv.GetInstanceFile(name, path)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() { _ = reader.Close() }()
+
+	return io.ReadAll(reader)
+}
+
+func parentDir(path string) string {
+	i := strings.LastIndex(path, "/")
+	if i <= 0 {
+		return ""
+	}
+
+	return path[:i]
+}
+
+// ------------------------------------------------------------------- events
+
+// Lifecycle is one instance lifecycle event, reduced to what the daemon cares
+// about.
+type Lifecycle struct {
+	Action   string // instance-started, instance-shutdown, instance-deleted, ...
+	Instance string
+	Time     time.Time
+}
+
+// Lifecycles streams instance lifecycle events until the context ends.
+//
+// This exists so the daemon never has to poll Incus to learn what state a
+// container is in. Polling is what wedged the daemon during the M2 spike, and
+// beyond that a seat can be stopped from outside the daemon entirely, by a
+// crash or by somebody typing `incus stop`. The daemon has to notice either
+// way.
+func (c *Client) Lifecycles(ctx context.Context) (<-chan Lifecycle, error) {
+	listener, err := c.srv.GetEventsByType([]string{"lifecycle"})
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(chan Lifecycle, 32)
+
+	_, err = listener.AddHandler(nil, func(ev api.Event) {
+		var meta api.EventLifecycle
+		if json.Unmarshal(ev.Metadata, &meta) != nil {
+			return
+		}
+
+		if !strings.HasPrefix(meta.Action, "instance-") {
+			return
+		}
+
+		// The source is a URL like /1.0/instances/seat1.
+		name := meta.Source
+		if i := strings.LastIndex(name, "/"); i >= 0 {
+			name = name[i+1:]
+		}
+
+		if name == "" {
+			return
+		}
+
+		select {
+		case out <- Lifecycle{Action: meta.Action, Instance: name, Time: ev.Timestamp}:
+		default:
+			// A full channel means the consumer is stuck. Dropping is
+			// correct here: the daemon reconciles against the real
+			// status anyway, so a lost event costs a delay, never
+			// correctness.
+		}
+	})
+	if err != nil {
+		listener.Disconnect()
+
+		return nil, err
+	}
+
+	go func() {
+		defer close(out)
+		defer listener.Disconnect()
+
+		wait := make(chan error, 1)
+		go func() { wait <- listener.Wait() }()
+
+		select {
+		case <-ctx.Done():
+		case <-wait:
+		}
+	}()
+
+	return out, nil
+}
+
+// ------------------------------------------------------------------ helpers
+
+func isNotFound(err error) bool {
+	return err != nil && (api.StatusErrorCheck(err, 404) ||
+		strings.Contains(strings.ToLower(err.Error()), "not found"))
+}
+
+// ErrNotFound is returned for an instance that does not exist.
+var ErrNotFound = errors.New("instance not found")

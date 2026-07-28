@@ -1,0 +1,30 @@
+[Unit]
+Description=polyseat: headless Sway session
+After=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+Environment=WLR_BACKENDS=headless,libinput
+# /dev/input is empty at startup - without this the libinput backend aborts.
+Environment=WLR_LIBINPUT_NO_DEVICES=1
+Environment=WLR_RENDERER=gles2
+Environment=WLR_HEADLESS_OUTPUTS=1
+Environment=LIBSEAT_BACKEND=noop
+Environment=XDG_SESSION_TYPE=wayland
+# Steam is an X11 application, and sway only starts Xwayland once the
+# first X client appears. Until then sway's own environment carries no
+# DISPLAY, so children inherit none and Steam only shows "Unable to open
+# a connection to X". Nothing else uses X inside the container, so :0 is
+# always the right display.
+Environment=DISPLAY=:0
+Environment=GBM_BACKEND=nvidia-drm
+Environment=__GLX_VENDOR_LIBRARY_NAME=nvidia
+# Finding from M0: without this variable SDL does not notice a pad that only
+# arrives in the container at runtime.
+Environment=SDL_JOYSTICK_DISABLE_UDEV=1
+ExecStart=/usr/bin/sway
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

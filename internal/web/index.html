@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polyseat</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header>
+  <h1>Polyseat</h1>
+  <div class="host">
+    <span id="hostname"></span>
+    <span id="observer" class="pill" title="The uhid observer records which container created which gamepad."></span>
+    <span id="link" class="pill offline">offline</span>
+  </div>
+</header>
+
+<main>
+  <div id="warnings"></div>
+  <div id="seats" class="seats"></div>
+
+  <button id="add" class="add">Add a seat</button>
+</main>
+
+<dialog id="editor">
+  <form method="dialog" id="editor-form">
+    <h2 id="editor-title">New seat</h2>
+
+    <label>
+      Name
+      <input name="name" required pattern="[a-z][a-z0-9-]{1,30}[a-z0-9]" autocomplete="off">
+      <small>Also the container name and the tag in the device names. It cannot be changed later.</small>
+    </label>
+
+    <label>
+      Label
+      <input name="label" autocomplete="off">
+      <small>What it is called in this interface. Change this freely.</small>
+    </label>
+
+    <label>
+      Resolution
+      <input name="resolution" value="1920x1080@60Hz" required>
+      <small>What the session comes up with. Moonlight renegotiates per client.</small>
+    </label>
+
+    <label>
+      Address
+      <input name="address" placeholder="empty means DHCP" autocomplete="off">
+      <small>A fixed address in the form 10.20.30.71/24 keeps the seat's web interface reachable at the same place.</small>
+    </label>
+
+    <label>
+      Gateway
+      <input name="gateway" placeholder="10.20.30.1" autocomplete="off">
+    </label>
+
+    <label class="check">
+      <input type="checkbox" name="autostart" checked>
+      Start this seat when the daemon starts
+    </label>
+
+    <p class="error" id="editor-error"></p>
+
+    <menu>
+      <button value="cancel" type="button" id="editor-cancel">Cancel</button>
+      <button value="save" id="editor-save" class="primary">Save</button>
+    </menu>
+  </form>
+</dialog>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,148 @@
+// Command polyseatd is the Polyseat daemon.
+//
+// It owns the seats: it builds them, starts and stops them, keeps their input
+// brokers running and serves the web interface that drives all of it. There is
+// no command line for any of that on purpose. Seat configuration is generated,
+// not written by hand, and a second way in would mean a second author for the
+// same files.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/superuser404notfound/Polyseat/internal/api"
+	"github.com/superuser404notfound/Polyseat/internal/config"
+	"github.com/superuser404notfound/Polyseat/internal/incusx"
+	"github.com/superuser404notfound/Polyseat/internal/seat"
+)
+
+// version is stamped in at build time.
+var version = "dev"
+
+func main() {
+	configPath := flag.String("config", config.DefaultPath, "path to the bootstrap configuration")
+	listen := flag.String("listen", "", "override the listen address from the configuration")
+	showVersion := flag.Bool("version", false, "print the version and exit")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("polyseatd", version)
+
+		return
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	if err := run(*configPath, *listen, logger); err != nil {
+		logger.Error("polyseatd stopped", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(configPath, listenOverride string, logger *slog.Logger) error {
+	// Root is not optional and saying so plainly beats failing later on a
+	// permission denied from the Incus socket. The daemon creates containers,
+	// attaches device nodes and runs the broker, none of which an unprivileged
+	// process can do.
+	if os.Geteuid() != 0 {
+		return errors.New("polyseatd has to run as root")
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	if listenOverride != "" {
+		cfg.Listen = listenOverride
+	}
+
+	if cfg.Uplink == "" {
+		if guess, err := config.DefaultUplink(); err == nil {
+			cfg.Uplink = guess
+			logger.Info("no uplink configured, using the interface with the default route", "uplink", guess)
+		}
+	}
+
+	client, err := incusx.Connect()
+	if err != nil {
+		return err
+	}
+
+	defer client.Close()
+
+	if incusVersion, err := client.ServerVersion(); err == nil {
+		logger.Info("connected to Incus", "version", incusVersion)
+	}
+
+	store, err := seat.OpenStore(cfg.StateDir)
+	if err != nil {
+		return err
+	}
+
+	manager := seat.NewManager(cfg, client, store, logger)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	managerDone := make(chan error, 1)
+	go func() { managerDone <- manager.Run(ctx) }()
+
+	server := &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           api.New(manager, logger),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	serverDone := make(chan error, 1)
+
+	go func() {
+		logger.Info("web interface", "address", "http://"+cfg.Listen)
+
+		err := server.ListenAndServe()
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+
+		serverDone <- err
+	}()
+
+	select {
+	case <-ctx.Done():
+		logger.Info("shutting down, the seats keep running")
+	case err := <-managerDone:
+		if err != nil {
+			logger.Error("the seat manager stopped", "error", err)
+		}
+
+		stop()
+	case err := <-serverDone:
+		if err != nil {
+			logger.Error("the web interface stopped", "error", err)
+		}
+
+		stop()
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_ = server.Shutdown(shutdownCtx)
+
+	select {
+	case <-managerDone:
+	case <-time.After(15 * time.Second):
+		logger.Warn("the seat manager did not shut down in time")
+	}
+
+	return nil
+}
