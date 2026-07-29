@@ -346,6 +346,24 @@ func mergeApps(ours []app, existing []byte) (appList, int, error) {
 		// player installed would be in the list and fail to start.
 		Env: map[string]string{
 			"PATH": "$(PATH):$(HOME)/.local/bin:$(HOME)/.local/share/flatpak/exports/bin",
+
+			// The framerate cap, applied to everything Sunshine starts and to
+			// everything those start in turn, which is how a game two levels
+			// down inside Steam gets it without Steam knowing.
+			//
+			// Sunshine applies this block to the applications it launches and
+			// not to itself, which is the reason it is here rather than in the
+			// session: MangoHud loaded into Sunshine would be limiting the
+			// encoder, and loaded into sway it would be limiting the desktop.
+			//
+			// Two mechanisms because MangoHud has two. The variable enables its
+			// Vulkan layer, which is the path that survives into Proton and
+			// into a flatpak sandbox. The preloaded shim is what OpenGL needs,
+			// which is still most emulators. $LIB is expanded by the dynamic
+			// linker, not by a shell, so a 32 bit process picks up the 32 bit
+			// build of the same library.
+			"MANGOHUD":   "1",
+			"LD_PRELOAD": "/usr/$LIB/mangohud/libMangoHud_shim.so",
 		},
 	}
 

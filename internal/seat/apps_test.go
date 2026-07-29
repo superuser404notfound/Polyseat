@@ -414,3 +414,29 @@ func TestSameAppListRefusesWhatItCannotRead(t *testing.T) {
 		}
 	}
 }
+
+// Sunshine applies this block to the applications it starts, so it is where the
+// framerate cap reaches a game. Losing it would cost nothing visible: the seat
+// streams, the games run, and every one of them runs uncapped.
+func TestAppListCarriesTheFramerateCapIntoWhatItStarts(t *testing.T) {
+	list, _, err := mergeApps(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if list.Env["MANGOHUD"] != "1" {
+		t.Errorf("MANGOHUD is %q, so the Vulkan limiter never loads", list.Env["MANGOHUD"])
+	}
+
+	// $LIB is the dynamic linker's, and a shell that expanded it would leave a
+	// path that exists for neither word length.
+	preload := list.Env["LD_PRELOAD"]
+	if !strings.Contains(preload, "libMangoHud_shim.so") || !strings.Contains(preload, "$LIB") {
+		t.Errorf("LD_PRELOAD is %q, so OpenGL games run uncapped", preload)
+	}
+
+	// The reason the launchers are on PATH at all.
+	if !strings.Contains(list.Env["PATH"], "flatpak/exports/bin") {
+		t.Errorf("PATH is %q, so an installed launcher cannot be started", list.Env["PATH"])
+	}
+}

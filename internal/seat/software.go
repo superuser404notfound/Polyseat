@@ -302,6 +302,13 @@ func (m *Manager) InstallSoftware(name, id string) error {
 
 		m.logf(name, "%s is installed", id)
 
+		// An installation is also the moment a seat can gain a runtime it did
+		// not have, and the framerate cap only reaches inside a sandbox if the
+		// matching MangoHud layer is there. Doing this here rather than only
+		// while provisioning is what covers the ordinary case: a seat is built
+		// with no flatpaks at all and the first launcher arrives later.
+		m.layerForFlatpaks(ctx, name)
+
 		// So it appears in Moonlight without waiting for the next restart. The
 		// app list is generated from what is installed, and this is the moment
 		// that changed.
@@ -348,6 +355,23 @@ func (m *Manager) RemoveSoftware(name, id string) error {
 
 		return nil
 	})
+}
+
+// layerForFlatpaks makes sure the framerate cap reaches sandboxed applications.
+func (m *Manager) layerForFlatpaks(ctx context.Context, name string) {
+	s, err := m.store.Get(name)
+	if err != nil {
+		return
+	}
+
+	p := &Provisioner{
+		Client: m.client,
+		Seat:   s,
+		Image:  m.cfg.Image,
+		Log:    func(f string, a ...any) { m.logf(name, f, a...) },
+	}
+
+	p.flatpakMangoHud(ctx)
 }
 
 // refreshApps rewrites the Moonlight app list for a running seat.

@@ -385,10 +385,15 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		// fetches its own Wine builds, so plain wine is not needed and would
 		// cost more than everything else here together.
 		"lutris", "firefox",
-		// gamescope for scaling and frame caps, MangoHud to see what a seat is
-		// actually managing, and Noto because a game with no font for its own
-		// text looks broken rather than unstyled.
-		"gamescope", "mangohud", "noto-fonts",
+		// gamescope for scaling, MangoHud for the framerate cap, and Noto
+		// because a game with no font for its own text looks broken rather
+		// than unstyled.
+		//
+		// The 32 bit build alongside it because a good many games still are:
+		// the cap is applied by preloading a library, and a 32 bit process
+		// cannot load the 64 bit one, so without this the games most likely to
+		// need a cap would be the ones running without it.
+		"gamescope", "mangohud", "lib32-mangohud", "noto-fonts",
 		"avahi",
 		"pipewire", "pipewire-pulse", "pipewire-audio", "wireplumber",
 		"mesa", "vulkan-tools", "mesa-utils",
@@ -614,15 +619,96 @@ func (p *Provisioner) stepFlatpak(ctx context.Context) error {
 	// A user wide override rather than one per application, because the next
 	// launcher somebody installs has the same problem and nothing would tell
 	// them why. This is a seat: the games directory is what it is for.
+	//
+	// The other two put the framerate cap inside the sandbox. A flatpak sees
+	// neither the seat's environment nor its home directory, so a launcher
+	// installed this way would be the one thing in the seat that ignored the
+	// cap, and the launchers people install here are exactly the ones that run
+	// games. The variable turns MangoHud's Vulkan layer on and the read only
+	// path is where polyseat-fps writes what the cap should be.
 	if _, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
 		"HOME=/home/"+Player,
-		"flatpak", "override", "--user", "--filesystem="+LibraryMount); err != nil {
+		"flatpak", "override", "--user",
+		"--filesystem="+LibraryMount,
+		"--env=MANGOHUD=1",
+		"--filesystem=xdg-config/MangoHud:ro"); err != nil {
 		return err
 	} else if code != 0 {
 		p.Log("! flatpak applications may not be able to see %s", LibraryMount)
 	}
 
+	p.flatpakMangoHud(ctx)
+
 	return nil
+}
+
+// flatpakMangoHud installs the MangoHud Vulkan layer into every runtime the
+// seat's flatpak applications use.
+//
+// The override above says MangoHud is enabled; this is what makes there be a
+// MangoHud to enable. The layer the seat has is an Arch package outside the
+// sandbox, and a flatpak cannot load it, so without the matching extension the
+// variable sets nothing in motion and a game started from Heroic runs at
+// whatever framerate it likes.
+//
+// Per runtime branch rather than a fixed one, because the extension is versioned
+// with the runtime and the branch a seat needs is whichever its applications
+// pulled in. On a seat that has installed nothing yet there is no runtime and
+// nothing to do, which is why this is also called after an install.
+//
+// Never fails the caller. A seat without the extension streams perfectly well;
+// it just does not cap what runs inside a sandbox.
+func (p *Provisioner) flatpakMangoHud(ctx context.Context) {
+	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
+		"HOME=/home/"+Player,
+		"flatpak", "list", "--user", "--runtime", "--columns=application,branch")
+	if err != nil || code != 0 {
+		return
+	}
+
+	for _, branch := range platformBranches(out) {
+		_, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
+			"HOME=/home/"+Player,
+			"flatpak", "install", "--user", "-y", "--noninteractive", "flathub",
+			"org.freedesktop.Platform.VulkanLayer.MangoHud//"+branch)
+		if err != nil {
+			return
+		}
+
+		if code != 0 {
+			p.Log("! the framerate cap will not reach flatpak applications on runtime %s", branch)
+			continue
+		}
+
+		p.Log("the framerate cap reaches flatpak applications on runtime %s", branch)
+	}
+}
+
+// platformBranches picks the freedesktop runtime versions out of a flatpak
+// listing.
+//
+// Only that runtime, because the extension exists for it and not for the GNOME
+// or KDE ones, which carry it themselves through their own base.
+func platformBranches(list string) []string {
+	seen := map[string]bool{}
+
+	var branches []string
+
+	for _, line := range strings.Split(list, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != "org.freedesktop.Platform" {
+			continue
+		}
+
+		if seen[fields[1]] {
+			continue
+		}
+
+		seen[fields[1]] = true
+		branches = append(branches, fields[1])
+	}
+
+	return branches
 }
 
 func (p *Provisioner) readUID(ctx context.Context) error {
@@ -1031,6 +1117,7 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		{home + "/.config/systemd/user/polyseat-sunshine.service", asset("assets/polyseat-sunshine.service"), 0o644, p.uid},
 		{"/usr/local/bin/polyseat-sunshine-run", asset("assets/sunshine-run.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-resize", asset("assets/resize.sh"), 0o755, 0},
+		{"/usr/local/bin/polyseat-fps", asset("assets/fps.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-welcome", asset("assets/welcome.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-keyboard", asset("assets/keyboard.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-launcher", asset("assets/launcher.sh"), 0o755, 0},
