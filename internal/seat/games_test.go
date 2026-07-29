@@ -1,7 +1,11 @@
 package seat
 
 import (
-	"strings"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -75,21 +79,125 @@ func TestDedupeGamesKeepsTheFirstOfEachName(t *testing.T) {
 	}
 }
 
-// The scan runs in the seat, so the script itself is the part that cannot be
-// covered by a Go test. What can be checked is that it still looks for both
-// library directories and still insists on the fully installed state, because
-// dropping either would be silent: the app list would simply be shorter, or it
-// would offer titles that are still downloading.
-func TestSteamScanLooksWhereGamesActuallyAre(t *testing.T) {
-	for _, want := range []string{
-		"/home/player/.local/share/Steam/steamapps",
-		"/home/player/games/steamapps",
-		"appmanifest_*.acf",
-		"librarycache",
-		`state != "4"`,
-	} {
-		if !strings.Contains(steamScan, want) {
-			t.Errorf("the scan no longer mentions %s", want)
-		}
+// runScan runs the embedded scan against a home directory built for the test.
+//
+// The script is Python inside a Go string, so the only alternative is checking
+// it for the words it contains, and that is not a test: removing the sign in
+// check while leaving the function that performs it went straight through one.
+// This runs the thing itself.
+func runScan(t *testing.T, home string) []map[string]string {
+	t.Helper()
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("SKIPPED: no python3 to run the scan with, so its behaviour is unverified here")
+	}
+
+	cmd := exec.Command(python, "-c", steamScan)
+	cmd.Env = append(os.Environ(), "POLYSEAT_HOME="+home)
+
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("the scan failed: %v", err)
+	}
+
+	var found []map[string]string
+	if err := json.Unmarshal(out, &found); err != nil {
+		t.Fatalf("the scan printed something that is not a list: %v\n%s", err, out)
+	}
+
+	return found
+}
+
+// manifest writes an appmanifest the way Steam does.
+func manifest(t *testing.T, dir, appid, name, state string) {
+	t.Helper()
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	body := fmt.Sprintf(`"AppState"
+{
+	"appid"		"%s"
+	"name"		"%s"
+	"StateFlags"		"%s"
+	"installdir"		"%s"
+}
+`, appid, name, state, name)
+
+	if err := os.WriteFile(filepath.Join(dir, "appmanifest_"+appid+".acf"),
+		[]byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func signIn(t *testing.T, home string) {
+	t.Helper()
+
+	dir := filepath.Join(home, ".local/share/Steam/config")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	body := "\"users\"\n{\n\t\"76561198979087621\"\n\t{\n\t}\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "loginusers.vdf"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The reported case. The shared library puts a game's files into every seat
+// that takes part, and files are not an account: a seat where nobody has ever
+// signed in to Steam was offering its neighbour's games in Moonlight, where
+// picking one did nothing at all.
+func TestScanOffersNothingWhereNobodyHasSignedIn(t *testing.T) {
+	home := t.TempDir()
+	manifest(t, filepath.Join(home, "games/steamapps"), "3751950", "Some Shared Game", "4")
+
+	if found := runScan(t, home); len(found) != 0 {
+		t.Errorf("offered %d games in a seat with no Steam account: %v", len(found), found)
+	}
+}
+
+func TestScanOffersGamesOnceSomebodyHas(t *testing.T) {
+	home := t.TempDir()
+	manifest(t, filepath.Join(home, "games/steamapps"), "3751950", "Some Shared Game", "4")
+	signIn(t, home)
+
+	found := runScan(t, home)
+	if len(found) != 1 {
+		t.Fatalf("offered %d games, want 1: %v", len(found), found)
+	}
+
+	if found[0]["name"] != "Some Shared Game" || found[0]["appid"] != "3751950" {
+		t.Errorf("read %v, want the manifest that was written", found[0])
+	}
+}
+
+// A title still downloading cannot start, so offering it is offering a dead
+// entry. 4 is the state that means fully installed.
+func TestScanSkipsWhatIsNotFullyInstalled(t *testing.T) {
+	home := t.TempDir()
+	signIn(t, home)
+	manifest(t, filepath.Join(home, ".local/share/Steam/steamapps"), "1", "Half Downloaded", "1026")
+	manifest(t, filepath.Join(home, ".local/share/Steam/steamapps"), "2", "Ready To Play", "4")
+
+	found := runScan(t, home)
+	if len(found) != 1 || found[0]["name"] != "Ready To Play" {
+		t.Errorf("offered %v, want only the installed one", found)
+	}
+}
+
+// Both libraries are read, and a title in both is one entry rather than two.
+func TestScanReadsBothLibrariesWithoutDuplicating(t *testing.T) {
+	home := t.TempDir()
+	signIn(t, home)
+	manifest(t, filepath.Join(home, ".local/share/Steam/steamapps"), "7", "In Both", "4")
+	manifest(t, filepath.Join(home, "games/steamapps"), "7", "In Both", "4")
+	manifest(t, filepath.Join(home, "games/steamapps"), "8", "Only Shared", "4")
+
+	found := runScan(t, home)
+	if len(found) != 2 {
+		t.Errorf("offered %d entries, want 2 without a duplicate: %v", len(found), found)
 	}
 }

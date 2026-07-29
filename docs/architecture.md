@@ -370,6 +370,19 @@ That scan is on its own minute long timer rather than the ten second sweep,
 because asking Lutris means starting Lutris, and nobody needs to learn within
 ten seconds that a game was uninstalled.
 
+**Files are not an account**, and forgetting that made the list actively
+misleading. The shared library puts a game into every seat that takes part, so
+a seat where nobody had ever signed in to Steam was offering its neighbour's
+games in Moonlight, where picking one did nothing at all. Steam's titles are
+only offered where Steam has an account, which is what the per user directory
+and the account list say. This is narrower than ownership, which is not
+knowable from outside Steam, and it removes the case that is certainly wrong.
+
+Artwork is fetched for a title the seat has no cover for, since a seat only
+caches what it has displayed in Steam and the library delivers games nobody
+has opened there. Not every title has one published: what is missing is
+remembered for a week rather than asked for every minute.
+
 **Every entry Polyseat generates is marked as its own**, which took two goes to
 get right. Keeping entries it did not recognise looked like politeness towards
 somebody who had added an app through Sunshine's interface, and it made removal

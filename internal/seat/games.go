@@ -56,9 +56,43 @@ const maxGames = 60
 const steamScan = `
 import glob, json, os, re
 
-dirs = ["/home/player/.local/share/Steam/steamapps", "/home/player/games/steamapps"]
-art = "/home/player/.local/share/Steam/appcache/librarycache"
+# The player's home, or wherever a test has put a pretend one. Everything here
+# hangs off it so that the whole scan can be run against a directory tree built
+# for the purpose, rather than only checked for the words it contains.
+home = os.environ.get("POLYSEAT_HOME", "/home/player")
+
+steam = home + "/.local/share/Steam"
+dirs = [steam + "/steamapps", home + "/games/steamapps"]
+art = steam + "/appcache/librarycache"
 out = {}
+
+
+def signed_in():
+    """Whether anybody has ever signed in to Steam in this seat.
+
+    Worth asking, because the shared library puts a game's files into every
+    seat that takes part, and files are not an account. A seat where Steam has
+    never been set up was offering its neighbour's games in Moonlight, and
+    picking one did nothing at all.
+
+    Both signals, because they appear at different moments: the account list is
+    written when somebody signs in, the per user directory when Steam first
+    stores anything for them.
+    """
+    if glob.glob(steam + "/userdata/[0-9]*"):
+        return True
+
+    try:
+        with open(steam + "/config/loginusers.vdf", encoding="utf-8",
+                  errors="replace") as fh:
+            return re.search(r'"[0-9]{17}"', fh.read()) is not None
+    except OSError:
+        return False
+
+
+if not signed_in():
+    print("[]")
+    raise SystemExit(0)
 
 for d in dirs:
     for path in sorted(glob.glob(d + "/appmanifest_*.acf")):
