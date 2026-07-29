@@ -167,8 +167,27 @@ Nothing on its own. It is a client of the daemon's API. Configuration is owned
 by the daemon and everything else is a generated artifact, as set out in
 [`architecture.md`](architecture.md).
 
+## Testing the installer
+
+`host/test-install.sh` runs the installer against a throwaway Arch **virtual
+machine** and checks what it did, including that a second run changes nothing
+and that `--uninstall` removes what it should and keeps what it should.
+
+A virtual machine rather than a container, because a container shares the host's
+kernel and its udev, cannot run systemd units that touch devices, and would need
+nesting to run Incus inside it. The installer talks to all three.
+
+The reason this exists at all: the machine an installer is written on already
+has everything it installs, so running it there proves only that it is
+idempotent. The steps that matter most are exactly the ones such a machine never
+reaches, and the harness therefore resets them before every run: the idmap entry
+CachyOS does not ship, the first `incus admin init`, the group the account is
+not yet in. Forgetting to reset the Incus setup made that check pass on every
+run after the first whether the installer did anything or not.
+
 ## Order of work
 
-The installer is finished **after** the daemon, not before. Its main job will be
-installing the daemon, so writing it now means writing it twice, and its
-bootstrap parts cannot be tested on a machine that is already bootstrapped.
+The installer was finished **after** the daemon, not before. Its main job is
+installing the daemon, so writing it earlier would have meant writing it twice,
+and its bootstrap parts could not be tested on a machine that was already
+bootstrapped. That last problem is what the virtual machine above solves.
