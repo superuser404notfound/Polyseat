@@ -418,7 +418,16 @@ because whoever needs it has the fewest ways to ask.
 helper that turned a thumbstick into a mouse whenever a controller appeared
 would make every game unplayable, so Select and Start together toggle it, a
 chord because single buttons are taken. The gamepad is never grabbed, so games
-see it exactly as before.
+see it exactly as before. Left stick points and right stick scrolls, which is
+the way round the Windows tools do it and worth matching.
+
+**A gamepad comes and goes and the session does not.** It appears when somebody
+starts streaming and the broker attaches it, and it is gone again when they
+stop, so one seat sees several over an evening. Scanning once at startup, which
+is what this did first, meant the helper worked until the first person stopped
+playing and was dead to everybody after that. It rescans every two seconds, and
+when the last pad disappears it releases whatever was held and switches the
+mode off, so the next person does not inherit a pointer they never asked for.
 
 Written rather than configured, and that was a deliberate change of mind. The
 obvious answer is an existing remapper, and two were tried. sc-controller ships

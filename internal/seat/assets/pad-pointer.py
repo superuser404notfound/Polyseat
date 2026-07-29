@@ -231,27 +231,42 @@ def toggle_keyboard():
 def main():
     seat = os.environ.get("XDG_SEAT", "")
 
-    devices = pads()
-
-    while not devices:
-        # Normal rather than exceptional: the seat's session starts before
-        # anybody connects, and a gamepad only exists once Moonlight is
-        # streaming and the broker has attached it.
-        time.sleep(2.0)
-        devices = pads()
-
-    log(f"following {len(devices)} gamepad(s): "
-        f"{', '.join(d.name for d in devices)}")
-
     pointer = Pointer(seat)
     log("ready. Select and Start together turn pointer mode on and off")
 
-    ranges = {d.fd: axis_info(d) for d in devices}
-    by_fd = {d.fd: d for d in devices}
+    ranges = {}
+    by_fd = {}
+    paths = set()
+
+    def rescan():
+        """Pick up gamepads that were not there a moment ago.
+
+        This runs for the life of the session and a gamepad does not. It
+        appears when somebody starts streaming and the broker attaches it, and
+        it goes away again when they stop, so over an evening the same seat
+        sees several. Scanning once at startup, which is what this did first,
+        meant the helper worked until the first person stopped playing and was
+        dead to everyone afterwards.
+        """
+        for device in pads():
+            if device.path in paths:
+                device.close()
+                continue
+
+            paths.add(device.path)
+            by_fd[device.fd] = device
+            ranges[device.fd] = axis_info(device)
+            log(f"following {device.name}")
+
+    rescan()
+    last_scan = time.monotonic()
 
     active = False
     held = set()
-    axes = {ecodes.ABS_RX: 0.0, ecodes.ABS_RY: 0.0, ecodes.ABS_Y: 0.0}
+    # Left stick points, right stick scrolls. That is the way round the
+    # Windows tools do it and the way it is worth matching: the hand that
+    # aims in a game is the hand that expects to aim here.
+    axes = {ecodes.ABS_X: 0.0, ecodes.ABS_Y: 0.0, ecodes.ABS_RY: 0.0}
     scroll_debt = 0.0
     last = time.monotonic()
 
@@ -272,6 +287,15 @@ def main():
                     log(f"{device.name} went away")
                     by_fd.pop(fd, None)
                     ranges.pop(fd, None)
+                    paths.discard(device.path)
+
+                    # Whoever was holding it is gone, so nothing should stay
+                    # pressed and the next person should not inherit a mode
+                    # they did not turn on.
+                    if not by_fd:
+                        pointer.release_all()
+                        active = False
+
                     continue
                 raise
 
@@ -308,11 +332,15 @@ def main():
         now = time.monotonic()
         elapsed, last = now - last, now
 
+        if now - last_scan >= 2.0:
+            last_scan = now
+            rescan()
+
         if not active:
             continue
 
-        x = axes[ecodes.ABS_RX]
-        y = axes[ecodes.ABS_RY]
+        x = axes[ecodes.ABS_X]
+        y = axes[ecodes.ABS_Y]
 
         if x or y:
             pointer.move(
@@ -320,7 +348,9 @@ def main():
                 (abs(y) ** CURVE) * (1 if y > 0 else -1) * SPEED * elapsed,
             )
 
-        wheel = axes[ecodes.ABS_Y]
+        # Scrolling is inverted against the axis: pushing the stick up should
+        # move the page up, which means the wheel turns the other way.
+        wheel = axes[ecodes.ABS_RY]
         if wheel:
             scroll_debt -= (abs(wheel) ** CURVE) * (1 if wheel > 0 else -1) \
                 * SCROLL_SPEED * elapsed
