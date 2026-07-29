@@ -521,8 +521,10 @@ function card(seat) {
     ...(bar ? [bar] : []),
     facts(seat),
     actions(seat),
-    softwarePanel(seat),
+    // Pairing first: a seat is set up once and then played on, and until a
+    // device is paired with it there is nothing to install software for.
     pairingPanel(seat),
+    softwarePanel(seat),
     logPanel(seat),
   );
 
