@@ -12,12 +12,21 @@ exactly this.
 So the pointer and the keyboard both live in the seat and travel in the video
 stream. This turns the gamepad into the pointer; squeekboard draws the letters.
 
-**Pointer mode is off until asked for, and that is the whole safety story.**
-A helper that turned a thumbstick into a mouse the moment a controller appeared
-would make every game unplayable. Select and Start together toggle it, a chord
-because single buttons are taken: Guide opens Steam's overlay, and everything
-else is a game input. While the mode is off, this reads events and emits
-nothing.
+**Pointer mode follows what is in front, and that is the whole safety story.**
+A helper that turned a thumbstick into a mouse while a game was running would
+make every game unplayable. So the compositor is asked instead of guessed at: a
+fullscreen application in front means the controller belongs to it and the mode
+goes off; back on the desktop it goes on. That is what the Windows tools do from
+the foreground window, and sway can answer it exactly rather than by heuristic.
+
+Select and Start together still toggle it by hand, a chord because single
+buttons are taken: Guide opens Steam's overlay and everything else is a game
+input. A toggle holds until the next time something goes fullscreen or stops
+being fullscreen, at which point the automatic answer takes over again. That way
+a windowed game can be dealt with, and forgetting to switch back cannot leave
+somebody with a dead stick.
+
+While the mode is off, this reads events and emits nothing.
 
 The gamepad is never grabbed. Games keep seeing it exactly as before, which is
 also why the mode has to be a deliberate act rather than a guess about what the
@@ -31,7 +40,11 @@ what they are called.
 """
 
 import errno
+import glob
+import json
 import os
+import socket
+import struct
 import subprocess
 import sys
 import time
@@ -82,6 +95,135 @@ TOGGLE = (ecodes.BTN_SELECT, ecodes.BTN_START)
 
 def log(message):
     print(f"polyseat-pad-pointer: {message}", flush=True)
+
+
+class Sway:
+    """Just enough of sway's IPC to know whether a game is in front.
+
+    Two connections, because a subscribed one only ever delivers events and
+    cannot be asked a question in between. One stays open and reports that
+    something happened; the other is opened per question and asks it.
+
+    The question is asked of the tree rather than taken from the event, because
+    an event says what changed and not what is in front afterwards. Closing a
+    fullscreen window and revealing another one is one event about the window
+    that went away.
+
+    Every failure here is answered with "nothing is fullscreen". A seat whose
+    compositor cannot be reached should behave like a desktop, where the worst
+    case is a pointer somebody did not ask for and can turn off with the chord.
+    """
+
+    MAGIC = b"i3-ipc"
+    SUBSCRIBE = 2
+    GET_TREE = 4
+
+    def __init__(self):
+        self.events = None
+        self.path = self._socket_path()
+
+        if not self.path:
+            log("no sway socket, pointer mode stays manual")
+            return
+
+        try:
+            self.events = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.events.connect(self.path)
+            self._send(self.events, self.SUBSCRIBE, b'["window"]')
+            self._recv(self.events)
+        except OSError as exc:
+            log(f"could not subscribe to sway, pointer mode stays manual: {exc}")
+            self.events = None
+
+    @staticmethod
+    def _socket_path():
+        path = os.environ.get("SWAYSOCK", "")
+        if path and os.path.exists(path):
+            return path
+
+        runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        found = sorted(glob.glob(f"{runtime}/sway-ipc.*"),
+                       key=os.path.getmtime, reverse=True)
+
+        return found[0] if found else ""
+
+    @classmethod
+    def _send(cls, sock, kind, payload=b""):
+        sock.sendall(cls.MAGIC + struct.pack("=II", len(payload), kind) + payload)
+
+    @classmethod
+    def _recv(cls, sock):
+        head = cls._exactly(sock, len(cls.MAGIC) + 8)
+        length, _ = struct.unpack("=II", head[len(cls.MAGIC):])
+
+        return json.loads(cls._exactly(sock, length) or b"{}")
+
+    @staticmethod
+    def _exactly(sock, count):
+        buf = b""
+
+        while len(buf) < count:
+            chunk = sock.recv(count - len(buf))
+            if not chunk:
+                raise OSError("sway closed the connection")
+
+            buf += chunk
+
+        return buf
+
+    def drain(self):
+        """Take one event off the wire. True when sway is still there."""
+        try:
+            self._recv(self.events)
+
+            return True
+        except (OSError, ValueError) as exc:
+            log(f"lost the sway connection, pointer mode stays manual: {exc}")
+            self.events = None
+
+            return False
+
+    def fullscreen_in_front(self):
+        """Is the focused window fullscreen."""
+        if not self.path:
+            return False
+
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(self.path)
+
+            try:
+                self._send(sock, self.GET_TREE)
+                tree = self._recv(sock)
+            finally:
+                sock.close()
+        except (OSError, ValueError):
+            return False
+
+        return self._focused_is_fullscreen(tree)
+
+    # Only real windows. Workspaces report fullscreen_mode 1 themselves, which
+    # is a quirk inherited from i3 and reads as "this workspace may hold a
+    # fullscreen window" rather than as an answer about anything on it. Sway
+    # focuses the workspace when its last window closes, so without this the
+    # helper concluded that an empty desktop was a game and left the pointer
+    # off exactly when somebody needed it.
+    WINDOWS = ("con", "floating_con")
+
+    @classmethod
+    def _focused_is_fullscreen(cls, node):
+        # fullscreen_mode is 1 for a window filling its output and 2 for one
+        # covering everything. Both mean a game rather than a desktop.
+        if (node.get("focused")
+                and node.get("type") in cls.WINDOWS
+                and node.get("fullscreen_mode", 0)):
+            return True
+
+        for child in node.get("nodes", []) + node.get("floating_nodes", []):
+            if cls._focused_is_fullscreen(child):
+                return True
+
+        return False
 
 
 def is_pad(device):
@@ -232,7 +374,10 @@ def main():
     seat = os.environ.get("XDG_SEAT", "")
 
     pointer = Pointer(seat)
-    log("ready. Select and Start together turn pointer mode on and off")
+    sway = Sway()
+
+    log("ready. The pointer follows what is in front, and Select with Start "
+        "overrides it until that changes")
 
     ranges = {}
     by_fd = {}
@@ -261,7 +406,14 @@ def main():
     rescan()
     last_scan = time.monotonic()
 
-    active = False
+    # What is in front decides, and the state is remembered so that a manual
+    # override is only overruled when that actually changes rather than by the
+    # next unrelated window event.
+    fullscreen = sway.fullscreen_in_front()
+    active = not fullscreen
+
+    log(f"pointer mode {'off' if fullscreen else 'on'} to begin with")
+
     held = set()
     # Left stick points, right stick scrolls. That is the way round the
     # Windows tools do it and the way it is worth matching: the hand that
@@ -273,7 +425,27 @@ def main():
     from select import select
 
     while True:
-        readable, _, _ = select(list(by_fd), [], [], INTERVAL)
+        watching = [sway.events.fileno()] if sway.events else []
+        readable, _, _ = select(list(by_fd) + watching, [], [], INTERVAL)
+
+        if sway.events and sway.events.fileno() in readable:
+            # Several events can arrive for one change, so the tree is asked
+            # once afterwards rather than once per event.
+            while sway.events and sway.drain():
+                more, _, _ = select([sway.events.fileno()], [], [], 0)
+                if not more:
+                    break
+
+            now_fullscreen = sway.fullscreen_in_front()
+
+            if now_fullscreen != fullscreen:
+                fullscreen = now_fullscreen
+                active = not fullscreen
+                log("a fullscreen application is in front, pointer mode off"
+                    if fullscreen else "back on the desktop, pointer mode on")
+
+                if not active:
+                    pointer.release_all()
 
         for fd in readable:
             device = by_fd.get(fd)
@@ -291,10 +463,10 @@ def main():
 
                     # Whoever was holding it is gone, so nothing should stay
                     # pressed and the next person should not inherit a mode
-                    # they did not turn on.
+                    # that was set by hand. Back to whatever is in front.
                     if not by_fd:
                         pointer.release_all()
-                        active = False
+                        active = not fullscreen
 
                     continue
                 raise
@@ -309,7 +481,8 @@ def main():
                     if all(button in held for button in TOGGLE):
                         if event.value:
                             active = not active
-                            log(f"pointer mode {'on' if active else 'off'}")
+                            log(f"pointer mode {'on' if active else 'off'} by hand, "
+                                "until something goes fullscreen or stops being")
                             if not active:
                                 pointer.release_all()
                         continue
