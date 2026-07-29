@@ -376,8 +376,31 @@ func (m *Manager) refreshApps(ctx context.Context, name string) {
 		return
 	}
 
-	if changed {
-		m.logf(name, "Moonlight will offer: %s", strings.Join(apps, ", "))
+	if !changed {
+		return
+	}
+
+	m.logf(name, "Moonlight will offer: %s", strings.Join(apps, ", "))
+
+	// Writing the file is not enough on its own. Sunshine reads it once, at
+	// startup, for the list it serves to clients; its own web interface rereads
+	// it on every request, which is exactly what made this look solved when it
+	// was not. Every check the daemon made agreed with the file while Moonlight
+	// went on showing what Sunshine had loaded hours before, so a game
+	// uninstalled in a seat stayed in the list until the seat restarted.
+	//
+	// Asking it to reload rather than restarting it, because a restart drops
+	// whatever somebody is streaming, and this can happen while they are.
+	client, err := m.sunshineClient(name)
+	if err != nil {
+		m.logf(name, "! the app list changed but Sunshine could not be told: %v", err)
+
+		return
+	}
+
+	if err := client.ReloadApps(ctx); err != nil {
+		m.logf(name, "! Sunshine did not reload the app list, it will show the "+
+			"old one until the seat restarts: %v", err)
 	}
 }
 

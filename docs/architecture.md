@@ -383,6 +383,22 @@ caches what it has displayed in Steam and the library delivers games nobody
 has opened there. Not every title has one published: what is missing is
 remembered for a week rather than asked for every minute.
 
+**Sunshine reads that file once**, when it starts, for the list it serves to
+clients. Its web interface rereads it on every request, and asking that one
+instead is how writing the file was taken for the whole of the update: every
+check the daemon made agreed with the file while Moonlight went on showing what
+Sunshine had loaded hours earlier. A game uninstalled in a seat stayed in the
+list until the seat restarted.
+
+Writing an app through Sunshine's own API does make it reload, and it reloads
+the file rather than trusting what it holds, so posting an entry back unchanged
+says "read that again" without altering anything. That is what the daemon does
+after every write, in preference to restarting Sunshine, which would drop
+whatever somebody is streaming. Sunshine then rewrites the file in an
+arrangement of its own, which is why the daemon compares these lists by meaning
+rather than byte for byte: otherwise it would find a difference on every pass
+and write the same list back for ever.
+
 **Every entry Polyseat generates is marked as its own**, which took two goes to
 get right. Keeping entries it did not recognise looked like politeness towards
 somebody who had added an app through Sunshine's interface, and it made removal

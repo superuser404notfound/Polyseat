@@ -162,3 +162,50 @@ func (c *Client) call(ctx context.Context, method, path string, body, into any) 
 
 	return json.NewDecoder(resp.Body).Decode(into)
 }
+
+// appList is the shape of what Sunshine keeps in apps.json.
+//
+// Only the first entry is ever read out of it, and only so that it can be
+// handed straight back. See ReloadApps.
+type appList struct {
+	Apps []json.RawMessage `json:"apps"`
+}
+
+// ReloadApps makes Sunshine pick up an apps.json that changed underneath it.
+//
+// It reads that file once, at startup, for the list it serves to clients. The
+// web interface rereads it on every request, which is what made this look
+// solved when it was not: the daemon's own checks agreed with the file while
+// Moonlight went on showing what Sunshine had loaded hours earlier. A game
+// uninstalled in a seat stayed in the list until the seat restarted.
+//
+// Writing an app through this API does make it reload, and it reloads the file
+// rather than trusting what it holds: posting an entry back unchanged is
+// therefore a way of saying "read that again" without altering anything and
+// without restarting, which would drop whatever somebody is streaming.
+//
+// The first entry is the one posted back because index 0 is the only index
+// that is certainly valid, and because Sunshine reorders the file as it
+// pleases, so nothing else about position can be relied on.
+func (c *Client) ReloadApps(ctx context.Context) error {
+	var list appList
+
+	if err := c.call(ctx, http.MethodGet, "/api/apps", nil, &list); err != nil {
+		return err
+	}
+
+	if len(list.Apps) == 0 {
+		return nil
+	}
+
+	var first map[string]any
+	if err := json.Unmarshal(list.Apps[0], &first); err != nil {
+		return err
+	}
+
+	first["index"] = 0
+
+	var out statusResponse
+
+	return c.call(ctx, http.MethodPost, "/api/apps", first, &out)
+}

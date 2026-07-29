@@ -1,7 +1,6 @@
 package seat
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -98,10 +97,11 @@ type appList struct {
 //
 // Reports whether the file actually changed, which is what lets this be called
 // on a timer without filling the seat's log with the same line every ten
-// seconds. Sunshine rereads apps.json on every request, so writing it is the
-// whole of the update: no restart, and nothing interrupted for anybody who is
-// streaming at the time. Measured against a running seat, by taking an entry
-// out of the file and asking Sunshine what it served afterwards.
+// seconds. Writing the file is not the whole of the update, though it looked
+// like it: Sunshine reads apps.json once, at startup, for the list it serves to
+// clients, and only its web interface rereads it. Asking the wrong one of those
+// two is how this was called measured when it was not. The caller tells
+// Sunshine to reload when this reports a change.
 func (p *Provisioner) WriteApps(ctx context.Context) ([]string, bool, error) {
 	if p.uid == 0 {
 		if err := p.readUID(ctx); err != nil {
@@ -166,12 +166,12 @@ func (p *Provisioner) WriteApps(ctx context.Context) ([]string, bool, error) {
 
 	// Nothing to do, which on a timer is almost every time.
 	//
-	// The comparison is against the file rather than against something the
-	// daemon remembers, so it also holds after a restart and after Sunshine
-	// rewrote the file from its own interface. Byte comparison is safe here
-	// because MarshalIndent reindents the whole document uniformly, including
-	// the entries kept verbatim from the old file.
-	if bytes.Equal(data, existing) {
+	// Compared by meaning rather than byte for byte. Sunshine rewrites this
+	// file in an order of its own whenever anything is changed through its API,
+	// and the daemon now asks it to do exactly that after every write, so a
+	// byte comparison would find a difference every minute for ever and rewrite
+	// the same list back at it.
+	if sameAppList(data, existing) {
 		return names, false, nil
 	}
 
@@ -182,6 +182,66 @@ func (p *Provisioner) WriteApps(ctx context.Context) ([]string, bool, error) {
 	err = p.Client.PushFile(p.name(), AppsPath, data, 0o644, p.uid, p.uid)
 
 	return names, err == nil, err
+}
+
+// sameAppList reports whether two app lists say the same thing.
+//
+// Order does not count, neither between entries nor between the keys inside
+// one, because Sunshine rewrites the file in its own arrangement and would
+// otherwise look like a change on every pass. What does count is the set of
+// entries and every field in them, so that a card, a command or a marker going
+// missing is still a difference.
+func sameAppList(a, b []byte) bool {
+	left, ok := canonicalApps(a)
+	if !ok {
+		return false
+	}
+
+	right, ok := canonicalApps(b)
+	if !ok {
+		return false
+	}
+
+	return left == right
+}
+
+// canonicalApps reduces a list to one string that ignores arrangement.
+func canonicalApps(data []byte) (string, bool) {
+	var list struct {
+		Env  map[string]string `json:"env"`
+		Apps []json.RawMessage `json:"apps"`
+	}
+
+	if len(data) == 0 || json.Unmarshal(data, &list) != nil {
+		return "", false
+	}
+
+	env, err := json.Marshal(list.Env)
+	if err != nil {
+		return "", false
+	}
+
+	entries := make([]string, 0, len(list.Apps))
+
+	for _, raw := range list.Apps {
+		// Through a map, because Go writes map keys in order and that is what
+		// makes two spellings of the same entry compare equal.
+		var entry map[string]any
+		if json.Unmarshal(raw, &entry) != nil {
+			return "", false
+		}
+
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			return "", false
+		}
+
+		entries = append(entries, string(encoded))
+	}
+
+	sort.Strings(entries)
+
+	return string(env) + "\n" + strings.Join(entries, "\n"), true
 }
 
 // Picking Desktop should land on something to choose from. Anything else

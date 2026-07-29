@@ -347,3 +347,70 @@ func TestEveryGeneratedEntryIsMarked(t *testing.T) {
 		}
 	}
 }
+
+// Sunshine rewrites this file in an arrangement of its own whenever anything
+// is changed through its API, and the daemon asks it to do exactly that after
+// every write. Comparing the two byte for byte would therefore find a
+// difference on every pass and rewrite the same list back at it for ever.
+func TestSameAppListIgnoresArrangement(t *testing.T) {
+	mine := []byte(`{
+  "env": {"PATH": "x"},
+  "apps": [
+    {"name": "Desktop", "image-path": "desktop.png", "polyseat": true},
+    {"name": "Lutris", "detached": ["setsid lutris"], "polyseat": true}
+  ]
+}`)
+
+	// The same thing after Sunshine has been through it: entries reordered,
+	// keys reordered, whitespace different.
+	theirs := []byte(`{"apps":[{"polyseat":true,"detached":["setsid lutris"],` +
+		`"name":"Lutris"},{"image-path":"desktop.png","polyseat":true,` +
+		`"name":"Desktop"}],"env":{"PATH":"x"}}`)
+
+	if !sameAppList(mine, theirs) {
+		t.Error("the same list in another arrangement was read as a change")
+	}
+}
+
+// Everything that is not arrangement has to count, or the list would stop
+// being kept up to date at all.
+func TestSameAppListNoticesWhatMatters(t *testing.T) {
+	base := `{"env":{"PATH":"x"},"apps":[` +
+		`{"name":"Desktop","polyseat":true},` +
+		`{"name":"DREDGE","detached":["setsid steam steam://rungameid/1"],"polyseat":true}]}`
+
+	differs := map[string]string{
+		"an entry gone":  `{"env":{"PATH":"x"},"apps":[{"name":"Desktop","polyseat":true}]}`,
+		"an entry added": base[:len(base)-2] + `,{"name":"Extra"}]}`,
+		"a command changed": `{"env":{"PATH":"x"},"apps":[` +
+			`{"name":"Desktop","polyseat":true},` +
+			`{"name":"DREDGE","detached":["setsid steam steam://rungameid/2"],"polyseat":true}]}`,
+		"a card changed": `{"env":{"PATH":"x"},"apps":[` +
+			`{"name":"Desktop","polyseat":true,"image-path":"a.png"},` +
+			`{"name":"DREDGE","detached":["setsid steam steam://rungameid/1"],"polyseat":true}]}`,
+		"the marker gone": `{"env":{"PATH":"x"},"apps":[` +
+			`{"name":"Desktop"},` +
+			`{"name":"DREDGE","detached":["setsid steam steam://rungameid/1"],"polyseat":true}]}`,
+		"the path changed": `{"env":{"PATH":"y"},"apps":[` +
+			`{"name":"Desktop","polyseat":true},` +
+			`{"name":"DREDGE","detached":["setsid steam steam://rungameid/1"],"polyseat":true}]}`,
+	}
+
+	for what, other := range differs {
+		if sameAppList([]byte(base), []byte(other)) {
+			t.Errorf("%s was not read as a change", what)
+		}
+	}
+}
+
+// A file that cannot be read is a file worth replacing, so it must never
+// compare equal to anything.
+func TestSameAppListRefusesWhatItCannotRead(t *testing.T) {
+	good := []byte(`{"env":{},"apps":[{"name":"Desktop"}]}`)
+
+	for _, bad := range [][]byte{nil, []byte(""), []byte("not json"), []byte(`{"apps":`)} {
+		if sameAppList(good, bad) {
+			t.Errorf("%q compared equal to a real list", bad)
+		}
+	}
+}

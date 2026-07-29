@@ -470,9 +470,9 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		// seat, with nothing to tell the daemon. It stayed in Moonlight's list
 		// afterwards and starting it did nothing.
 		//
-		// Only writes when the result differs, and Sunshine rereads the file on
-		// every request, so a change takes effect without restarting anything
-		// or interrupting a stream.
+		// Only writes when the result differs, and tells Sunshine to reload
+		// when it does, which takes effect without restarting anything or
+		// interrupting a stream.
 		m.mu.Lock()
 		due := time.Since(rt.appsChecked) >= appsInterval
 		if due {
