@@ -368,6 +368,31 @@ there is one list of installed software and not two. Flathub is added per user
 for the same reason. The cost is one setuid bwrap per seat, and why that is the
 smaller cost is set out in [`security.md`](security.md).
 
+Three routes, because they answer to different people. `gnome-software` is in
+the seat for whoever is sitting in it, browsing Flathub with pictures and a
+search field; it costs almost nothing to add because a seat already has the
+toolkit underneath it, where bazaar would have been 52 MB and discover 212 MB.
+The web interface is for setting a seat up for somebody before handing it over.
+The command line is for neither and stays anyway.
+
+A **sandbox has to be told about the shared library**, and that was found by
+trying it rather than by reading a manifest. M6 said a launcher other than
+Steam could share games through the seat's library directory, and for a flatpak
+launcher it quietly was not so: Heroic may touch `~/Games/Heroic`, `~/.steam`
+and `/mnt`, and the library is none of them, so it reported the directory as
+not existing. Everything about the sharing worked except that the launcher
+could not see it. A user wide `flatpak override` fixes it for every application
+at once, which is the right shape, because the next launcher somebody installs
+has the same problem and nothing would tell them why.
+
+**What every seat carries** is Steam, Lutris, Firefox, gamescope, MangoHud and
+the Noto fonts. Firefox is not an indulgence: signing in to GOG or Amazon
+happens in a browser, and that is the case the on-screen keyboard exists for.
+Lutris fetches its own Wine builds, so plain `wine` is not installed and would
+have cost more than the rest together. Everything heavier stays one click away
+instead: Heroic alone is close to a gigabyte with its runtime, per seat, and a
+seat belonging to somebody who only plays on Steam should not carry it.
+
 ## The client with no keyboard and no mouse
 
 Which is most of them. A seat streams to an Apple TV, a phone, a television,

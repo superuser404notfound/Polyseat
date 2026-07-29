@@ -356,6 +356,20 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		// that does not either widen what the seat may do or route every
 		// install through the host administrator.
 		"flatpak", "bubblewrap-suid", "xdg-desktop-portal-wlr",
+		// The graphical way in, so that installing something is not a command
+		// somebody has to be told. gnome-software costs almost nothing here
+		// because a seat already has the toolkit underneath it, and with
+		// flatpak present it browses Flathub with pictures and a search field.
+		// The alternatives were measured: bazaar 52 MB, discover 212 MB.
+		"gnome-software",
+		// What a games machine is expected to have on it already. Lutris
+		// fetches its own Wine builds, so plain wine is not needed and would
+		// cost more than everything else here together.
+		"lutris", "firefox",
+		// gamescope for scaling and frame caps, MangoHud to see what a seat is
+		// actually managing, and Noto because a game with no font for its own
+		// text looks broken rather than unstyled.
+		"gamescope", "mangohud", "noto-fonts",
 		"avahi",
 		"pipewire", "pipewire-pulse", "pipewire-audio", "wireplumber",
 		"mesa", "vulkan-tools", "mesa-utils",
@@ -567,6 +581,27 @@ func (p *Provisioner) stepFlatpak(ctx context.Context) error {
 	}
 
 	p.Log("Flathub is available to %s, no password needed", Player)
+
+	// Let sandboxed applications reach the shared library.
+	//
+	// Found by trying it rather than by reading the manifest. M6 promised that
+	// a launcher other than Steam could share games through the seat's library
+	// directory, and for a flatpak launcher that quietly was not true: Heroic
+	// lists ~/Games/Heroic, ~/.steam and /mnt among the paths it may touch, and
+	// the library is none of them, so it reported the directory as not
+	// existing. Everything about the sharing worked except that the launcher
+	// could not see it.
+	//
+	// A user wide override rather than one per application, because the next
+	// launcher somebody installs has the same problem and nothing would tell
+	// them why. This is a seat: the games directory is what it is for.
+	if _, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
+		"HOME=/home/"+Player,
+		"flatpak", "override", "--user", "--filesystem="+LibraryMount); err != nil {
+		return err
+	} else if code != 0 {
+		p.Log("! flatpak applications may not be able to see %s", LibraryMount)
+	}
 
 	return nil
 }

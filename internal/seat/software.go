@@ -17,21 +17,27 @@ type CatalogEntry struct {
 // Catalog is the short list, not a copy of Flathub.
 //
 // A seat is a games machine, so the useful set is small enough to name: the
-// launchers Polyseat can also put in the Moonlight app list, plus the two
-// things that turn out to be needed to use them. Anything else is installable
-// by typing its application id, which is why this is a starting point rather
-// than a limit.
+// launchers Polyseat can also put in the Moonlight app list. Anything else is
+// installable by typing its application id, which is why this is a starting
+// point rather than a limit.
+//
+// What is missing from it is deliberate. Steam, Lutris and Firefox are
+// installed into every seat as ordinary packages, so offering them again as
+// flatpaks would be a second copy of something already there, taking hundreds
+// of megabytes per seat to do the same job worse: a sandboxed launcher has to
+// be told separately that it may see the shared library.
+//
+// The ones that stay are the ones with no package in the distribution, or none
+// worth preferring, and the ones not everybody wants. Heroic alone is close to
+// a gigabyte once its runtime is counted, and a seat belonging to somebody who
+// only plays on Steam should not carry it.
 var Catalog = []CatalogEntry{
 	{"com.heroicgameslauncher.hgl", "Heroic", "Epic, GOG and Amazon games"},
-	{"net.lutris.Lutris", "Lutris", "Windows games and older stores"},
 	{"com.usebottles.bottles", "Bottles", "Runs Windows software in prefixes"},
 	{"io.itch.itch", "itch", "The itch.io library"},
 	{"org.prismlauncher.PrismLauncher", "Prism Launcher", "Minecraft"},
 	{"org.libretro.RetroArch", "RetroArch", "Emulators, one interface"},
-	// Not a game, and needed anyway: Heroic and Lutris sign in through a
-	// browser, and a seat without one leaves you copying URLs to another
-	// machine and pasting the result back.
-	{"org.mozilla.firefox", "Firefox", "A browser, for signing in to stores"},
+	{"net.davidotek.pupgui2", "ProtonUp-Qt", "Installs Proton-GE for Lutris and Heroic"},
 	{"com.discordapp.Discord", "Discord", "Voice chat while playing"},
 }
 
