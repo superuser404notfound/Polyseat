@@ -381,59 +381,74 @@ func (m *Manager) refreshApps(ctx context.Context, name string) {
 	}
 }
 
-// percent matches the figure flatpak prints while it works.
-var percent = regexp.MustCompile(`(\d{1,3})%`)
+// ansi strips the escape sequences a terminal application writes.
+//
+// There is a terminal here only because flatpak will not report progress
+// without one, so everything it draws with arrives wrapped in cursor moves and
+// bold markers that would otherwise be parsed as part of the numbers.
+var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)`)
+
+// step matches "Installing 2/4… ████ 63%", which is the useful line.
+//
+// Both halves of it matter. The figure on its own runs to a hundred and starts
+// again for the next thing being installed, so a bar following it fills up
+// several times over: an application and its runtime are separate steps, and
+// the runtime is usually most of the download.
+var step = regexp.MustCompile(`(?i)(?:Installing|Updating)\s+(\d+)/(\d+)\D+?(\d{1,3})%`)
+
+// plan matches a row of the table flatpak prints before it starts, which is
+// where the sizes are:
+//
+//  3. org.gnome.Platform  50  i  flathub  < 409.7 MB
+var plan = regexp.MustCompile(`(?m)^\s*(\d+)\.\s+\S+.*?([\d.]+)\s*([kKMGT]?B)\s*$`)
+
+var units = map[string]float64{
+	"B": 1, "kB": 1e3, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12,
+}
 
 // installWatch reads an install as it happens.
 //
 // flatpak redraws one line with a carriage return rather than printing a new
-// one, so this is a stream of overwrites rather than lines, and what is wanted
-// from it is the last number seen. The figure restarts for each thing being
-// installed, a runtime and then the application, which is what a terminal shows
-// too and is why the interface names what is being installed beside the bar.
+// one, so this is a stream of overwrites rather than lines.
 type installWatch struct {
 	m    *Manager
 	seat string
 
-	mu   sync.Mutex
-	last []byte // the end of the output, for saying what went wrong
-	edge []byte // carried between writes, in case a figure was split across two
-	seen int
+	mu    sync.Mutex
+	last  []byte    // the end of the output, for saying what went wrong
+	edge  []byte    // carried between writes, in case a line was split across two
+	sizes []float64 // download size per step, from the table, when it is readable
+	seen  int
 }
 
 func (w *installWatch) Write(p []byte) (int, error) {
 	w.mu.Lock()
 
-	chunk := append(append([]byte{}, w.edge...), p...)
+	chunk := ansi.ReplaceAll(append(append([]byte{}, w.edge...), p...), nil)
 
-	// Enough to hold a figure that arrived in two pieces, and no more.
-	if len(chunk) > 8 {
-		w.edge = append([]byte{}, chunk[len(chunk)-8:]...)
+	// Enough to hold a line that arrived in two pieces, and no more.
+	if len(chunk) > 256 {
+		w.edge = append([]byte{}, chunk[len(chunk)-256:]...)
 	} else {
 		w.edge = append([]byte{}, chunk...)
 	}
 
 	w.last = append(w.last, p...)
-	if len(w.last) > 4096 {
-		w.last = w.last[len(w.last)-4096:]
+	if len(w.last) > 8192 {
+		w.last = w.last[len(w.last)-8192:]
 	}
 
-	found := percent.FindAllSubmatch(chunk, -1)
-
-	w.mu.Unlock()
-
-	if len(found) == 0 {
-		return len(p), nil
+	if w.sizes == nil {
+		w.sizes = planSizes(string(chunk))
 	}
 
-	value, err := strconv.Atoi(string(found[len(found)-1][1]))
-	if err != nil || value < 0 || value > 100 {
-		return len(p), nil
+	value, ok := overall(string(chunk), w.sizes)
+
+	changed := ok && value != w.seen
+	if changed {
+		w.seen = value
 	}
 
-	w.mu.Lock()
-	changed := value != w.seen
-	w.seen = value
 	w.mu.Unlock()
 
 	// Only on a change, or a hundred identical figures a second would wake the
@@ -443,6 +458,104 @@ func (w *installWatch) Write(p []byte) (int, error) {
 	}
 
 	return len(p), nil
+}
+
+// planSizes reads the download size of each step out of flatpak's table.
+//
+// Weighting by size rather than counting steps equally, because they are not
+// remotely equal: installing one small application pulled a 1.6 MB locale, a
+// 384 MB locale and a 409 MB runtime, so an evenly divided bar would have shot
+// to a quarter and then crawled.
+//
+// Returns nothing when the table cannot be read, and the caller falls back to
+// counting. A wrong bar is worse than a coarse one.
+func planSizes(out string) []float64 {
+	rows := plan.FindAllStringSubmatch(out, -1)
+	if len(rows) == 0 {
+		return nil
+	}
+
+	sizes := make([]float64, 0, len(rows))
+
+	for i, row := range rows {
+		// The rows are numbered, so a table read in the wrong order or with a
+		// row missing is noticed rather than silently mixed up.
+		if n, err := strconv.Atoi(row[1]); err != nil || n != i+1 {
+			return nil
+		}
+
+		value, err := strconv.ParseFloat(row[2], 64)
+		if err != nil {
+			return nil
+		}
+
+		unit, ok := units[row[3]]
+		if !ok {
+			return nil
+		}
+
+		sizes = append(sizes, value*unit)
+	}
+
+	return sizes
+}
+
+// overall turns "Installing 2/4… 63%" into how far the whole install has got.
+func overall(out string, sizes []float64) (int, bool) {
+	found := step.FindAllStringSubmatch(out, -1)
+	if len(found) == 0 {
+		return 0, false
+	}
+
+	last := found[len(found)-1]
+
+	index, err1 := strconv.Atoi(last[1])
+	total, err2 := strconv.Atoi(last[2])
+	within, err3 := strconv.Atoi(last[3])
+
+	if err1 != nil || err2 != nil || err3 != nil {
+		return 0, false
+	}
+
+	if index < 1 || total < 1 || index > total || within < 0 || within > 100 {
+		return 0, false
+	}
+
+	fraction := float64(within) / 100
+
+	// By size when the table was readable, by step count otherwise.
+	if len(sizes) == total {
+		var done, all float64
+
+		for i, size := range sizes {
+			all += size
+
+			switch {
+			case i < index-1:
+				done += size
+			case i == index-1:
+				done += size * fraction
+			}
+		}
+
+		if all > 0 {
+			return clamp(int(done / all * 100)), true
+		}
+	}
+
+	return clamp(int((float64(index-1) + fraction) / float64(total) * 100)), true
+}
+
+func clamp(value int) int {
+	if value < 0 {
+		return 0
+	}
+
+	if value > 100 {
+		return 100
+	}
+
+	return value
 }
 
 // tail is the end of the output, for an error message.

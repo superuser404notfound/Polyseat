@@ -47,21 +47,47 @@ async function api(method, path, body) {
   return data;
 }
 
-async function refresh() {
-  try {
-    // Fetched together, because a seat card and the library view disagreeing
-    // about which seats exist looks like a bug in whichever one you read second.
-    const [next, pool] = await Promise.all([
-      api("GET", "/api/state"),
-      api("GET", "/api/library"),
-    ]);
+// One fetch at a time, and always one more after the last thing that asked.
+//
+// The daemon pushes a token on every change, and during provisioning or an
+// install that is many a second. Firing a fetch at each of them let them
+// overtake one another, and whichever answered last won: an older snapshot
+// arriving after a newer one put the page back to how things had been a
+// moment ago. That is what made a seat appear to finish provisioning and
+// start again, and what left "installing" on the screen after an install had
+// finished.
+let refreshing = false;
+let refreshPending = false;
 
-    state = next;
-    library = pool;
-    render();
+async function refresh() {
+  if (refreshing) {
+    refreshPending = true;
+
+    return;
+  }
+
+  refreshing = true;
+
+  try {
+    do {
+      refreshPending = false;
+
+      // Fetched together, because a seat card and the library view disagreeing
+      // about which seats exist looks like a bug in whichever one you read
+      // second.
+      const [next, pool] = await Promise.all([
+        api("GET", "/api/state"),
+        api("GET", "/api/library"),
+      ]);
+
+      state = next;
+      library = pool;
+      render();
+    } while (refreshPending);
   } catch (err) {
     if (err.unauthorized) {
       showLogin();
+
       return;
     }
 
@@ -69,6 +95,8 @@ async function refresh() {
     // rendering threw, and the catch turned a broken page into a silent one.
     console.error(err);
     showError(err.message || String(err));
+  } finally {
+    refreshing = false;
   }
 }
 
