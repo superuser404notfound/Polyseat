@@ -881,6 +881,16 @@ func (m *Manager) startSession(ctx context.Context, name string) error {
 	m.rt[name].notes = nil
 	m.mu.Unlock()
 
+	// Rebuilt on every start, because a launcher the player installed since the
+	// last one is only worth having if Moonlight offers it. A seat that cannot
+	// be told what to show is not worth failing to start, so this reports and
+	// carries on.
+	if apps, err := p.WriteApps(ctx); err != nil {
+		m.logf(name, "! the app list could not be written: %v", err)
+	} else {
+		m.logf(name, "Moonlight will offer: %s", strings.Join(apps, ", "))
+	}
+
 	m.logf(name, "starting the audio stack")
 
 	if _, err := m.client.Run(ctx, name, m.asPlayer(name,

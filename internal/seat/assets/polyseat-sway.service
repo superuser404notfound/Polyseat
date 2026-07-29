@@ -17,6 +17,13 @@ Environment=XDG_SESSION_TYPE=wayland
 # a connection to X". Nothing else uses X inside the container, so :0 is
 # always the right display.
 Environment=DISPLAY=:0
+# Where flatpak puts the .desktop files of what the player installed.
+#
+# Arch adds this through /etc/profile.d, which a systemd user unit never reads,
+# so without it the session sees only the system directories. The symptom is
+# quiet and looks like a broken install: `flatpak install` succeeds, the
+# application runs from a terminal, and it is missing from the launcher.
+Environment=XDG_DATA_DIRS=/home/player/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share
 Environment=GBM_BACKEND=nvidia-drm
 Environment=__GLX_VENDOR_LIBRARY_NAME=nvidia
 # Finding from M0: without this variable SDL does not notice a pad that only

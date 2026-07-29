@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 3
+const Generation = 4
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -88,6 +88,7 @@ func Steps() []Step {
 		{"sunshine", (*Provisioner).stepSunshine},
 		{"steam", (*Provisioner).stepSteam},
 		{"user", (*Provisioner).stepUser},
+		{"flatpak", (*Provisioner).stepFlatpak},
 		{"gpu", (*Provisioner).stepGPU},
 		{"nvidia userspace", (*Provisioner).stepNvidiaUserspace},
 		{"library", (*Provisioner).stepLibrary},
@@ -305,11 +306,49 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		return err
 	}
 
+	// Flatpak needs the setuid bubblewrap in a container, and pacman will not
+	// swap one for the other on its own.
+	//
+	// The measurement behind this, because it is not guessable. A seat is an
+	// unprivileged container, and mounting a fresh /proc inside a nested
+	// namespace is refused there. bwrap only needs that when it also unshares
+	// the pid namespace, which is precisely what splits the two cases: Steam's
+	// pressure-vessel does not, so Proton was never affected, while flatpak
+	// does, so every flatpak application died with
+	//     bwrap: Can't mount proc on /newroot/proc: Operation not permitted
+	//
+	// The obvious fix is security.nesting on the container. This is the smaller
+	// one. A setuid binary inside an unprivileged container gains the container's
+	// root, which is an ordinary unprivileged uid on the host, whereas nesting
+	// relaxes what the whole container may do for the sake of one program.
+	//
+	// bubblewrap-suid provides bubblewrap, so naming it in the transaction below
+	// satisfies flatpak's dependency by itself. Only an already installed plain
+	// bubblewrap is in the way, and -Rdd is what gets it out without pacman
+	// refusing on behalf of the dependency that is about to be satisfied again
+	// in the same run.
+	_, err = p.sh(ctx, `if pacman -Qq bubblewrap >/dev/null 2>&1; then `+
+		`pacman -Rdd --noconfirm bubblewrap && `+
+		`echo "removed the plain bubblewrap, the setuid one follows"; fi; exit 0`)
+	if err != nil {
+		return err
+	}
+
 	p.Log("updating and installing the session packages, this takes a while")
 
 	argv := append([]string{"pacman", "-Syu", "--noconfirm", "--needed"}, driverFlags...)
 	argv = append(argv,
 		"sway", "swaybg", "foot", "xorg-xwayland",
+		// The desktop proper. A seat used to come up as sway with a single
+		// terminal in it, which meant a stream you could look at but not use:
+		// no way to start a launcher that was not in the Sunshine app list, and
+		// no way to install one either.
+		"waybar", "fuzzel", "thunar", "gvfs", "wl-clipboard",
+		// Flatpak is how a seat gets software. The player has no sudo by
+		// design, and `flatpak --user` needs none, so this is the one route
+		// that does not either widen what the seat may do or route every
+		// install through the host administrator.
+		"flatpak", "bubblewrap-suid", "xdg-desktop-portal-wlr",
 		"avahi",
 		"pipewire", "pipewire-pulse", "pipewire-audio", "wireplumber",
 		"mesa", "vulkan-tools", "mesa-utils",
@@ -487,6 +526,42 @@ func (p *Provisioner) stepUser(ctx context.Context) error {
 	}
 
 	return p.readUID(ctx)
+}
+
+// stepFlatpak gives the player a way to install software.
+//
+// The player has no sudo, on purpose, so pacman is not available to them and
+// anything they want has to come either through the daemon or through
+// something that needs no privileges at all. `flatpak --user` is the second
+// kind: the installation lives under the player's home, nothing is written
+// outside it, and the seat gains no rights it did not have.
+//
+// The remote is added per user rather than system wide for the same reason.
+// Adding it as root would work and would also be the daemon quietly deciding
+// what every future seat trusts; this way the trust sits in the home directory
+// of the account that uses it.
+func (p *Provisioner) stepFlatpak(ctx context.Context) error {
+	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
+		"HOME=/home/"+Player,
+		"flatpak", "remote-add", "--user", "--if-not-exists",
+		"flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo")
+	if err != nil {
+		return err
+	}
+
+	// A seat without Flathub still works, it just cannot install anything new
+	// until somebody adds a remote. Not worth failing a whole provisioning run
+	// over something that is only a network hiccup most of the time.
+	if code != 0 {
+		p.Log("! Flathub could not be added, installing new software in this seat will not work yet")
+		p.Log("  %s", lastLines(out, 2))
+
+		return nil
+	}
+
+	p.Log("Flathub is available to %s, no password needed", Player)
+
+	return nil
 }
 
 func (p *Provisioner) readUID(ctx context.Context) error {
@@ -858,10 +933,13 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 	for _, dir := range []string{
 		home + "/.config",
 		home + "/.config/sway",
+		home + "/.config/waybar",
+		home + "/.config/fuzzel",
 		home + "/.config/sunshine",
 		home + "/.config/systemd",
 		home + "/.config/systemd/user",
 		home + "/.config/systemd/user/polyseat-sunshine.service.d",
+		home + "/.config/systemd/user/polyseat-sway.service.d",
 	} {
 		if err := p.Client.MakeDir(p.name(), dir, 0o755, p.uid, p.uid); err != nil {
 			return err
@@ -873,6 +951,11 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		return err
 	}
 
+	bar, err := render("assets/waybar.config", map[string]string{"Seat": p.Seat.Name})
+	if err != nil {
+		return err
+	}
+
 	files := []struct {
 		path    string
 		content []byte
@@ -880,9 +963,14 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		uid     int64
 	}{
 		{home + "/.config/sway/config", sway, 0o644, p.uid},
+		{home + "/.config/waybar/config", bar, 0o644, p.uid},
+		{home + "/.config/waybar/style.css", asset("assets/waybar.css"), 0o644, p.uid},
+		{home + "/.config/fuzzel/fuzzel.ini", asset("assets/fuzzel.ini"), 0o644, p.uid},
 		{home + "/.config/systemd/user/polyseat-sway.service", asset("assets/polyseat-sway.service"), 0o644, p.uid},
 		{home + "/.config/systemd/user/polyseat-sunshine.service", asset("assets/polyseat-sunshine.service"), 0o644, p.uid},
 		{"/usr/local/bin/polyseat-sunshine-run", asset("assets/sunshine-run.sh"), 0o755, 0},
+		{"/usr/local/bin/polyseat-resize", asset("assets/resize.sh"), 0o755, 0},
+		{"/usr/local/bin/polyseat-welcome", asset("assets/welcome.sh"), 0o755, 0},
 	}
 
 	for _, f := range files {
@@ -901,16 +989,30 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 	// because the value differs per seat.
 	dropin := fmt.Sprintf("[Service]\nEnvironment=XDG_SEAT=%s\n", p.Seat.Name)
 
-	err = p.Client.PushFile(p.name(),
-		home+"/.config/systemd/user/polyseat-sunshine.service.d/10-seat.conf",
-		[]byte(dropin), 0o644, p.uid, p.uid)
-	if err != nil {
-		return err
+	// The same value for the session itself, so that everything started inside
+	// the seat knows which seat it is in rather than only Sunshine. What made
+	// this worth doing was seeing the first terminal in a seat greet somebody
+	// with "Polyseat seat: unknown": sway inherited nothing, so neither did its
+	// children.
+	for _, unit := range []string{"polyseat-sunshine.service.d", "polyseat-sway.service.d"} {
+		err = p.Client.PushFile(p.name(),
+			home+"/.config/systemd/user/"+unit+"/10-seat.conf",
+			[]byte(dropin), 0o644, p.uid, p.uid)
+		if err != nil {
+			return err
+		}
 	}
 
 	if _, err := p.WriteSunshineConfig(ctx); err != nil {
 		return err
 	}
+
+	apps, err := p.WriteApps(ctx)
+	if err != nil {
+		return err
+	}
+
+	p.Log("Moonlight will offer: %s", strings.Join(apps, ", "))
 
 	// The session units are deliberately not enabled. If they were, the seat
 	// would bring itself up the moment its container boots, and Sunshine would
@@ -1005,7 +1107,8 @@ func (p *Provisioner) WriteSunshineConfig(ctx context.Context) ([]string, error)
 	origins := OriginsFor(addresses)
 
 	conf, err := render("assets/sunshine.conf", map[string]string{
-		"Origins": strings.Join(origins, ","),
+		"Origins":    strings.Join(origins, ","),
+		"Resolution": p.Seat.Resolution,
 	})
 	if err != nil {
 		return nil, err
