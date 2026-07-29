@@ -139,6 +139,9 @@ function render() {
 
   if (!unchanged) seats.replaceChildren(...nodes);
 
+  // Whether or not any card was rebuilt.
+  refreshOpenLogs();
+
   renderLibrary();
 }
 
@@ -168,6 +171,7 @@ function forgetMissingSeats() {
       openSoftware.delete(name);
       openPairing.delete(name);
       openLogs.delete(name);
+      logViews.delete(name);
     }
   }
 }
@@ -1042,15 +1046,36 @@ function logPanel(seat) {
   details.ontoggle = () => {
     if (details.open) {
       openLogs.add(seat.name);
+      logViews.set(seat.name, pre);
       loadLog(seat.name, pre);
     } else {
       openLogs.delete(seat.name);
+      logViews.delete(seat.name);
     }
   };
 
-  if (details.open) loadLog(seat.name, pre);
+  if (details.open) {
+    logViews.set(seat.name, pre);
+    loadLog(seat.name, pre);
+  }
 
   return details;
+}
+
+// The log panels that are open, so they can be refreshed on their own.
+//
+// A log is the one thing on a card that changes without the seat changing, and
+// it is the thing somebody watches while provisioning runs: for those few
+// minutes the seat's own state does not move at all, it is busy from start to
+// finish. Reusing an unchanged card, which is what stopped the interface
+// flickering, therefore froze the log exactly when it mattered most and left
+// no sign of when the work had finished.
+let logViews = new Map();
+
+function refreshOpenLogs() {
+  for (const [name, pre] of logViews) {
+    loadLog(name, pre);
+  }
 }
 
 async function loadLog(name, pre) {
