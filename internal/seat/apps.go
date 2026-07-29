@@ -126,9 +126,12 @@ func (p *Provisioner) WriteApps(ctx context.Context) ([]string, bool, error) {
 		items = append(items, artItem{Key: l.Name, Source: l.image, Label: l.Name})
 	}
 
+	icons := p.sourceIcons(ctx)
+
 	for _, g := range games {
 		items = append(items, artItem{
 			Key: g.Name, Source: g.Image, Label: g.Name, Steam: g.Steam,
+			Fallback: icons[g.Source],
 		})
 	}
 
@@ -536,14 +539,6 @@ exit 0`
 
 	var found []installed
 
-	// Which desktop entries could name this launcher's icon. Both spellings
-	// per launcher, because a package and a flatpak of the same program do not
-	// agree: net.lutris.Lutris against lutris.
-	type wanted struct {
-		Key   string   `json:"key"`
-		Names []string `json:"names"`
-	}
-
 	var want []wanted
 
 	for _, l := range launchers {
@@ -586,6 +581,32 @@ exit 0`
 	return found, nil
 }
 
+// wanted is one icon to look for: what to call the answer, and the desktop
+// entry names that might carry it.
+//
+// Both spellings per program, because a package and a flatpak of the same one
+// do not agree: net.lutris.Lutris against lutris.
+type wanted struct {
+	Key   string   `json:"key"`
+	Names []string `json:"names"`
+}
+
+// sourceIcons finds the icon of each launcher a game can come from.
+//
+// For a game with no artwork anywhere, which does happen: the title that
+// prompted this has nothing published at all, so both content networks answer
+// 404 for every size Steam knows. A card saying only the name tells you less
+// than the row it sits in, where every neighbour shows a picture. Its
+// launcher's icon at least says where the game comes from, and it makes the
+// card look like the Lutris and Heroic ones rather than like a gap.
+func (p *Provisioner) sourceIcons(ctx context.Context) map[string]string {
+	return p.launcherIcons(ctx, []wanted{
+		{Key: "steam", Names: []string{"steam"}},
+		{Key: "lutris", Names: []string{"net.lutris.Lutris", "lutris"}},
+		{Key: "heroic", Names: []string{"com.heroicgameslauncher.hgl", "heroic"}},
+	})
+}
+
 // launcherIcons resolves an icon file for each launcher, keyed by its name.
 //
 // Best effort throughout. A launcher with no icon is a launcher Moonlight
@@ -621,6 +642,10 @@ type artItem struct {
 	// fetched for a game this seat has never displayed in Steam and therefore
 	// has no cached artwork for.
 	Steam string `json:"steam,omitempty"`
+
+	// Fallback is the icon to fall back on when a title has no artwork at all,
+	// which is its launcher's own.
+	Fallback string `json:"fallback,omitempty"`
 }
 
 // boxart builds the cards and returns the file for each key.

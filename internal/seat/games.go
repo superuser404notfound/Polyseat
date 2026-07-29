@@ -33,6 +33,10 @@ type Game struct {
 	// into this seat, which is every game delivered by the shared library and
 	// not yet looked at here.
 	Steam string
+
+	// Source names the launcher this came from, so that a title with no
+	// artwork anywhere can at least wear its launcher's icon.
+	Source string
 }
 
 // maxGames bounds the app list.
@@ -203,6 +207,7 @@ func (p *Provisioner) steamGames(ctx context.Context) ([]Game, error) {
 			Launch: "steam steam://rungameid/" + f.AppID,
 			Image:  f.Cover,
 			Steam:  f.AppID,
+			Source: "steam",
 		})
 	}
 
@@ -257,6 +262,7 @@ func (p *Provisioner) lutrisGames(ctx context.Context) ([]Game, error) {
 			Name:   f.Name,
 			Launch: fmt.Sprintf("lutris lutris:rungameid/%d", f.ID),
 			Image:  f.CoverPath,
+			Source: "lutris",
 		})
 	}
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """polyseat-boxart - turn whatever artwork a seat has into cards Moonlight shows.
 
-Reads a JSON list of {"key", "source", "label", "steam"} on the command line
-and prints {"key": "/path/to/card.png"} for the ones it could make. "source" is
-artwork already on disk and "steam" is an application id to fetch a cover for
-when there is none.
+Reads a JSON list of {"key", "source", "label", "steam", "fallback"} on the
+command line and prints {"key": "/path/to/card.png"} for the ones it could
+make. "source" is artwork already on disk, "steam" is an application id to
+fetch a cover for when there is none, and "fallback" is an icon to use when
+there is no cover to be had anywhere.
 
 Two things were learned by looking at a client rather than by reading a
 specification, and both of them are why this exists at all.
@@ -219,6 +220,14 @@ def build(item, budget):
 
     if not source:
         source = fetched_cover(item.get("steam") or "", budget) or ""
+
+    # Nothing published anywhere, which does happen: a title was found with no
+    # artwork at all, every size answering 404 on both content networks. A card
+    # with only a name tells you less than the row it sits in, where every
+    # neighbour has a picture, so it wears its launcher's icon instead and ends
+    # up looking like the launcher's own card rather than like a gap.
+    if not source:
+        source = item.get("fallback") or ""
 
     target = os.path.join(OUT, hashlib.sha1(key.encode()).hexdigest() + ".png")
 
