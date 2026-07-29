@@ -54,12 +54,29 @@ step "Prerequisites"
 missing=()
 for pkg in incus nvidia-container-toolkit bpftrace python go; do
     if pacman -Qq "$pkg" >/dev/null 2>&1; then ok "$pkg"
-    else bad "$pkg missing"; missing+=("$pkg"); fi
+    else warn "$pkg missing"; missing+=("$pkg"); fi
 done
+
 if ((${#missing[@]})); then
     echo
-    echo "  sudo pacman -S --needed ${missing[*]}"
-    exit 1
+    echo "  installing: ${missing[*]}"
+    echo
+
+    # Deliberately not -Sy. Refreshing the package database and then installing
+    # from it without upgrading is the partial upgrade Arch warns about, and an
+    # installer is a bad place to break somebody's system in a way that shows up
+    # weeks later. So this installs from the database that is already there and
+    # says what to do when that database is too old to resolve.
+    if pacman -S --needed --noconfirm "${missing[@]}"; then
+        ok "installed ${missing[*]}"
+    else
+        echo
+        bad "those packages could not be installed"
+        echo "  The package database is probably out of date. Upgrade first:"
+        echo
+        echo "    sudo pacman -Syu"
+        exit 1
+    fi
 fi
 
 step "idmap ranges"
@@ -100,6 +117,67 @@ else
     # is what the shared game library wants anyway.
     incus admin init --minimal
     ok "initialised with the defaults"
+fi
+
+step "Shared game library"
+# Reported rather than fixed, and reported here rather than only in the web
+# interface after the first seat has been built.
+#
+# The library shares blocks between seats instead of copying them, which needs a
+# filesystem that can do it. That is a property of the mount and the kernel and
+# not of the label: XFS only reflinks when it was made with reflink=1, and a
+# btrfs subvolume with nodatacow does not either. So this asks the filesystem
+# instead of asking its name, the same way the daemon does at startup.
+#
+# Nothing here fails on a no. Every other part of Polyseat works on any
+# filesystem and the library simply stays off, which the daemon says plainly.
+LIBDIR_DEFAULT=/srv/polyseat/library
+libdir=$LIBDIR_DEFAULT
+if [[ -r /etc/polyseat/polyseatd.json ]]; then
+    configured=$(python -c 'import json,sys;print(json.load(open("/etc/polyseat/polyseatd.json")).get("library_dir",""))' 2>/dev/null || true)
+    [[ -n $configured ]] && libdir=$configured
+fi
+
+# The directory does not exist yet on a first install, so the question is asked
+# of the nearest ancestor that does, which is the filesystem it will land on.
+probe=$libdir
+while [[ ! -d $probe ]]; do probe=$(dirname "$probe"); done
+
+fstype=$(findmnt -no FSTYPE --target "$probe" 2>/dev/null || echo unknown)
+
+if scratch=$(mktemp -d "$probe/.polyseat-probe.XXXXXX" 2>/dev/null); then
+    head -c 4096 /dev/urandom > "$scratch/a" 2>/dev/null || true
+
+    if cp --reflink=always "$scratch/a" "$scratch/b" 2>/dev/null; then
+        ok "$probe is $fstype and shares blocks, the library will work"
+    else
+        warn "$probe is $fstype and cannot share blocks"
+        echo "    Seats will work; installing a game once and playing it in every"
+        echo "    seat will not. btrfs can, and so can XFS made with reflink=1."
+    fi
+
+    rm -rf "$scratch"
+else
+    warn "could not write to $probe to find out whether it shares blocks"
+fi
+
+step "Network uplink"
+# Each seat gets a macvlan interface so that it is a host of its own on the LAN
+# and can use the standard Sunshine ports. Two things make that impossible, and
+# both are quiet: no default route to take the interface from, and a wireless
+# one, where macvlan cannot work at all because 802.11 does not carry more than
+# one MAC address per association.
+uplink=$(ip -o route show default 2>/dev/null | awk '{print $5; exit}')
+
+if [[ -z $uplink ]]; then
+    warn "no default route, so there is no interface for seats to take a macvlan from"
+    echo "    Set \"uplink\" in /etc/polyseat/polyseatd.json once the machine has one."
+elif [[ -d /sys/class/net/$uplink/wireless || -e /sys/class/net/$uplink/phy80211 ]]; then
+    warn "$uplink carries the default route and is wireless"
+    echo "    macvlan does not work on wifi. Seats need a wired interface, or a"
+    echo "    different \"uplink\" in /etc/polyseat/polyseatd.json."
+else
+    ok "$uplink carries the default route and seats can take a macvlan from it"
 fi
 
 step "Building polyseatd"

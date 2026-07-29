@@ -91,7 +91,8 @@ sudo host/install.sh
 sudo systemctl enable --now polyseatd
 ```
 
-That checks the packages, gives root the idmap range every container start needs,
+That installs any missing packages, gives root the idmap range every container
+start needs,
 brings up Incus and initialises it if nobody has, builds the daemon, places the
 input helpers under `/usr/local/lib/polyseat`, installs the udev rule that keeps
 seat devices off the host desktop, registers one systemd unit, and adds your

@@ -20,6 +20,13 @@ hard way, so the reasons are kept with the steps.
 `incus`, `nvidia-container-toolkit`, `bpftrace`, `python`, plus `go` while the
 daemon is built from source.
 
+The installer installs the ones that are missing rather than printing a command
+and stopping. **Deliberately not with `-Sy`:** refreshing the package database
+and installing from it without upgrading is the partial upgrade Arch warns
+about, and an installer is a bad place to break a system in a way that surfaces
+weeks later. It installs from the database that is already there, and when that
+database is too old to resolve, it says to run `pacman -Syu` first.
+
 **This binds the installer to Arch.** It queries `pacman`. Rather than claiming
 a portability nobody has tested, it says so and refuses elsewhere. A second
 distribution is a later decision, not a guess to encode now.
@@ -138,6 +145,22 @@ systemd unit.
 One unit, not three. The per-seat broker template and the observer unit are
 gone; `polyseatd` supervises both itself so that the seat lifecycle has exactly
 one owner. An installer that finds the old units removes them.
+
+### Two things it reports rather than changes
+
+Both are conditions the operator has to decide about, and both used to surface
+only much later, after a seat had been built and something did not work.
+
+**Whether the library filesystem can share blocks.** The installer asks the
+filesystem instead of asking its name, by cloning a file the way the daemon does
+at startup, and says plainly when the answer is no. Nothing fails on a no: every
+other part of Polyseat works on any filesystem and the library simply stays off.
+
+**Whether there is an uplink for the seats.** Each seat gets a macvlan interface
+so it is a host of its own on the LAN. Two things make that impossible and both
+are quiet: no default route to take the interface from, and a wireless one,
+where macvlan cannot work at all because 802.11 does not carry more than one MAC
+address per association.
 
 ### Optional hardening
 

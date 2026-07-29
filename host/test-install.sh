@@ -97,12 +97,27 @@ ok "$VM is up ($state)"
 
 step "Bringing it to the state a fresh host is in"
 
-# Not part of what is being tested: a machine somebody is about to install on
-# has these, and the installer's own prerequisite check is what reports them
-# when it does not.
-vm bash -c 'pacman -Sy --noconfirm --needed --quiet incus nvidia-container-toolkit bpftrace python go sudo >/dev/null 2>&1' ||
-    { echo "could not install the prerequisites in the test machine"; exit 1; }
-ok "prerequisites installed"
+# The package database brought up to date, and the system with it. Not part of
+# what is being tested: a machine somebody is about to install on has a current
+# database, and the installer deliberately does not refresh one itself, because
+# refreshing without upgrading is the partial upgrade Arch warns about.
+vm bash -c 'pacman -Syu --noconfirm --quiet >/dev/null 2>&1' ||
+    { echo "could not bring the test machine up to date"; exit 1; }
+ok "package database current"
+
+# sudo, because the installer re-execs nothing but the harness passes SUDO_USER
+# and a machine without sudo is not the case under test.
+vm bash -c 'pacman -S --noconfirm --needed --quiet sudo >/dev/null 2>&1' || true
+
+# One prerequisite deliberately taken away, so that the installer's package step
+# has something to do on every run and not only on the first.
+#
+# -R rather than -Rns, and that is the whole point of this comment. bpftrace
+# itself is a few megabytes but it depends on bcc, which depends on clang and
+# gcc: taking its dependencies with it costs 555 MB of downloading on every
+# single run to prove one thing that does not involve any of them.
+vm bash -c 'pacman -R --noconfirm bpftrace >/dev/null 2>&1 || true'
+ok "bpftrace removed, so the installer has a missing package to deal with"
 
 # An unprivileged account, because the group step reads SUDO_USER and there has
 # to be somebody for it to act on.
@@ -139,7 +154,9 @@ ok "copied"
 # ------------------------------------------------------------- the thing itself
 
 step "Running install.sh"
-if vm env SUDO_USER="$TESTUSER" bash /root/polyseat/host/install.sh; then
+# Kept, because two of its steps report rather than change anything and the only
+# place their verdict exists is in what they printed.
+if vm bash -c "SUDO_USER=$TESTUSER bash /root/polyseat/host/install.sh >/root/install.log 2>&1; rc=\$?; cat /root/install.log; exit \$rc"; then
     ok "it finished without an error"
 else
     bad "it failed"
@@ -147,6 +164,8 @@ fi
 
 step "What it should have done"
 
+check "the missing package was installed" vm pacman -Qq bpftrace
+check "and every other prerequisite"     vm pacman -Qq incus nvidia-container-toolkit python go
 check "polyseatd is installed"           vm test -x /usr/local/bin/polyseatd
 check "it runs and reports a version"    vm /usr/local/bin/polyseatd -version
 check "the systemd unit is registered"   vm test -f /etc/systemd/system/polyseatd.service
@@ -170,6 +189,16 @@ check "root has an idmap range (subgid)" vm grep -qE '^root:1000000:1000000000$'
 check "incus.socket is enabled"          vm systemctl is-enabled incus.socket
 check "incus is initialised"             vm bash -c 'incus storage list --format csv | grep -q .'
 check "$TESTUSER is in the input group"  vm bash -c "id -nG $TESTUSER | tr ' ' '\n' | grep -qx input"
+
+# The two steps that only report. A verdict either way is a pass; silence is
+# not, because a check that never ran looks exactly like a filesystem that is
+# fine.
+check "it judged the library filesystem" \
+    vm grep -qE 'shares blocks|cannot share blocks|whether it shares blocks' /root/install.log
+check "it judged the network uplink" \
+    vm grep -qE 'take a macvlan from it|is wireless|no default route' /root/install.log
+check "the library probe left nothing behind" \
+    vm bash -c '! find / -maxdepth 4 -name ".polyseat-probe.*" 2>/dev/null | grep -q .'
 
 step "Does a working daemon come out of it"
 # The point of the whole exercise, and the part that checking for installed
