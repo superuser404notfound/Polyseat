@@ -15,30 +15,7 @@ PipeWire, udev and systemd. Polyseat is the orchestrator on top: it builds
 seats, wires them up collision-free, assigns input devices, shares the game
 library, and repairs what drifts.
 
-```mermaid
-flowchart LR
-    subgraph host["one PC, desktop still in use"]
-        d["polyseatd<br/>web interface"]
-        b["input broker"]
-        lib[("game library<br/>shared by reflink")]
-    end
-
-    subgraph s1["seat 1 (container)"]
-        x1["headless sway<br/>Sunshine · NVENC"]
-    end
-    subgraph s2["seat 2 (container)"]
-        x2["headless sway<br/>Sunshine · NVENC"]
-    end
-
-    d --> x1
-    d --> x2
-    lib -.-> x1
-    lib -.-> x2
-    b -->|"keyboard, mouse, pad"| x1
-    b -->|"keyboard, mouse, pad"| x2
-    x1 --> m1["Moonlight<br/>TV"]
-    x2 --> m2["Moonlight<br/>laptop"]
-```
+![Polyseat: one PC runs the daemon, the input broker and the shared game library; each seat is a container with headless sway and Sunshine, streaming to its own Moonlight client](docs/overview.svg)
 
 ## What it does
 

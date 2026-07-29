@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 420" width="900" height="420" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif">
+  <title>How Polyseat is put together</title>
+  <desc>One PC runs polyseatd, an input broker and a shared game library. Each seat is a container with headless sway and Sunshine, streaming to its own Moonlight client.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+
+  <!-- the host -->
+  <rect x="20" y="46" width="270" height="330" rx="10" fill="none" stroke="#8b949e" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="30" y="36" fill="#8b949e" font-size="13">one PC, its desktop still in use</text>
+
+  <rect x="45" y="76" width="220" height="66" rx="8" fill="#3b4a5a"/>
+  <text x="155" y="103" fill="#eef2f6" font-size="14" font-weight="600" text-anchor="middle">polyseatd</text>
+  <text x="155" y="123" fill="#c6d0da" font-size="11.5" text-anchor="middle">web interface, one daemon</text>
+
+  <rect x="45" y="176" width="220" height="66" rx="8" fill="#3b4a5a"/>
+  <text x="155" y="203" fill="#eef2f6" font-size="14" font-weight="600" text-anchor="middle">input broker</text>
+  <text x="155" y="223" fill="#c6d0da" font-size="11.5" text-anchor="middle">one per seat</text>
+
+  <rect x="45" y="276" width="220" height="66" rx="8" fill="#3b4a5a"/>
+  <text x="155" y="303" fill="#eef2f6" font-size="14" font-weight="600" text-anchor="middle">game library</text>
+  <text x="155" y="323" fill="#c6d0da" font-size="11.5" text-anchor="middle">installed once</text>
+
+  <!-- the seats -->
+  <rect x="430" y="46" width="230" height="330" rx="10" fill="none" stroke="#8b949e" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="440" y="36" fill="#8b949e" font-size="13">one container per seat</text>
+
+  <rect x="452" y="86" width="186" height="106" rx="8" fill="#2f6690"/>
+  <text x="545" y="115" fill="#ffffff" font-size="14" font-weight="600" text-anchor="middle">seat 1</text>
+  <text x="545" y="139" fill="#d6e6f2" font-size="11.5" text-anchor="middle">headless sway</text>
+  <text x="545" y="157" fill="#d6e6f2" font-size="11.5" text-anchor="middle">Sunshine, NVENC</text>
+  <text x="545" y="175" fill="#d6e6f2" font-size="11.5" text-anchor="middle">PipeWire, Steam</text>
+
+  <rect x="452" y="230" width="186" height="106" rx="8" fill="#2f6690"/>
+  <text x="545" y="259" fill="#ffffff" font-size="14" font-weight="600" text-anchor="middle">seat 2</text>
+  <text x="545" y="283" fill="#d6e6f2" font-size="11.5" text-anchor="middle">headless sway</text>
+  <text x="545" y="301" fill="#d6e6f2" font-size="11.5" text-anchor="middle">Sunshine, NVENC</text>
+  <text x="545" y="319" fill="#d6e6f2" font-size="11.5" text-anchor="middle">PipeWire, Steam</text>
+
+  <!-- the clients -->
+  <rect x="740" y="106" width="140" height="66" rx="8" fill="#55606d"/>
+  <text x="810" y="133" fill="#ffffff" font-size="13.5" font-weight="600" text-anchor="middle">Moonlight</text>
+  <text x="810" y="153" fill="#d3d9df" font-size="11.5" text-anchor="middle">on the TV</text>
+
+  <rect x="740" y="250" width="140" height="66" rx="8" fill="#55606d"/>
+  <text x="810" y="277" fill="#ffffff" font-size="13.5" font-weight="600" text-anchor="middle">Moonlight</text>
+  <text x="810" y="297" fill="#d3d9df" font-size="11.5" text-anchor="middle">on a laptop</text>
+
+  <!-- host to seats -->
+  <path d="M 290 109 L 424 109" stroke="#8b949e" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <text x="357" y="102" fill="#8b949e" font-size="10.5" text-anchor="middle">builds, starts, repairs</text>
+
+  <path d="M 290 209 L 424 209" stroke="#8b949e" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <text x="357" y="202" fill="#8b949e" font-size="10.5" text-anchor="middle">keyboard, mouse, pad</text>
+
+  <path d="M 290 309 L 424 309" stroke="#8b949e" stroke-width="1.6" fill="none" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+  <text x="357" y="302" fill="#8b949e" font-size="10.5" text-anchor="middle">shared by reflink</text>
+
+  <!-- seats to clients -->
+  <path d="M 666 139 L 734 139" stroke="#8b949e" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <text x="700" y="132" fill="#8b949e" font-size="10.5" text-anchor="middle">video, audio</text>
+
+  <path d="M 666 283 L 734 283" stroke="#8b949e" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <text x="700" y="276" fill="#8b949e" font-size="10.5" text-anchor="middle">video, audio</text>
+
+  <text x="450" y="404" fill="#8b949e" font-size="11.5" text-anchor="middle">no crossover between seats, and the host desktop sees none of their devices</text>
+</svg>
