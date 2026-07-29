@@ -260,6 +260,21 @@ pre.log {
 
 .pairing { margin-top: 0.7rem; }
 
+.software { margin-top: 0.7rem; }
+
+/* The pairing form's first field is a PIN and is sized for one. This one takes
+   a Flathub id, which is long, so it gets the room instead. */
+.software form.pair input:first-child {
+  width: auto;
+  flex: 1;
+  min-width: 14rem;
+  font-family: var(--mono);
+}
+
+/* An application id is the useful thing to read here, and it is what the name
+   attribute carries, so the catalog rows read as prose rather than as paths. */
+.software ul.devices li span { font-family: inherit; font-size: 0.88rem; }
+
 .note {
   margin: 0 0 0.7rem;
   font-size: 0.83rem;

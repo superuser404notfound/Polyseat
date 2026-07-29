@@ -55,6 +55,9 @@ func New(manager *seat.Manager, credentials *auth.Store, logger *slog.Logger) ht
 	guarded.HandleFunc("GET /api/seats/{name}/sunshine", s.sunshineAccess)
 	guarded.HandleFunc("POST /api/seats/{name}/pair", s.pair)
 	guarded.HandleFunc("POST /api/seats/{name}/unpair", s.unpair)
+	guarded.HandleFunc("GET /api/seats/{name}/software", s.getSoftware)
+	guarded.HandleFunc("POST /api/seats/{name}/software", s.installSoftware)
+	guarded.HandleFunc("DELETE /api/seats/{name}/software/{id}", s.removeSoftware)
 	guarded.HandleFunc("GET /api/library", s.getLibrary)
 	guarded.HandleFunc("POST /api/library/sync", s.syncLibrary)
 	guarded.HandleFunc("POST /api/library/import", s.importLibrary)
@@ -570,6 +573,68 @@ func (s *Server) seatAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"name": name})
+}
+
+// ----------------------------------------------------------------- software
+
+// softwareRequest names one thing to install.
+type softwareRequest struct {
+	ID string `json:"id"`
+}
+
+func (s *Server) getSoftware(w http.ResponseWriter, r *http.Request) {
+	status, err := s.manager.Software(r.Context(), r.PathValue("name"))
+	if err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) installSoftware(w http.ResponseWriter, r *http.Request) {
+	var req softwareRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if err := seat.ValidateAppID(req.ID); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if err := s.manager.InstallSoftware(r.PathValue("name"), req.ID); err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	// Accepted rather than OK: a flatpak is hundreds of megabytes and the
+	// answer here means the download has started, not that it finished. The
+	// seat log is where it is followed.
+	writeJSON(w, http.StatusAccepted, map[string]string{"id": req.ID})
+}
+
+func (s *Server) removeSoftware(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	if err := seat.ValidateAppID(id); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if err := s.manager.RemoveSoftware(r.PathValue("name"), id); err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"id": id})
 }
 
 // ------------------------------------------------------------------ library

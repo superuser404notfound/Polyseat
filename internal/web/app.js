@@ -10,6 +10,7 @@ let state = null;
 let library = null;
 let openLogs = new Set();
 let openPairing = new Set();
+let openSoftware = new Set();
 let stream = null;
 
 // A page that renders nothing is worse than one that says what broke. Without
@@ -418,9 +419,181 @@ function card(seat) {
   status.textContent = seat.busy || seat.state;
 
   head.append(title, name, spacer, status);
-  node.append(head, facts(seat), actions(seat), pairingPanel(seat), logPanel(seat));
+  node.append(
+    head,
+    facts(seat),
+    actions(seat),
+    softwarePanel(seat),
+    pairingPanel(seat),
+    logPanel(seat),
+  );
 
   return node;
+}
+
+// What is installed in a seat, and how to change it.
+//
+// Here rather than in a dialog because it is a property of one seat, and
+// loaded only when opened for the same reason pairing is: it asks the
+// container, and doing that for every seat on every state change would be a
+// steady stream of exec calls into machines that are supposed to be busy
+// playing games.
+function softwarePanel(seat) {
+  const details = document.createElement("details");
+  details.className = "log";
+  details.open = openSoftware.has(seat.name);
+
+  const summary = document.createElement("summary");
+  summary.textContent = "Software";
+
+  const body = document.createElement("div");
+  body.className = "software";
+
+  details.append(summary, body);
+
+  details.ontoggle = () => {
+    if (details.open) {
+      openSoftware.add(seat.name);
+      loadSoftware(seat, body);
+    } else {
+      openSoftware.delete(seat.name);
+    }
+  };
+
+  if (details.open) loadSoftware(seat, body);
+
+  return details;
+}
+
+async function loadSoftware(seat, body) {
+  body.replaceChildren(note("loading"));
+
+  let status;
+
+  try {
+    status = await api("GET", `/api/seats/${seat.name}/software`);
+  } catch (err) {
+    if (err.unauthorized) return showLogin();
+
+    body.replaceChildren(note(err.message));
+
+    return;
+  }
+
+  body.replaceChildren();
+
+  if (!status.available) {
+    body.append(
+      note(status.problem || "software cannot be managed in this seat right now"),
+    );
+
+    return;
+  }
+
+  const installed = status.installed || [];
+  const have = new Set(installed.map((app) => app.id));
+
+  body.append(
+    note(
+      "Installed for the player, without root. Anything here that Polyseat " +
+        "recognises also turns up in the Moonlight app list.",
+    ),
+  );
+
+  if (installed.length === 0) {
+    body.append(note("Nothing is installed in this seat yet."));
+  } else {
+    const list = document.createElement("ul");
+    list.className = "devices";
+
+    installed.forEach((app) => {
+      const item = document.createElement("li");
+
+      const name = document.createElement("span");
+      name.textContent = app.size ? `${app.name} (${app.size})` : app.name;
+      name.title = app.id;
+
+      const remove = document.createElement("button");
+      remove.textContent = "Remove";
+      remove.className = "danger";
+      remove.onclick = () =>
+        run(async () => {
+          await api("DELETE", `/api/seats/${seat.name}/software/${app.id}`);
+          await loadSoftware(seat, body);
+        });
+
+      item.append(name, remove);
+      list.append(item);
+    });
+
+    body.append(list);
+  }
+
+  const offer = (status.catalog || []).filter((entry) => !have.has(entry.id));
+
+  if (offer.length > 0) {
+    const grid = document.createElement("ul");
+    grid.className = "devices";
+
+    offer.forEach((entry) => {
+      const item = document.createElement("li");
+
+      const name = document.createElement("span");
+      name.textContent = `${entry.name} - ${entry.summary}`;
+      name.title = entry.id;
+
+      const add = document.createElement("button");
+      add.textContent = "Install";
+      add.onclick = () =>
+        run(async () => {
+          await api("POST", `/api/seats/${seat.name}/software`, { id: entry.id });
+          await loadSoftware(seat, body);
+        });
+
+      item.append(name, add);
+      grid.append(item);
+    });
+
+    body.append(grid);
+  }
+
+  body.append(installForm(seat, body));
+}
+
+// Anything on Flathub, by id. The catalog above is a shortcut, not a fence.
+function installForm(seat, body) {
+  const form = document.createElement("form");
+  form.className = "pair";
+
+  const id = document.createElement("input");
+  id.placeholder = "Any Flathub id, for example org.videolan.VLC";
+  id.autocomplete = "off";
+  id.spellcheck = false;
+  id.required = true;
+
+  const submit = document.createElement("button");
+  submit.className = "primary";
+  submit.textContent = "Install";
+
+  form.append(id, submit);
+
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+
+    run(async () => {
+      try {
+        await api("POST", `/api/seats/${seat.name}/software`, {
+          id: id.value.trim(),
+        });
+        await loadSoftware(seat, body);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+  };
+
+  return form;
 }
 
 // Pairing, in one place instead of one Sunshine page per seat.
