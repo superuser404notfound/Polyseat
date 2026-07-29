@@ -153,7 +153,13 @@ check "the systemd unit is registered"   vm test -f /etc/systemd/system/polyseat
 check "systemd can read that unit"       vm systemctl cat polyseatd.service
 check "the udev rule is in place"        vm test -f /etc/udev/rules.d/72-polyseat-hide.rules
 check "the old rule number is not"       vm bash -c '! test -e /etc/udev/rules.d/70-polyseat-hide.rules'
-check "udev accepts the rule"            vm bash -c 'udevadm control --reload && ! udevadm test /sys/class/input/event0 2>&1 | grep -qi "72-polyseat.*invalid"'
+
+# udevadm verify parses the file the way udevd will and reports what it does not
+# understand. A rule with a mistake in it is still a file that exists, gets
+# installed, and reloads without complaint, and the first sign of trouble would
+# be a seat's gamepad reaching the host desktop.
+check "udev parses the rule"             vm udevadm verify /etc/udev/rules.d/72-polyseat-hide.rules
+check "udev reloads"                     vm udevadm control --reload
 
 for f in broker.py device_owner.py uhid_observer.py fakeudev.py; do
     check "helper $f"                    vm test -x "/usr/local/lib/polyseat/$f"
@@ -164,6 +170,33 @@ check "root has an idmap range (subgid)" vm grep -qE '^root:1000000:1000000000$'
 check "incus.socket is enabled"          vm systemctl is-enabled incus.socket
 check "incus is initialised"             vm bash -c 'incus storage list --format csv | grep -q .'
 check "$TESTUSER is in the input group"  vm bash -c "id -nG $TESTUSER | tr ' ' '\n' | grep -qx input"
+
+step "Does a working daemon come out of it"
+# The point of the whole exercise, and the part that checking for installed
+# files does not reach. An installer can put every file in the right place and
+# still leave a machine where nothing runs: a unit that does not start, a
+# daemon that exits on its first look at the system, an interface that never
+# binds. So the last instruction the installer prints is carried out here, and
+# what it promises is then asked for over the network.
+if vm systemctl enable --now polyseatd >/dev/null 2>&1; then
+    ok "systemctl enable --now polyseatd"
+else
+    bad "the unit would not start"
+fi
+
+sleep 5
+
+check "the daemon is running"            vm systemctl is-active polyseatd
+check "it did not fail and restart"      vm bash -c '[ "$(systemctl show -p NRestarts --value polyseatd)" = "0" ]'
+
+# The first password is generated on the first start and only written to the
+# log. Without it the interface exists and nobody can get in.
+check "it printed a first password"      vm bash -c 'journalctl -u polyseatd --no-pager | grep -qi password'
+
+# Asked for over the network rather than by looking at a listening socket,
+# because the certificate is generated on that first start too, and a listener
+# that cannot complete a handshake is not an interface anybody can use.
+check "the interface answers on 47800"   vm bash -c 'curl -sk --max-time 10 -o /dev/null -w "%{http_code}" https://127.0.0.1:47800/ | grep -qE "^(200|30[0-9])$"'
 
 step "Running it a second time"
 # An installer that only works on a machine it has never touched is an installer
@@ -183,6 +216,8 @@ else
     bad "it failed"
 fi
 
+check "the daemon was stopped"           vm bash -c '! systemctl is-active polyseatd >/dev/null 2>&1'
+check "and disabled"                     vm bash -c '! systemctl is-enabled polyseatd >/dev/null 2>&1'
 check "polyseatd is gone"                vm bash -c '! test -e /usr/local/bin/polyseatd'
 check "the unit is gone"                 vm bash -c '! test -e /etc/systemd/system/polyseatd.service'
 check "the udev rule is gone"            vm bash -c '! test -e /etc/udev/rules.d/72-polyseat-hide.rules'

@@ -173,6 +173,14 @@ by the daemon and everything else is a generated artifact, as set out in
 machine** and checks what it did, including that a second run changes nothing
 and that `--uninstall` removes what it should and keeps what it should.
 
+The check that matters most is not a file check. An installer can put every file
+in the right place and still leave a machine where nothing runs, so the harness
+carries out the last instruction the installer prints, `systemctl enable --now
+polyseatd`, and then asks the interface for a page over HTTPS. The certificate
+and the first password are generated on that first start, so a listener that
+cannot complete a handshake, or a daemon that starts and quietly restarts in a
+loop, is caught there and nowhere else.
+
 A virtual machine rather than a container, because a container shares the host's
 kernel and its udev, cannot run systemd units that touch devices, and would need
 nesting to run Incus inside it. The installer talks to all three.
