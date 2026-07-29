@@ -1,6 +1,10 @@
 package seat
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 // The catalog is a list of strings that are typed once and then shipped, and a
 // typo in one of them produces a failure at install time in somebody else's
@@ -78,5 +82,77 @@ func TestEveryFlatpakLauncherCanBeInstalledFromTheInterface(t *testing.T) {
 			t.Errorf("%s is recognised in the app list as %s but cannot be installed from the interface",
 				l.Name, l.Flatpak)
 		}
+	}
+}
+
+// Real output, taken from a seat, for a search that returns a mixture of the
+// well behaved and the not.
+const flatpakSearchOutput = "X Minecraft Launcher\tPlay and manage Minecraft\tapp.xmcl.voxelum\n" +
+	"Quadrant for Minecraft\tManage your mods and modpacks with ease\tdev.mrquantumoff.mcmodpackmanager\n" +
+	"Minecraft\tCreate your own world in one of the most popular video games\tcom.mojang.Minecraft\n"
+
+func TestParseSearchReadsWhatFlatpakPrints(t *testing.T) {
+	found := parseSearch(flatpakSearchOutput)
+
+	if len(found) != 3 {
+		t.Fatalf("got %d results, want 3: %+v", len(found), found)
+	}
+
+	if found[2].ID != "com.mojang.Minecraft" {
+		t.Errorf("third id is %q, want com.mojang.Minecraft", found[2].ID)
+	}
+
+	if found[2].Name != "Minecraft" {
+		t.Errorf("third name is %q, want Minecraft", found[2].Name)
+	}
+
+	if found[0].Summary != "Play and manage Minecraft" {
+		t.Errorf("first summary is %q", found[0].Summary)
+	}
+}
+
+// A description is text somebody else wrote, and flatpak prints it into a tab
+// separated line. Anything that does not come back as three columns with a
+// usable id in the third has to be dropped: an entry whose id is really a
+// fragment of prose would put an Install button on something that cannot be
+// installed.
+func TestParseSearchDropsWhatItCannotUse(t *testing.T) {
+	messy := "Good App\tA description\tcom.example.Good\n" +
+		"\n" +
+		"Truncated line with no columns\n" +
+		"Two\tcolumns only\n" +
+		"Bad id\tdescription\tnot-reverse-dns\n" +
+		"Nameless\tdescription\tcom.example.Nameless\n" +
+		"   \t   \tcom.example.Blank\n"
+
+	found := parseSearch(messy)
+
+	ids := []string{}
+	for _, entry := range found {
+		ids = append(ids, entry.ID)
+	}
+
+	want := "com.example.Good|com.example.Nameless|com.example.Blank"
+	if strings.Join(ids, "|") != want {
+		t.Errorf("kept %v, want %s", ids, want)
+	}
+
+	for _, entry := range found {
+		if entry.Name == "" {
+			t.Errorf("%s came back with no name, so its row would be blank", entry.ID)
+		}
+	}
+}
+
+// A search for something common returns dozens, and a panel is not the place
+// for all of them.
+func TestParseSearchStopsAtALength(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < searchResults*3; i++ {
+		fmt.Fprintf(&b, "App %d\tdescription\tcom.example.App%d\n", i, i)
+	}
+
+	if got := len(parseSearch(b.String())); got != searchResults {
+		t.Errorf("kept %d results, want it capped at %d", got, searchResults)
 	}
 }

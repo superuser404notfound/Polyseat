@@ -56,6 +56,7 @@ func New(manager *seat.Manager, credentials *auth.Store, logger *slog.Logger) ht
 	guarded.HandleFunc("POST /api/seats/{name}/pair", s.pair)
 	guarded.HandleFunc("POST /api/seats/{name}/unpair", s.unpair)
 	guarded.HandleFunc("GET /api/seats/{name}/software", s.getSoftware)
+	guarded.HandleFunc("GET /api/seats/{name}/software/search", s.searchSoftware)
 	guarded.HandleFunc("POST /api/seats/{name}/software", s.installSoftware)
 	guarded.HandleFunc("DELETE /api/seats/{name}/software/{id}", s.removeSoftware)
 	guarded.HandleFunc("GET /api/library", s.getLibrary)
@@ -591,6 +592,19 @@ func (s *Server) getSoftware(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) searchSoftware(w http.ResponseWriter, r *http.Request) {
+	found, err := s.manager.SearchSoftware(r.Context(),
+		r.PathValue("name"), r.URL.Query().Get("q"))
+	if err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	// A list, never null, because the page maps over it.
+	writeJSON(w, http.StatusOK, map[string]any{"results": found})
 }
 
 func (s *Server) installSoftware(w http.ResponseWriter, r *http.Request) {

@@ -144,6 +144,108 @@ func (m *Manager) Software(ctx context.Context, name string) (SoftwareStatus, er
 	return status, nil
 }
 
+// searchResults is how many matches are worth showing.
+//
+// A search for something common comes back with dozens, and a list that long
+// in a panel is not a list any more. Whoever wants the rest can be more
+// specific, which is cheaper than scrolling.
+const searchResults = 25
+
+// SearchSoftware asks Flathub what matches a few words.
+//
+// Because the catalog is a short list and the field next to it used to want an
+// exact application id, which is knowledge nobody has: somebody looking for
+// Minecraft does not know it is called com.mojang.Minecraft, and there is no
+// way to find that out from inside this interface.
+//
+// The search runs in the seat rather than against Flathub from the host. The
+// seat is the machine that has the remote configured and the summary already
+// downloaded, and asking it is the only way to be sure the answer matches what
+// that seat could actually install.
+func (m *Manager) SearchSoftware(ctx context.Context, name, term string) ([]CatalogEntry, error) {
+	found := []CatalogEntry{}
+
+	term = strings.TrimSpace(term)
+	if term == "" {
+		return found, nil
+	}
+
+	if len(term) > 100 {
+		return found, fmt.Errorf("that search is too long")
+	}
+
+	// Every call here is an argv list, so a crafted term cannot become a
+	// command. This is about the answer being useful: a term with a newline in
+	// it would be split across the tab separated output and parsed as nonsense.
+	if strings.ContainsAny(term, "\n\r\t") {
+		return found, fmt.Errorf("a search cannot contain line breaks")
+	}
+
+	if _, err := m.store.Get(name); err != nil {
+		return found, err
+	}
+
+	out, code, err := m.client.Try(ctx, name, m.playerEnv(
+		"flatpak", "search", "--columns=name,description,application", term)...)
+	if err != nil {
+		return found, err
+	}
+
+	// flatpak says "No matches found" on stderr and exits non-zero for a term
+	// that matches nothing. That is an answer, not a failure.
+	if code != 0 {
+		return found, nil
+	}
+
+	return parseSearch(out), nil
+}
+
+// parseSearch reads the tab separated columns flatpak prints.
+//
+// Separate from running it so that the awkward part can be tested: the output
+// is somebody's application description, which may contain almost anything,
+// and a line that does not have three columns has to be dropped rather than
+// turned into an entry with an id made of prose. An id that reaches the
+// interface is one somebody can press Install on.
+func parseSearch(out string) []CatalogEntry {
+	found := []CatalogEntry{}
+
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		fields := strings.Split(line, "\t")
+		if len(fields) < 3 {
+			continue
+		}
+
+		id := strings.TrimSpace(fields[2])
+		if ValidateAppID(id) != nil {
+			continue
+		}
+
+		entry := CatalogEntry{
+			ID:      id,
+			Name:    strings.TrimSpace(fields[0]),
+			Summary: strings.TrimSpace(fields[1]),
+		}
+
+		if entry.Name == "" {
+			entry.Name = id
+		}
+
+		found = append(found, entry)
+
+		if len(found) == searchResults {
+			break
+		}
+	}
+
+	return found
+}
+
 // playerEnv wraps a command so it runs as the player with a home directory.
 //
 // Both halves matter. A flatpak installed with --user lives under the player's

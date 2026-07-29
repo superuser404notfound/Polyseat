@@ -634,36 +634,48 @@ function drawSoftware(seat, body, status) {
     body.append(grid);
   }
 
-  body.append(installForm(seat, body));
+  const results = document.createElement("div");
+
+  body.append(searchForm(seat, body, results, have), results);
 }
 
-// Anything on Flathub, by id. The catalog above is a shortcut, not a fence.
-function installForm(seat, body) {
+// Search Flathub by words rather than by application id.
+//
+// The field here used to want an exact id, which is knowledge nobody has:
+// somebody looking for Minecraft does not know it is called
+// com.mojang.Minecraft, and there was nothing in this interface that would
+// tell them. Pasting an id still works, because searching for one finds it.
+function searchForm(seat, body, results, have) {
   const form = document.createElement("form");
   form.className = "pair";
 
-  const id = document.createElement("input");
-  id.placeholder = "Any Flathub id, for example org.videolan.VLC";
-  id.autocomplete = "off";
-  id.spellcheck = false;
-  id.required = true;
+  const query = document.createElement("input");
+  query.placeholder = "Search Flathub, for example minecraft or emulator";
+  query.autocomplete = "off";
+  query.spellcheck = false;
+  query.required = true;
 
   const submit = document.createElement("button");
   submit.className = "primary";
-  submit.textContent = "Install";
+  submit.textContent = "Search";
 
-  form.append(id, submit);
+  form.append(query, submit);
 
   form.onsubmit = (event) => {
     event.preventDefault();
     submit.disabled = true;
+    results.replaceChildren(note("searching Flathub"));
 
     run(async () => {
       try {
-        await api("POST", `/api/seats/${seat.name}/software`, {
-          id: id.value.trim(),
-        });
-        await loadSoftware(seat, body, true);
+        const found = await api(
+          "GET",
+          `/api/seats/${seat.name}/software/search?q=${encodeURIComponent(
+            query.value.trim(),
+          )}`,
+        );
+
+        drawResults(seat, body, results, found.results || [], have);
       } finally {
         submit.disabled = false;
       }
@@ -671,6 +683,51 @@ function installForm(seat, body) {
   };
 
   return form;
+}
+
+function drawResults(seat, body, results, found, have) {
+  if (found.length === 0) {
+    results.replaceChildren(note("Nothing on Flathub matches that."));
+
+    return;
+  }
+
+  const list = document.createElement("ul");
+  list.className = "devices";
+
+  found.forEach((entry) => {
+    const item = document.createElement("li");
+
+    const name = document.createElement("span");
+    name.textContent = entry.summary
+      ? `${entry.name} - ${entry.summary}`
+      : entry.name;
+    name.title = entry.id;
+
+    item.append(name);
+
+    // Saying so is more use than a button that would fail or reinstall.
+    if (have.has(entry.id)) {
+      const already = document.createElement("span");
+      already.className = "hint";
+      already.textContent = "installed";
+      item.append(already);
+    } else {
+      const add = document.createElement("button");
+      add.textContent = "Install";
+      add.onclick = () =>
+        run(async () => {
+          await api("POST", `/api/seats/${seat.name}/software`, { id: entry.id });
+          await loadSoftware(seat, body, true);
+        });
+
+      item.append(add);
+    }
+
+    list.append(item);
+  });
+
+  results.replaceChildren(list);
 }
 
 // Pairing, in one place instead of one Sunshine page per seat.
