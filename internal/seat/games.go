@@ -27,6 +27,12 @@ type Game struct {
 	Name   string
 	Launch string
 	Image  string
+
+	// Steam is the application id, when this came from Steam. Carried so that
+	// a cover can be fetched for a game whose artwork Steam never downloaded
+	// into this seat, which is every game delivered by the shared library and
+	// not yet looked at here.
+	Steam string
 }
 
 // maxGames bounds the app list.
@@ -162,6 +168,7 @@ func (p *Provisioner) steamGames(ctx context.Context) ([]Game, error) {
 			Name:   f.Name,
 			Launch: "steam steam://rungameid/" + f.AppID,
 			Image:  f.Cover,
+			Steam:  f.AppID,
 		})
 	}
 

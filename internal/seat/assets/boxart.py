@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """polyseat-boxart - turn whatever artwork a seat has into cards Moonlight shows.
 
-Reads a JSON list of {"key", "source", "label"} on the command line and prints
-{"key": "/path/to/card.png"} for the ones it could make.
+Reads a JSON list of {"key", "source", "label", "steam"} on the command line
+and prints {"key": "/path/to/card.png"} for the ones it could make. "source" is
+artwork already on disk and "steam" is an application id to fetch a cover for
+when there is none.
 
 Two things were learned by looking at a client rather than by reading a
 specification, and both of them are why this exists at all.
@@ -26,6 +28,9 @@ import hashlib
 import json
 import os
 import sys
+import time
+import urllib.error
+import urllib.request
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -34,6 +39,30 @@ BACKGROUND = (27, 36, 48)
 TEXT = (216, 222, 233)
 
 OUT = os.path.expanduser("~/.local/share/polyseat/art")
+
+# Where Steam publishes the portrait cover of a title.
+#
+# Fetched because a seat only caches the artwork of games it has displayed in
+# Steam, and the shared library delivers games nobody has looked at there. Their
+# cards were coming out as a name on a dark background while the picture sat one
+# request away.
+#
+# Not every title has one: a cover that does not exist answers 404, which is an
+# answer and is remembered so that the same 404 is not fetched every minute for
+# the life of the seat.
+COVER_URL = ("https://shared.cloudflare.steamstatic.com/store_item_assets"
+             "/steam/apps/%s/library_600x900.jpg")
+
+FETCH_TIMEOUT = 8
+
+# How long a title with no cover is left alone before asking again. Art does
+# appear for a game after release, so never is the wrong answer, and so is
+# every minute.
+RETRY_MISSING = 7 * 24 * 3600
+
+# At most this many downloads per pass, so that a seat that has just been given
+# forty games does not spend a minute of every minute fetching pictures.
+FETCH_BUDGET = 6
 
 FONTS = [
     "/usr/share/fonts/noto/NotoSans-Bold.ttf",
@@ -117,13 +146,79 @@ def compose(source, label):
     return card
 
 
-def build(item):
+def fetched_cover(appid, budget):
+    """The cover for a Steam title, downloaded once and kept.
+
+    Returns the path, or None. Never raises: a picture is not worth failing an
+    app list over.
+    """
+    if not appid or not appid.isdigit():
+        return None
+
+    target = os.path.join(OUT, "steam-%s.jpg" % appid)
+    missing = target + ".none"
+
+    if os.path.exists(target):
+        return target
+
+    try:
+        if os.path.exists(missing) and time.time() - os.path.getmtime(missing) < RETRY_MISSING:
+            return None
+    except OSError:
+        pass
+
+    if budget["left"] <= 0:
+        return None
+
+    budget["left"] -= 1
+
+    os.makedirs(OUT, exist_ok=True)
+
+    try:
+        with urllib.request.urlopen(COVER_URL % appid, timeout=FETCH_TIMEOUT) as response:
+            data = response.read()
+    except (urllib.error.URLError, OSError, ValueError):
+        data = None
+
+    if not data:
+        try:
+            open(missing, "wb").close()
+        except OSError:
+            pass
+
+        return None
+
+    tmp = target + ".tmp"
+
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+
+        # Confirm it is really an image before letting it become a card, so
+        # that an error page saved as a jpg does not become somebody's box art.
+        Image.open(tmp).load()
+        os.replace(tmp, target)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+        return None
+
+    return target
+
+
+def build(item, budget):
     key = item.get("key") or ""
     label = item.get("label") or key
     source = item.get("source") or ""
 
     if not key:
         return None
+
+    if not source:
+        source = fetched_cover(item.get("steam") or "", budget) or ""
 
     target = os.path.join(OUT, hashlib.sha1(key.encode()).hexdigest() + ".png")
 
@@ -168,10 +263,11 @@ def main():
         return
 
     out = {}
+    budget = {"left": FETCH_BUDGET}
 
     for item in json.loads(sys.argv[1]):
         try:
-            path = build(item)
+            path = build(item, budget)
         except Exception:
             # One unreadable image must not cost a seat its whole app list.
             path = None

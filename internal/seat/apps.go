@@ -127,7 +127,9 @@ func (p *Provisioner) WriteApps(ctx context.Context) ([]string, bool, error) {
 	}
 
 	for _, g := range games {
-		items = append(items, artItem{Key: g.Name, Source: g.Image, Label: g.Name})
+		items = append(items, artItem{
+			Key: g.Name, Source: g.Image, Label: g.Name, Steam: g.Steam,
+		})
 	}
 
 	// Assigned even when nothing came back, so that a raw source path is never
@@ -554,6 +556,11 @@ type artItem struct {
 	Key    string `json:"key"`
 	Source string `json:"source"`
 	Label  string `json:"label"`
+
+	// Steam is the application id, when there is one, so that a cover can be
+	// fetched for a game this seat has never displayed in Steam and therefore
+	// has no cached artwork for.
+	Steam string `json:"steam,omitempty"`
 }
 
 // boxart builds the cards and returns the file for each key.
