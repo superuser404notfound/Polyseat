@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/superuser404notfound/Polyseat/internal/auth"
@@ -39,6 +40,7 @@ func New(manager *seat.Manager, credentials *auth.Store, logger *slog.Logger) ht
 
 	// Reachable without a session. The first two are how you get one; the last
 	// is what tells the interface whether it needs to ask.
+	mux.HandleFunc("POST /api/setup", s.setup)
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/logout", s.logout)
 	mux.HandleFunc("GET /api/session", s.session)
@@ -163,7 +165,8 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// session tells the interface whether it has to ask for a password.
+// session tells the interface whether it has to ask for a password, and
+// whether there is one to ask for yet.
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(auth.CookieName)
 	valid := err == nil && s.auth.Valid(cookie.Value)
@@ -171,7 +174,60 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authenticated": valid,
 		"username":      s.auth.Username(),
+		"setup":         s.auth.NeedsSetup(),
 	})
+}
+
+type setupRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Confirm  string `json:"confirm"`
+}
+
+// setup claims a machine nobody has claimed yet.
+//
+// Unguarded, and that is the whole point: there is no password to authenticate
+// against until this has run. It stops working the moment it has, so it is a
+// door that closes behind the first person through it. The trade, and why it is
+// made, is written down in the auth package and in docs/security.md.
+func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
+	if !s.auth.NeedsSetup() {
+		fail(w, http.StatusConflict, errors.New("this machine already has a password"))
+
+		return
+	}
+
+	var req setupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if req.Password != req.Confirm {
+		fail(w, http.StatusBadRequest, errors.New("the two passwords are not the same"))
+
+		return
+	}
+
+	username := strings.TrimSpace(req.Username)
+	if username == "" {
+		username = "admin"
+	}
+
+	if err := s.auth.Claim(username, req.Password); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	// Signed in straight away. Asking somebody to type a password they chose
+	// one second ago proves nothing and is one more thing to get wrong.
+	s.setSession(w, s.auth.Issue())
+	s.log.Info("password set for the first time", "username", username,
+		"source", auth.Source(r))
+
+	writeJSON(w, http.StatusOK, map[string]string{"username": username})
 }
 
 func (s *Server) setSession(w http.ResponseWriter, token string) {
@@ -195,6 +251,7 @@ type passwordRequest struct {
 	Username string `json:"username"`
 	Current  string `json:"current"`
 	New      string `json:"new"`
+	Confirm  string `json:"confirm"`
 }
 
 func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +266,15 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 	// borrowed browser cannot be turned into a permanent one.
 	if !s.auth.Check(s.auth.Username(), req.Current) {
 		fail(w, http.StatusUnauthorized, errors.New("the current password is wrong"))
+
+		return
+	}
+
+	// Typed twice, and compared here rather than only in the browser. A
+	// mistyped password locks somebody out of their own machine, and the file
+	// it is stored in cannot be read back to find out what they actually typed.
+	if req.New != req.Confirm {
+		fail(w, http.StatusBadRequest, errors.New("the two passwords are not the same"))
 
 		return
 	}

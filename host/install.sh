@@ -260,9 +260,8 @@ Then open the interface and create your seats there:
 
   https://$(hostname):47800
 
-The first password is generated on that first start and written to the log:
-
-  journalctl -u polyseatd | grep password
+It has no password yet, so the page asks you to choose one rather than to type
+one. Do that before anybody else on the network does.
 
 It answers on the whole network and the certificate is self signed, so the
 browser asks once, exactly like Sunshine's own interface. To keep it on this

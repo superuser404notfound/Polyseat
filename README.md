@@ -109,14 +109,11 @@ Two things it reports rather than changes, because they are yours to decide:
   needs a default route to take it from and does not work on wifi at all,
   because 802.11 does not carry more than one MAC address per association.
 
-**Everything else happens at `https://<this machine>:47800`.** The first
-password is generated on first start and written to the log:
-
-```
-journalctl -u polyseatd | grep password
-```
-
-Sign in, change it under *Account*, then add a seat and press provision. The
+**Everything else happens at `https://<this machine>:47800`.** Nobody has
+claimed the machine yet, so the page asks you to choose a password rather than
+to type one, the way Sunshine's own interface does. Do it before anybody else
+does: until it is set, whoever reaches the page can set it. Then add a seat and
+press provision. The
 daemon downloads the image, installs the packages, repairs the NVIDIA userspace
 that the driver injection leaves incomplete, generates the Sunshine
 configuration and starts the session.

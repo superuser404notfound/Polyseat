@@ -15,35 +15,81 @@ import (
 // looking at a running system: a session that is accepted when it should not be
 // looks exactly like one that is accepted correctly.
 
+// newStore returns a store somebody has already claimed, which is what most of
+// these tests are about.
 func newStore(t *testing.T) *Store {
 	t.Helper()
 
-	store, initial, err := Open(t.TempDir())
+	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 
-	if initial == "" {
-		t.Fatal("a fresh store has to generate an initial password")
+	if err := store.Claim("admin", "the first password"); err != nil {
+		t.Fatalf("Claim: %v", err)
 	}
 
 	return store
 }
 
-func TestOpenGeneratesCredentialsOnce(t *testing.T) {
-	dir := t.TempDir()
-
-	first, initial, err := Open(dir)
+// A machine nobody has claimed has no credentials, and says so, because that is
+// what makes the interface offer to set one instead of asking for one.
+func TestAFreshStoreIsUnclaimed(t *testing.T) {
+	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 
-	if len(initial) < MinPasswordLength {
-		t.Fatalf("generated password is too short: %q", initial)
+	if !store.NeedsSetup() {
+		t.Fatal("a store with no credentials did not ask to be set up")
+	}
+}
+
+// The failure this replaced a generated password with, and the one that would
+// be silent: with no credentials stored, comparing nothing against nothing
+// succeeds, so an empty form would have been a valid sign in.
+func TestAnUnclaimedStoreLetsNobodyIn(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
 	}
 
-	if !first.Check("admin", initial) {
-		t.Fatal("the generated password does not verify against its own hash")
+	for _, tc := range []struct{ user, password string }{
+		{"", ""},
+		{"admin", ""},
+		{"", "anything"},
+		{"admin", "anything"},
+	} {
+		if store.Check(tc.user, tc.password) {
+			t.Errorf("Check(%q, %q) let somebody in before a password was set", tc.user, tc.password)
+		}
+	}
+}
+
+func TestClaimIsOnlyPossibleOnce(t *testing.T) {
+	dir := t.TempDir()
+
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	if err := store.Claim("rooky", "the first password"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	if store.NeedsSetup() {
+		t.Error("the store still asks to be set up after being claimed")
+	}
+
+	// The one that matters. Without it, whoever reaches the page second takes
+	// the machine from whoever reached it first.
+	if err := store.Claim("somebody else", "another password"); err == nil {
+		t.Error("a second claim was accepted, so the first password can be overwritten by anyone")
+	}
+
+	if !store.Check("rooky", "the first password") {
+		t.Error("the first password stopped working")
 	}
 
 	// The file has to be readable by root only. It holds the session signing
@@ -57,18 +103,18 @@ func TestOpenGeneratesCredentialsOnce(t *testing.T) {
 		t.Errorf("credentials are %o, want 600", perm)
 	}
 
-	// Opening again must not replace them, or every daemon restart would
-	// invent a new password and lock everybody out.
-	second, again, err := Open(dir)
+	// Reopening must not lose them, or every daemon restart would offer the
+	// machine to whoever asked next.
+	second, err := Open(dir)
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
 
-	if again != "" {
-		t.Error("the second Open generated a password again")
+	if second.NeedsSetup() {
+		t.Error("a reopened store asks to be set up again")
 	}
 
-	if !second.Check("admin", initial) {
+	if !second.Check("rooky", "the first password") {
 		t.Error("the password did not survive a reopen")
 	}
 }
@@ -241,7 +287,7 @@ func TestLimiter(t *testing.T) {
 func TestStoredCredentialsCarryNoPlaintext(t *testing.T) {
 	dir := t.TempDir()
 
-	store, _, err := Open(dir)
+	store, err := Open(dir)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

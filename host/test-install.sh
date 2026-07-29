@@ -141,7 +141,13 @@ vm bash -c 'incus storage delete default >/dev/null 2>&1 || true'
 vm bash -c 'incus network delete incusbr0 >/dev/null 2>&1 || true'
 vm bash -c 'systemctl disable incus.socket >/dev/null 2>&1 || true'
 
-ok "group membership, idmap entries and the Incus setup cleared"
+# And the daemon's own credentials, because an unclaimed machine is the state
+# under test: the first person to open the page chooses the password. Leaving
+# them behind made the run after the first one check a machine that had already
+# been claimed, and say so.
+vm bash -c 'rm -f /var/lib/polyseat/credentials.json'
+
+ok "group membership, idmap entries, the Incus setup and the credentials cleared"
 
 check "Incus really is uninitialised now" \
     vm bash -c '! incus storage list --format csv 2>/dev/null | grep -q .'
@@ -218,9 +224,16 @@ sleep 5
 check "the daemon is running"            vm systemctl is-active polyseatd
 check "it did not fail and restart"      vm bash -c '[ "$(systemctl show -p NRestarts --value polyseatd)" = "0" ]'
 
-# The first password is generated on the first start and only written to the
-# log. Without it the interface exists and nobody can get in.
-check "it printed a first password"      vm bash -c 'journalctl -u polyseatd --no-pager | grep -qi password'
+# A machine nobody has claimed offers to be claimed, and says so on the way up.
+# If that were ever silent, the page would ask for a password that does not
+# exist and the machine would be unusable with no sign of why.
+# Scoped to this start of the unit rather than to the whole journal, which
+# still holds every earlier run: the first version of this passed on a line
+# written an hour before by a daemon that no longer existed.
+check "it says it has no password yet" vm bash -c '
+    id=$(systemctl show -p InvocationID --value polyseatd)
+    journalctl _SYSTEMD_INVOCATION_ID="$id" --no-pager | grep -qi "no password yet"'
+check "and the API agrees"               vm bash -c 'curl -sk --max-time 10 https://127.0.0.1:47800/api/session | grep -q "\"setup\":true"'
 
 # Asked for over the network rather than by looking at a listening socket,
 # because the certificate is generated on that first start too, and a listener

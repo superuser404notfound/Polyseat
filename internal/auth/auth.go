@@ -83,12 +83,21 @@ type Store struct {
 
 // Open loads the credentials, creating them on first run.
 //
-// The initial password is generated rather than left empty. A daemon that
-// accepts anything until somebody sets a password has an open window, and
-// whoever reaches it first wins; on a machine that listens on the network that
-// window is not acceptable. The generated password is returned so the caller
-// can log it once, which puts it behind the same wall as root.
-func Open(stateDir string) (store *Store, initialPassword string, err error) {
+// A machine nobody has claimed yet has no credentials at all, and the interface
+// asks for a password to be chosen instead of asking for one to be typed. That
+// is a deliberate trade and it replaced the opposite one: the first version
+// generated a password and wrote it to the log, so that the window in which
+// anybody could claim the daemon was never open.
+//
+// What the generated password cost was the one thing Polyseat is supposed not
+// to need, a terminal. Reading it back meant journalctl, on a machine whose
+// whole point is that it is driven from a browser and a gamepad. Sunshine makes
+// the same trade for the same reason.
+//
+// So the window exists, and it is closed by the first person to open the page.
+// This is a tool for a household's own machine on its own network; it is not
+// one to hand to the internet, which the documentation says in as many words.
+func Open(stateDir string) (*Store, error) {
 	path := filepath.Join(stateDir, "credentials.json")
 
 	s := &Store{path: path, limiter: newLimiter()}
@@ -97,26 +106,43 @@ func Open(stateDir string) (store *Store, initialPassword string, err error) {
 	switch {
 	case err == nil:
 		if err := json.Unmarshal(data, &s.creds); err != nil {
-			return nil, "", fmt.Errorf("%s: %w", path, err)
+			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 
-		return s, "", nil
+		return s, nil
 
 	case os.IsNotExist(err):
-		password, err := randomPassword()
-		if err != nil {
-			return nil, "", err
-		}
-
-		if err := s.SetPassword("admin", password); err != nil {
-			return nil, "", err
-		}
-
-		return s, password, nil
+		return s, nil
 
 	default:
-		return nil, "", err
+		return nil, err
 	}
+}
+
+// NeedsSetup reports whether nobody has chosen a password yet.
+func (s *Store) NeedsSetup() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return len(s.creds.Hash) == 0
+}
+
+// Claim sets the first credentials, and only the first.
+//
+// Separate from SetPassword because the check and the write have to be one
+// step. Two browsers opening an unclaimed daemon at the same moment would
+// otherwise both find it unclaimed, both set a password, and the second would
+// win silently.
+func (s *Store) Claim(username, password string) error {
+	s.mu.Lock()
+	claimed := len(s.creds.Hash) != 0
+	s.mu.Unlock()
+
+	if claimed {
+		return errors.New("this machine already has a password")
+	}
+
+	return s.SetPassword(username, password)
 }
 
 // Username is who logs in.
@@ -194,6 +220,14 @@ func (s *Store) Check(username, password string) bool {
 	creds := s.creds
 	s.mu.RUnlock()
 
+	// An unclaimed machine has no credentials, and comparing nothing with
+	// nothing succeeds: both the name and the hash would be empty on each side
+	// and the constant time compare would say yes. Signing in with a blank form
+	// is not what "nobody has set a password yet" is supposed to mean.
+	if len(creds.Hash) == 0 {
+		return false
+	}
+
 	// Hash regardless, so a wrong user name does not answer faster than a
 	// wrong password and give away which of the two was right.
 	hash := argon2.IDKey([]byte(password), creds.Salt, creds.Time, creds.Memory, creds.Threads, uint32(len(creds.Hash)))
@@ -267,24 +301,6 @@ func nonce() string {
 	}
 
 	return base64.RawURLEncoding.EncodeToString(buf)
-}
-
-// randomPassword returns something readable enough to type in once from a
-// journal line, without ambiguous characters.
-func randomPassword() (string, error) {
-	const alphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-
-	buf := make([]byte, 20)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-
-	out := make([]byte, len(buf))
-	for i, b := range buf {
-		out[i] = alphabet[int(b)%len(alphabet)]
-	}
-
-	return string(out), nil
 }
 
 // ------------------------------------------------------------------- limiter

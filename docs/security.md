@@ -194,12 +194,31 @@ The details behind that:
   `https://<seat>:47990`. The daemon logs the fingerprint at startup so it can
   be compared against what the browser is asking to trust.
 
-**There is no window in which the interface is open.** On first start the daemon
-generates a random password, stores its hash and writes the plain text to its
-log exactly once. Reading that needs the same access as reading anything else
-root writes. The alternative, accepting anything until somebody sets a password,
-means whoever reaches it first wins, which on something that listens on the
-network is not a window worth opening.
+**There is a window in which the machine can be claimed, and it is deliberate.**
+A daemon that has never been set up has no credentials at all, and the first
+person to open the page chooses the password. Until they do, anybody who can
+reach the page could choose it instead. Sunshine makes the same trade.
+
+This replaced the opposite one, and the reason is worth stating rather than
+implying. The first version generated a password on first start and wrote it to
+the log, so the window never existed; what it cost was a terminal, on a machine
+whose entire point is that it is driven from a browser and a gamepad. `journalctl
+-u polyseatd | grep password` is not a step that belongs in front of somebody
+setting up a games machine for their household.
+
+What limits it: the window is open only until somebody walks through it, and it
+closes behind them. `Claim` checks and writes as one step, so two browsers
+arriving at the same moment cannot both succeed. An unclaimed store refuses
+every sign in rather than accepting an empty form, which it would otherwise do,
+since comparing no stored name and hash against an empty name and password
+succeeds on both counts. And the daemon says on the way up that it has no
+password yet, so a machine sitting unclaimed is visible in its log rather than
+silent.
+
+What does not limit it: nothing about the network. This is a tool for a
+household's own machine on its own network, which is the threat model at the top
+of this document, and it is not one to expose to the internet. Set the password
+when the daemon is first started, not later.
 
 The static page is served without a session on purpose. It is the same markup
 for everybody and useless without the API behind it, and serving it openly is

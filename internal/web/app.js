@@ -1209,7 +1209,10 @@ async function run(handler) {
 
 // --------------------------------------------------------------------- login
 
-function showLogin() {
+// showLogin puts up the sign in form, or the one that chooses the first
+// password when there is none yet. Same section, because they are the same
+// moment for whoever is looking at it: this machine wants to know who you are.
+function showLogin(setup) {
   if (stream) {
     stream.close();
     stream = null;
@@ -1220,9 +1223,17 @@ function showLogin() {
   el("login").hidden = false;
   el("hostname").textContent = "";
   el("observer").hidden = true;
-  el("link").textContent = "signed out";
+  el("link").textContent = setup ? "not set up yet" : "signed out";
   el("link").className = "pill offline";
-  el("login-form").username.focus();
+
+  el("setup-form").hidden = !setup;
+  el("login-form").hidden = !!setup;
+
+  if (setup) {
+    el("setup-form").password.focus();
+  } else {
+    el("login-form").username.focus();
+  }
 }
 
 function showApp() {
@@ -1234,6 +1245,43 @@ function showApp() {
 
   refresh();
   connect();
+}
+
+async function submitSetup(event) {
+  event.preventDefault();
+
+  const form = el("setup-form");
+  const button = el("setup-submit");
+
+  el("setup-error").textContent = "";
+
+  if (form.password.value !== form.confirm.value) {
+    el("setup-error").textContent = "The two passwords are not the same.";
+    form.confirm.value = "";
+    form.confirm.focus();
+
+    return;
+  }
+
+  // Hashing a password is deliberately slow, so say something rather than
+  // letting the page look frozen for a second.
+  button.disabled = true;
+
+  try {
+    await api("POST", "/api/setup", {
+      username: form.username.value.trim(),
+      password: form.password.value,
+      confirm: form.confirm.value,
+    });
+
+    form.password.value = "";
+    form.confirm.value = "";
+    showApp();
+  } catch (err) {
+    el("setup-error").textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function submitLogin(event) {
@@ -1270,15 +1318,25 @@ async function submitPassword(event) {
   el("password-error").textContent = "";
 
   try {
+    if (form.new.value !== form.confirm.value) {
+      el("password-error").textContent = "The two passwords are not the same.";
+      form.confirm.value = "";
+      form.confirm.focus();
+
+      return;
+    }
+
     await api("POST", "/api/password", {
       username: form.username.value.trim(),
       current: form.current.value,
       new: form.new.value,
+      confirm: form.confirm.value,
     });
 
     el("password").close();
     form.current.value = "";
     form.new.value = "";
+    form.confirm.value = "";
   } catch (err) {
     el("password-error").textContent = err.message;
   }
@@ -1302,6 +1360,7 @@ async function openAccount() {
   form.username.value = session.username;
   form.current.value = "";
   form.new.value = "";
+  form.confirm.value = "";
   el("password-error").textContent = "";
   el("password").showModal();
 }
@@ -1396,6 +1455,7 @@ el("add").onclick = () => openEditor(null);
 el("editor-cancel").onclick = () => el("editor").close();
 el("editor-form").onsubmit = saveEditor;
 el("login-form").onsubmit = submitLogin;
+el("setup-form").onsubmit = submitSetup;
 el("password-form").onsubmit = submitPassword;
 el("password-cancel").onclick = () => el("password").close();
 el("logout").onclick = signOut;
@@ -1434,5 +1494,5 @@ el("import-form").onsubmit = submitImport;
 // Ask before drawing anything, so a signed out visitor gets the login form
 // rather than a flash of an empty seat list.
 api("GET", "/api/session")
-  .then((session) => (session.authenticated ? showApp() : showLogin()))
-  .catch(() => showLogin());
+  .then((session) => (session.authenticated ? showApp() : showLogin(session.setup)))
+  .catch(() => showLogin(false));

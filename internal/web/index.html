@@ -20,13 +20,37 @@
 
 <!-- Shown until there is a session. Everything the API serves is behind it. -->
 <section id="login" class="login" hidden>
+  <form id="setup-form" hidden>
+    <h2>Choose a password</h2>
+    <p class="hint">
+      Nobody has claimed this machine yet, so the first person to open this page
+      sets the password. Do it now rather than later: until it is set, anybody
+      who can reach this page can set it instead.
+    </p>
+
+    <label>
+      User name
+      <input name="username" value="admin" autocomplete="username" autocapitalize="none" required>
+    </label>
+
+    <label>
+      Password
+      <input name="password" type="password" autocomplete="new-password" minlength="8" required>
+      <small>At least 8 characters. This guards a daemon that runs as root.</small>
+    </label>
+
+    <label>
+      Password again
+      <input name="confirm" type="password" autocomplete="new-password" minlength="8" required>
+    </label>
+
+    <p class="error" id="setup-error"></p>
+
+    <button class="primary" id="setup-submit">Set the password</button>
+  </form>
+
   <form id="login-form">
     <h2>Sign in</h2>
-    <p class="hint">
-      The first password is generated when the daemon starts for the first time
-      and written to its log:
-      <code>journalctl -u polyseatd | grep password</code>
-    </p>
 
     <label>
       User name
@@ -172,6 +196,12 @@
       New password
       <input name="new" type="password" autocomplete="new-password" minlength="8" required>
       <small>At least 8 characters. This guards a daemon that runs as root and answers on the network.</small>
+    </label>
+
+    <label>
+      New password again
+      <input name="confirm" type="password" autocomplete="new-password" minlength="8" required>
+      <small>Typed twice because a mistyped one locks you out of your own machine.</small>
     </label>
 
     <p class="error" id="password-error"></p>

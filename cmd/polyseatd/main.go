@@ -91,18 +91,17 @@ func run(configPath, listenOverride string, logger *slog.Logger) error {
 		return err
 	}
 
-	credentials, initialPassword, err := auth.Open(cfg.StateDir)
+	credentials, err := auth.Open(cfg.StateDir)
 	if err != nil {
 		return err
 	}
 
-	if initialPassword != "" {
-		// Logged once, and only once: this is the only moment it exists in
-		// plain text. Putting it in the journal rather than leaving the
-		// interface open until somebody sets a password means there is never a
-		// window in which the first visitor wins.
-		logger.Info("no credentials yet, generated an initial password",
-			"username", credentials.Username(), "password", initialPassword)
+	if credentials.NeedsSetup() {
+		// Said plainly, because it is the one moment when anybody who reaches
+		// the interface can claim it. The alternative was a generated password
+		// in this line, which closed that window and cost a terminal to read it
+		// back out of the journal.
+		logger.Info("no password yet, whoever opens the interface first chooses it")
 	}
 
 	certificate, err := auth.EnsureCertificate(cfg.StateDir)
