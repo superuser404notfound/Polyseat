@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 4
+const Generation = 5
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -1014,6 +1014,7 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		{"/usr/local/bin/polyseat-resize", asset("assets/resize.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-welcome", asset("assets/welcome.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-keyboard", asset("assets/keyboard.sh"), 0o755, 0},
+		{"/usr/local/bin/polyseat-launcher", asset("assets/launcher.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-pad-pointer", asset("assets/pad-pointer.py"), 0o755, 0},
 	}
 
@@ -1021,6 +1022,10 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		if err := p.Client.PushFile(p.name(), f.path, f.content, f.mode, f.uid, f.uid); err != nil {
 			return err
 		}
+	}
+
+	if err := p.tidyLauncher(); err != nil {
+		return err
 	}
 
 	// The seat tag inside the device names, which is what makes per seat input
@@ -1051,7 +1056,7 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		return err
 	}
 
-	apps, err := p.WriteApps(ctx)
+	apps, _, err := p.WriteApps(ctx)
 	if err != nil {
 		return err
 	}
@@ -1089,6 +1094,68 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 // talking to each seat's Sunshine on the user's behalf, and it can only do that
 // if it knows how to log in. The interface shows the password, so the seat's
 // own Sunshine page stays reachable by hand.
+// clutter is what the launcher shows that a seat has no use for.
+//
+// None of it is installed on purpose. Every one of these arrived as a
+// dependency of something that is: gpsd brings xgps, v4l-utils brings the Qt
+// capture utilities, hwloc brings lstopo, avahi brings three network browsers,
+// and Thunar brings a rename tool and an about box. Twenty two entries, of
+// which eight are worth having.
+//
+// That is not only untidy. The launcher shows a page at a time, sorted by
+// name, so junk beginning with A through L pushed the software installer off
+// the bottom of the list, and somebody looking for it concluded it was not
+// installed.
+//
+// Sunshine is here for a different reason and the most important one. Its entry
+// starts a second Sunshine, in a seat where one is already running as a
+// service, which would fight the first one for the encoder and the virtual
+// input devices.
+var clutter = []string{
+	"avahi-discover", "bssh", "bvnc",
+	"foot-server", "footclient",
+	"lstopo",
+	"qv4l2", "qvidcap",
+	"xgps", "xgpsspeed",
+	"thunar-bulk-rename", "xfce4-about",
+	"dev.lizardbyte.app.Sunshine",
+}
+
+// tidyLauncher hides those entries for the player.
+//
+// By writing a user entry of the same name rather than by touching what the
+// packages installed. Hidden means "the user removed this" in the desktop entry
+// specification, so menus drop it, and the next pacman -Syu does not undo it.
+func (p *Provisioner) tidyLauncher() error {
+	dir := "/home/" + Player + "/.local/share/applications"
+
+	for _, name := range []string{
+		"/home/" + Player + "/.local",
+		"/home/" + Player + "/.local/share",
+		dir,
+	} {
+		if err := p.Client.MakeDir(p.name(), name, 0o755, p.uid, p.uid); err != nil {
+			return err
+		}
+	}
+
+	entry := "[Desktop Entry]\nType=Application\nName=%s\nNoDisplay=true\nHidden=true\n"
+
+	for _, name := range clutter {
+		body := fmt.Sprintf(entry, name)
+
+		err := p.Client.PushFile(p.name(), dir+"/"+name+".desktop",
+			[]byte(body), 0o644, p.uid, p.uid)
+		if err != nil {
+			return err
+		}
+	}
+
+	p.Log("hid %d launcher entries a seat has no use for", len(clutter))
+
+	return nil
+}
+
 func (p *Provisioner) stepCredentials(ctx context.Context) error {
 	if p.Secrets.SunshineUser == "" || p.Secrets.SunshinePassword == "" {
 		return fmt.Errorf("no Sunshine credentials were prepared for this seat")

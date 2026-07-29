@@ -430,6 +430,19 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 	// what puts a broker back after the daemon itself was restarted.
 	if up {
 		m.startBroker(name)
+
+		// Keep the app list in step with what the seat has.
+		//
+		// The daemon writes it when a seat starts and when something is
+		// installed through the interface, and neither covers the case that
+		// actually happens: the player removing a launcher from inside the
+		// seat, with nothing to tell the daemon. It stayed in Moonlight's list
+		// afterwards and starting it did nothing.
+		//
+		// Cheap enough for the sweep because it only writes when the result
+		// differs, and Sunshine rereads the file on every request, so a change
+		// takes effect without restarting anything or interrupting a stream.
+		m.refreshApps(ctx, name)
 	}
 
 	m.mu.Lock()
@@ -885,7 +898,7 @@ func (m *Manager) startSession(ctx context.Context, name string) error {
 	// last one is only worth having if Moonlight offers it. A seat that cannot
 	// be told what to show is not worth failing to start, so this reports and
 	// carries on.
-	if apps, err := p.WriteApps(ctx); err != nil {
+	if apps, _, err := p.WriteApps(ctx); err != nil {
 		m.logf(name, "! the app list could not be written: %v", err)
 	} else {
 		m.logf(name, "Moonlight will offer: %s", strings.Join(apps, ", "))

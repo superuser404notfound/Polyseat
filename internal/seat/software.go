@@ -232,6 +232,10 @@ func (m *Manager) RemoveSoftware(name, id string) error {
 }
 
 // refreshApps rewrites the Moonlight app list for a running seat.
+//
+// Quiet unless something actually changed, because this also runs on the
+// periodic sweep and a line every ten seconds would both fill the seat's log
+// and wake the interface each time.
 func (m *Manager) refreshApps(ctx context.Context, name string) {
 	s, err := m.store.Get(name)
 	if err != nil {
@@ -246,12 +250,14 @@ func (m *Manager) refreshApps(ctx context.Context, name string) {
 		uid:    m.runtimeOf(name).uid,
 	}
 
-	apps, err := p.WriteApps(ctx)
+	apps, changed, err := p.WriteApps(ctx)
 	if err != nil {
 		m.logf(name, "! the app list could not be updated: %v", err)
 
 		return
 	}
 
-	m.logf(name, "Moonlight will offer: %s", strings.Join(apps, ", "))
+	if changed {
+		m.logf(name, "Moonlight will offer: %s", strings.Join(apps, ", "))
+	}
 }

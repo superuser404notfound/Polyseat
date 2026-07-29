@@ -1,6 +1,7 @@
 package seat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -81,30 +82,44 @@ type appList struct {
 // own web interface can add apps and somebody who used it should not find their
 // work gone after a restart; the ones this function owns are replaced, and the
 // stock entries that cannot work in a seat are dropped.
-func (p *Provisioner) WriteApps(ctx context.Context) ([]string, error) {
+//
+// Reports whether the file actually changed, which is what lets this be called
+// on a timer without filling the seat's log with the same line every ten
+// seconds. Sunshine rereads apps.json on every request, so writing it is the
+// whole of the update: no restart, and nothing interrupted for anybody who is
+// streaming at the time. Measured against a running seat, by taking an entry
+// out of the file and asking Sunshine what it served afterwards.
+func (p *Provisioner) WriteApps(ctx context.Context) ([]string, bool, error) {
 	if p.uid == 0 {
 		if err := p.readUID(ctx); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 
 	found, err := p.installedLaunchers(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
+
+	// Picking Desktop should land on something to choose from. Anything else
+	// should not have a launcher sitting on top of it.
+	const (
+		showLauncher = "/usr/local/bin/polyseat-launcher show"
+		hideLauncher = "/usr/local/bin/polyseat-launcher hide"
+	)
 
 	ours := []app{
 		{
 			Name:      "Desktop",
+			PrepCmd:   []prep{{Do: showLauncher}},
 			ImagePath: "desktop.png",
 		},
 		{
 			Name:     "Steam Big Picture",
 			Detached: []string{"setsid steam steam://open/bigpicture"},
-			// Nothing to do beforehand: Steam is already installed and the
-			// resolution is handled globally. The undo side closes Big Picture
-			// again so the seat does not sit in it until somebody notices.
-			PrepCmd:   []prep{{Do: "", Undo: "setsid steam steam://close/bigpicture"}},
+			// The undo side closes Big Picture again so the seat does not sit
+			// in it until somebody notices.
+			PrepCmd:   []prep{{Do: hideLauncher, Undo: "setsid steam steam://close/bigpicture"}},
 			ImagePath: "steam.png",
 		},
 	}
@@ -115,6 +130,7 @@ func (p *Provisioner) WriteApps(ctx context.Context) ([]string, error) {
 		ours = append(ours, app{
 			Name:     l.Name,
 			Detached: []string{"setsid " + l.command},
+			PrepCmd:  []prep{{Do: hideLauncher}},
 		})
 
 		names = append(names, l.Name)
@@ -126,21 +142,34 @@ func (p *Provisioner) WriteApps(ctx context.Context) ([]string, error) {
 
 	list, kept, err := mergeApps(ours, existing)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+
+	data, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return nil, false, err
+	}
+
+	data = append(data, '\n')
+
+	// Nothing to do, which on a timer is almost every time.
+	//
+	// The comparison is against the file rather than against something the
+	// daemon remembers, so it also holds after a restart and after Sunshine
+	// rewrote the file from its own interface. Byte comparison is safe here
+	// because MarshalIndent reindents the whole document uniformly, including
+	// the entries kept verbatim from the old file.
+	if bytes.Equal(data, existing) {
+		return names, false, nil
 	}
 
 	if kept > 0 {
 		p.Log("kept %d app entry/entries that were added by hand", kept)
 	}
 
-	data, err := json.MarshalIndent(list, "", "  ")
-	if err != nil {
-		return nil, err
-	}
+	err = p.Client.PushFile(p.name(), AppsPath, data, 0o644, p.uid, p.uid)
 
-	err = p.Client.PushFile(p.name(), AppsPath, append(data, '\n'), 0o644, p.uid, p.uid)
-
-	return names, err
+	return names, err == nil, err
 }
 
 // mergeApps puts Polyseat's entries first and keeps anything else that the
