@@ -322,6 +322,22 @@ func (m *Manager) onLifecycle(ctx context.Context, ev incusx.Lifecycle) {
 
 	m.log.Info("lifecycle", "seat", ev.Instance, "action", ev.Action)
 
+	// An operation of ours owns the seat's state while it runs, and
+	// provisioning stops and starts the container as part of its work. Acting
+	// on those events would be the daemon reacting to itself: reconcile below
+	// already refuses to, but the state was being overwritten before it got
+	// that far, so a seat halfway through provisioning flipped between building
+	// and starting several times a second.
+	rt := m.runtimeOf(ev.Instance)
+
+	m.mu.Lock()
+	busy := rt.busy
+	m.mu.Unlock()
+
+	if busy != "" {
+		return
+	}
+
 	switch ev.Action {
 	case "instance-shutdown", "instance-stopped":
 		// Whether the daemon asked for this or somebody typed `incus stop`,

@@ -474,7 +474,14 @@ function card(seat) {
   spacer.className = "spacer";
 
   const status = document.createElement("span");
-  status.className = "pill " + seat.state;
+  // While an operation owns the seat, the pill says so and looks like it.
+  //
+  // It used to take its colour from the state and its words from the operation,
+  // and towards the end of provisioning those disagree several times in a few
+  // seconds: the session comes up, so the state is briefly running, while the
+  // run itself is not finished. The pill went green and back with the word
+  // "provisioning" still on it, which reads as finishing and starting over.
+  status.className = "pill " + (seat.busy ? "building" : seat.state);
   status.textContent = seat.busy || seat.state;
 
   head.append(title, name, spacer, status);
