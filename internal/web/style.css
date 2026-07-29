@@ -166,6 +166,76 @@ button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad)
 
 .add { margin-top: 1.25rem; }
 
+/* ---------------------------------------------------------------- library */
+
+.library {
+  margin-top: 2rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem 1.15rem;
+}
+
+.library > header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0;
+  border: 0;
+  flex-wrap: wrap;
+}
+
+.library h2 { margin: 0; font-size: 1.05rem; }
+.library .empty { padding: 2rem 1rem; }
+.library .hint { margin-top: 0.9rem; }
+
+table.titles {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.9rem;
+  font-size: 0.87rem;
+}
+
+table.titles th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--dim);
+  padding: 0.35rem 0.6rem 0.35rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+table.titles td {
+  padding: 0.4rem 0.6rem 0.4rem 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+table.titles tr:last-child td { border-bottom: 0; }
+table.titles td.num { font-family: var(--mono); color: var(--dim); white-space: nowrap; }
+table.titles td.right { text-align: right; white-space: nowrap; }
+
+button.tiny {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.45rem;
+}
+
+.candidates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: -0.4rem 0 0.2rem;
+}
+
+/* A block of explanation that belongs to the control above it rather than
+   inside a label, used where the text is longer than a label should be. */
+small.standalone {
+  display: block;
+  color: var(--dim);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  margin: -0.5rem 0 0.4rem;
+}
+
 /* -------------------------------------------------------------------- log */
 
 details.log { margin-top: 0.9rem; }
@@ -376,4 +446,13 @@ button.quiet {
   padding: 0.1rem 0.55rem;
   font-size: 0.78rem;
   color: var(--dim);
+}
+
+.badge {
+  font-size: 0.7rem;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--dim);
+  vertical-align: middle;
 }

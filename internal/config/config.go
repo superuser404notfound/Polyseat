@@ -44,17 +44,28 @@ type Config struct {
 	// spike proved out, and rewriting a working input broker was not worth
 	// doing at the same time as writing the daemon around it.
 	Python string `json:"python"`
+
+	// LibraryDir holds the shared game library: one canonical copy of every
+	// title plus one private, bind mounted library per seat.
+	//
+	// Configurable and not derived from StateDir, because this is the one
+	// directory in the whole daemon whose size is measured in hundreds of
+	// gigabytes and whose filesystem has to be able to share blocks. Somebody
+	// with a second disk for games needs to be able to say so without moving
+	// the seat definitions along with it.
+	LibraryDir string `json:"library_dir"`
 }
 
 // Default returns the configuration used when no file exists.
 func Default() Config {
 	return Config{
-		Listen:    ":47800",
-		StateDir:  "/var/lib/polyseat",
-		HelperDir: "/usr/local/lib/polyseat",
-		Uplink:    "",
-		Image:     "archlinux/current",
-		Python:    "/usr/bin/python3",
+		Listen:     ":47800",
+		StateDir:   "/var/lib/polyseat",
+		HelperDir:  "/usr/local/lib/polyseat",
+		Uplink:     "",
+		Image:      "archlinux/current",
+		Python:     "/usr/bin/python3",
+		LibraryDir: "/srv/polyseat/library",
 	}
 }
 

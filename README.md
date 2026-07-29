@@ -32,6 +32,26 @@ Pairing happens here too, for every seat, rather than in one Sunshine page per
 seat on a port of its own. The daemon owns each seat's Sunshine login and talks
 to it on your behalf.
 
+**A game installed once is playable in every seat, without being downloaded
+again.** That includes the games that were already on the machine, and it keeps
+working after an update: the host's library is watched rather than imported
+once, and a seat that is behind is brought forward as soon as nothing in it is
+using the shared library.
+
+Each seat still has its own private, fully writable Steam library; the daemon
+replicates game directories between them with reflinks, so the copies share
+their blocks on disk. Taking this machine's 69 GB library into the pool took 0.8
+seconds and cost 432 KB.
+
+**Launchers other than Steam work too.** Each seat has a `shared/` directory
+where one folder is one game; point Heroic, Lutris or Bottles at it and the game
+appears in the other seats by itself.
+
+It does not share licences: a seat can only play what its own account owns. It
+needs a filesystem that can share blocks, which means btrfs or XFS created with
+`reflink=1`, and the daemon says so plainly rather than quietly making full
+copies.
+
 Architecture and the reasoning behind it: [`docs/architecture.md`](docs/architecture.md).
 What the isolation actually guarantees, measured rather than assumed:
 [`docs/security.md`](docs/security.md). Who installs what, and where the line
@@ -105,7 +125,7 @@ journalctl -fu polyseatd
 | **M3** | A seat that actually plays: Steam, Proton, pad, audio | ✅ |
 | **M4** | Two seats in parallel, input strictly separated | ✅ |
 | **M5** | Daemon + GUI: create, start, pair and monitor seats | ✅ |
-| **M6** | Shared library pool on btrfs | |
+| **M6** | Shared game library: install once, play in every seat | ✅ |
 | **M7** | Polish: per-client resolution, library scanner, finishing touches | |
 
 ## License

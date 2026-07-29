@@ -43,6 +43,26 @@ type Seat struct {
 	Address string `json:"address,omitempty"`
 	Gateway string `json:"gateway,omitempty"`
 
+	// Library gives the seat a share of the pooled game library: a directory
+	// from the host, mounted in and registered with Steam, into which the
+	// daemon clones anything installed in any other seat.
+	//
+	// Opt in rather than on by default, for two reasons that point the same
+	// way. It is the only feature that mounts a host directory into a seat, so
+	// it is the only one that widens what a seat can reach, and turning that on
+	// silently for seats that already exist would be a change nobody asked for.
+	// A seat left without it keeps its games entirely to itself.
+	Library bool `json:"library"`
+
+	// PlayerUID is the player's uid inside the container, learned during
+	// provisioning and written down here.
+	//
+	// Written down rather than looked up when needed, because the library work
+	// happens entirely on the host filesystem and therefore works on a seat
+	// that is switched off. Asking the container for it would give that up and
+	// make sharing a game depend on every seat being awake.
+	PlayerUID int64 `json:"player_uid,omitempty"`
+
 	// Provisioned records which provisioning generation was last applied in
 	// full. A seat whose generation is behind the daemon's needs to be
 	// provisioned again before it can be trusted to work.

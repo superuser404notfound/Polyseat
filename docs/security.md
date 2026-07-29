@@ -20,8 +20,29 @@ that assumption. Where they stop being defensible is called out.
 `security.privileged` is unset. A root shell in a seat is an ordinary
 unprivileged user on the host.
 
-**No host filesystem is mounted into a seat.** Neither container has a single
-disk device. Everything a seat sees is its own storage volume.
+**A seat sees no host filesystem except its own share of the game library.**
+This used to be an unqualified claim, and M6 broke it: a seat that takes part in
+the shared library gets one `disk` device. What it is allowed to reach is
+narrow, and the narrowness is the point:
+
+- The mount is `<library_dir>/seats/<name>`, a directory belonging to that one
+  seat. It is not the pool and not any other seat's directory, so a seat can
+  neither read what its neighbours installed nor write into the canonical copy.
+- The daemon does the cloning in the other direction, from the host, and never
+  runs anything from inside a seat to do it.
+- Nothing else on the host is exposed. The pool lives under its own directory
+  and the seat mount is a sibling of the other seats', not a parent of them.
+
+A seat without the library still has no disk device at all. Turning it off is a
+real change and not a label, since the device is removed on the next provision.
+
+What a seat can do through this that it could not before: fill the filesystem
+holding the library, and hand the other seats a game directory with contents of
+its choosing, because a harvested title is cloned onward as it stands. Neither
+is interesting under the threat model above, where the seats belong to people
+in the same house who could equally hand each other a file by any other means.
+Both would matter if a seat were ever given to a stranger, which is one more
+reason not to.
 
 **The Incus socket is not reachable from a seat.** It is `root:incus-admin 0660`
 on the host and not passed through, so a seat cannot manage containers.

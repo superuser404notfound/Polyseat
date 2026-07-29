@@ -49,6 +49,20 @@
   <div id="seats" class="seats"></div>
 
   <button id="add" class="add">Add a seat</button>
+
+  <!-- The shared library. Games installed in any seat land here and are cloned
+       into the others, so nothing is downloaded twice. -->
+  <section id="library" class="library">
+    <header>
+      <h2>Shared library</h2>
+      <span id="library-saving" class="pill"></span>
+      <div class="spacer"></div>
+      <button id="library-import" class="quiet">Watch a library</button>
+      <button id="library-sync" class="quiet">Sync now</button>
+    </header>
+
+    <div id="library-body"></div>
+  </section>
 </main>
 
 <dialog id="editor">
@@ -89,11 +103,52 @@
       Start this seat when the daemon starts
     </label>
 
+    <label class="check">
+      <input type="checkbox" name="library" checked>
+      Take part in the shared game library
+    </label>
+    <small class="standalone">
+      Mounts a directory from the host into this seat as a second Steam library.
+      Games installed here become available in the other seats without being
+      downloaded again, and vice versa. It does not share licences: a game still
+      has to be owned by the account signed in to the seat. This is the only
+      setting that mounts host storage into a seat.
+    </small>
+
     <p class="error" id="editor-error"></p>
 
     <menu>
       <button value="cancel" type="button" id="editor-cancel">Cancel</button>
       <button value="save" id="editor-save" class="primary">Save</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="import">
+  <form method="dialog" id="import-form">
+    <h2>Watch a library</h2>
+
+    <p class="hint">
+      Takes an existing Steam library into the pool and keeps watching it, which
+      is how the games already on this machine reach the seats and stay in step
+      afterwards. Nothing is moved or deleted and nothing is ever written back:
+      the files stay where they are and the pool shares their blocks.
+    </p>
+
+    <label>
+      Path to a steamapps directory
+      <input name="path" required autocomplete="off" spellcheck="false"
+             placeholder="/home/you/.local/share/Steam/steamapps">
+      <small>It has to be on the same filesystem as the library, or the games will be copied rather than shared.</small>
+    </label>
+
+    <div id="import-candidates" class="candidates" hidden></div>
+
+    <p class="error" id="import-error"></p>
+
+    <menu>
+      <button value="cancel" type="button" id="import-cancel">Cancel</button>
+      <button value="save" id="import-submit" class="primary">Watch</button>
     </menu>
   </form>
 </dialog>

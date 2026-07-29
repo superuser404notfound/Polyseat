@@ -190,6 +190,66 @@ func (c *Client) Instance(name string) (*api.Instance, string, error) {
 	return c.srv.GetInstance(name)
 }
 
+// idmapEntry is one line of an instance's identifier mapping, as Incus records
+// it in volatile.idmap.current.
+type idmapEntry struct {
+	Isuid    bool  `json:"Isuid"`
+	Isgid    bool  `json:"Isgid"`
+	Hostid   int64 `json:"Hostid"`
+	Nsid     int64 `json:"Nsid"`
+	Maprange int64 `json:"Maprange"`
+}
+
+// MapID translates a uid and gid inside a container to what they are on the
+// host.
+//
+// Needed wherever the host writes files a container has to own. A directory
+// bind mounted into an unprivileged container is stored with host identifiers,
+// so a file created as uid 1000 on the host is nobody's inside; the player's
+// uid 1000 in the container is 1001000 outside it.
+//
+// Read from the instance rather than assumed. Incus gives every container the
+// same range by default, which is why cloning between seats works at all, but
+// security.idmap.isolated changes that per container and a daemon that had
+// hardcoded the common case would write unreadable files without saying so.
+func (c *Client) MapID(name string, uid, gid int64) (hostUID, hostGID int64, err error) {
+	inst, _, err := c.srv.GetInstance(name)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	raw := inst.Config["volatile.idmap.current"]
+	if raw == "" {
+		// A privileged container has no mapping, so the identifiers pass
+		// straight through.
+		return uid, gid, nil
+	}
+
+	var entries []idmapEntry
+
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return 0, 0, fmt.Errorf("%s: volatile.idmap.current: %w", name, err)
+	}
+
+	hostUID, hostGID = int64(-1), int64(-1)
+
+	for _, e := range entries {
+		if e.Isuid && uid >= e.Nsid && uid < e.Nsid+e.Maprange {
+			hostUID = e.Hostid + (uid - e.Nsid)
+		}
+
+		if e.Isgid && gid >= e.Nsid && gid < e.Nsid+e.Maprange {
+			hostGID = e.Hostid + (gid - e.Nsid)
+		}
+	}
+
+	if hostUID < 0 || hostGID < 0 {
+		return 0, 0, fmt.Errorf("%s: uid %d and gid %d are outside the container's mapped range", name, uid, gid)
+	}
+
+	return hostUID, hostGID, nil
+}
+
 // Configure merges configuration keys and devices into the instance and reports
 // whether anything actually changed. A device mapped to nil is removed. Absent
 // keys are left untouched, so this converges rather than replaces.

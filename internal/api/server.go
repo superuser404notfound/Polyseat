@@ -12,11 +12,13 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/superuser404notfound/Polyseat/internal/auth"
 	"github.com/superuser404notfound/Polyseat/internal/config"
+	"github.com/superuser404notfound/Polyseat/internal/library"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
 	"github.com/superuser404notfound/Polyseat/internal/sunshine"
 	"github.com/superuser404notfound/Polyseat/internal/web"
@@ -53,6 +55,11 @@ func New(manager *seat.Manager, credentials *auth.Store, logger *slog.Logger) ht
 	guarded.HandleFunc("GET /api/seats/{name}/sunshine", s.sunshineAccess)
 	guarded.HandleFunc("POST /api/seats/{name}/pair", s.pair)
 	guarded.HandleFunc("POST /api/seats/{name}/unpair", s.unpair)
+	guarded.HandleFunc("GET /api/library", s.getLibrary)
+	guarded.HandleFunc("POST /api/library/sync", s.syncLibrary)
+	guarded.HandleFunc("POST /api/library/import", s.importLibrary)
+	guarded.HandleFunc("DELETE /api/library/{appid}", s.removeTitle)
+	guarded.HandleFunc("POST /api/library/{appid}/offer/{seat}", s.offerTitle)
 	guarded.HandleFunc("POST /api/seats/{name}/{action}", s.seatAction)
 
 	mux.Handle("/api/", s.requireSession(guarded))
@@ -348,6 +355,7 @@ type seatRequest struct {
 	Resolution *string `json:"resolution"`
 	Address    *string `json:"address"`
 	Gateway    *string `json:"gateway"`
+	Library    *bool   `json:"library"`
 }
 
 func (s *Server) createSeat(w http.ResponseWriter, r *http.Request) {
@@ -371,6 +379,11 @@ func (s *Server) createSeat(w http.ResponseWriter, r *http.Request) {
 		Resolution: value(req.Resolution, "1920x1080@60Hz"),
 		Address:    value(req.Address, ""),
 		Gateway:    value(req.Gateway, ""),
+
+		// On for a new seat, because somebody creating a second seat on a
+		// machine that already has games is asking for exactly this. Existing
+		// seats keep whatever they had, which for seats built before M6 is off.
+		Library: value(req.Library, true),
 	}
 
 	if err := s.manager.Create(created); err != nil {
@@ -411,6 +424,10 @@ func (s *Server) updateSeat(w http.ResponseWriter, r *http.Request) {
 
 		if req.Gateway != nil {
 			current.Gateway = *req.Gateway
+		}
+
+		if req.Library != nil {
+			current.Library = *req.Library
 		}
 	})
 	if err != nil {
@@ -555,12 +572,171 @@ func (s *Server) seatAction(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"name": name})
 }
 
+// ------------------------------------------------------------------ library
+
+// arrays replaces the nil slices in a report with empty ones.
+//
+// A field that vanishes into null when it is empty is how the seat list once
+// stopped rendering altogether: the client called map on it and threw before it
+// drew anything. Lists go over the wire as lists.
+func arrays(r library.Report) library.Report {
+	if r.Harvested == nil {
+		r.Harvested = []library.Move{}
+	}
+
+	if r.Delivered == nil {
+		r.Delivered = []library.Move{}
+	}
+
+	if r.Declined == nil {
+		r.Declined = []library.Move{}
+	}
+
+	if r.Problems == nil {
+		r.Problems = []string{}
+	}
+
+	if r.Pending == nil {
+		r.Pending = []library.Move{}
+	}
+
+	return r
+}
+
+// libraryStatus reads the pool with every empty list as a list rather than as
+// null.
+//
+// Used by all four library endpoints, not only the one that reads. Normalising
+// in one of them and not the others is how three of these would have gone out
+// able to break the page: a field that disappears when it is empty is exactly
+// what once stopped the seat list rendering at all.
+func (s *Server) libraryStatus() seat.LibraryStatus {
+	status := s.manager.Library()
+
+	if status.Titles == nil {
+		status.Titles = []library.Title{}
+	}
+
+	if status.Candidates == nil {
+		status.Candidates = []string{}
+	}
+
+	if status.Outside == nil {
+		status.Outside = []string{}
+	}
+
+	if status.Sources == nil {
+		status.Sources = []string{}
+	}
+
+	for i, title := range status.Titles {
+		if title.In == nil {
+			status.Titles[i].In = []string{}
+		}
+
+		if title.Declined == nil {
+			status.Titles[i].Declined = []string{}
+		}
+
+		if title.Stale == nil {
+			status.Titles[i].Stale = []string{}
+		}
+	}
+
+	return status
+}
+
+func (s *Server) getLibrary(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.libraryStatus())
+}
+
+func (s *Server) syncLibrary(w http.ResponseWriter, r *http.Request) {
+	if err := s.manager.SyncLibrary(r.Context()); err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.libraryStatus())
+}
+
+type importRequest struct {
+	Path string `json:"path"`
+}
+
+// importLibrary pulls an existing Steam library into the pool.
+//
+// The path comes from whoever is logged in and is used as given. That is not an
+// oversight: this daemon already creates containers and writes anywhere on the
+// host as root, so a session that can reach this endpoint can do far worse than
+// name a directory. The only check is that the directory looks like a Steam
+// library, which is there to catch a typo rather than an attacker.
+func (s *Server) importLibrary(w http.ResponseWriter, r *http.Request) {
+	var req importRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if req.Path == "" {
+		fail(w, http.StatusBadRequest, errors.New("no path given"))
+
+		return
+	}
+
+	if !filepath.IsAbs(req.Path) {
+		fail(w, http.StatusBadRequest, errors.New("the path has to be absolute"))
+
+		return
+	}
+
+	if _, err := os.Stat(filepath.Join(req.Path, "common")); err != nil {
+		fail(w, http.StatusBadRequest, fmt.Errorf(
+			"%s does not look like a steamapps directory, there is no common folder in it", req.Path))
+
+		return
+	}
+
+	report, err := s.manager.ImportLibrary(r.Context(), req.Path)
+	if err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, arrays(report))
+}
+
+func (s *Server) removeTitle(w http.ResponseWriter, r *http.Request) {
+	if err := s.manager.RemoveFromLibrary(r.PathValue("appid")); err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.libraryStatus())
+}
+
+func (s *Server) offerTitle(w http.ResponseWriter, r *http.Request) {
+	err := s.manager.OfferToSeat(r.Context(), r.PathValue("seat"), r.PathValue("appid"))
+	if err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.libraryStatus())
+}
+
 // ------------------------------------------------------------------ helpers
 
 func statusFor(err error) int {
 	switch {
 	case errors.Is(err, seat.ErrBusy):
 		return http.StatusConflict
+	case errors.Is(err, seat.ErrNoLibrary):
+		return http.StatusServiceUnavailable
 	case os.IsNotExist(err):
 		return http.StatusNotFound
 	default:

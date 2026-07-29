@@ -227,15 +227,115 @@ broker is there, so restarting the daemon never interrupts a game.
 
 ## Library pool
 
-Root is btrfs. Instead of OverlayFS: `/srv/steam-pool` as a subvolume, and **one
-writable snapshot per seat**. Copy-on-write means five seats cost storage once,
-and Steam sees a fully writable library. `compatdata/` and `shadercache/` are
-symlinked to seat-private storage - otherwise they land in the snapshot and eat
-the deduplication. Maintain the pool centrally, re-snapshot the seats
-periodically.
+A game installed once is available in every seat, without being downloaded
+again. That includes games that were already on the host before Polyseat
+existed.
 
-The licensing reality remains: the same game played simultaneously needs two
-copies in two accounts. No software solves that.
+**The mechanism is reflink, not sharing.** Every seat has its own private, fully
+writable Steam library; the daemon replicates game directories between them with
+the `FICLONE` ioctl, which copies metadata and leaves the data blocks shared.
+Measured on this machine: importing the host's 69 GB library into the pool took
+0.8 seconds and cost 432 KB. `filefrag` shows the pool's copy and the original
+at the same physical offsets with the `shared` flag on both.
+
+An earlier plan here was one writable snapshot per seat. That was wrong for the
+goal, and the note is worth keeping: snapshots diverge. A seat installing a game
+would keep it to itself, which is the opposite of what the pool is for.
+
+Mounting one directory into every seat was rejected too, for three reasons that
+are each fatal alone:
+
+- Two Steam clients writing one `steamapps` corrupt it, and no lock reaches
+  across containers.
+- A read-only shared library makes Steam refuse to update and say so constantly.
+- OverlayFS copies a whole file up on first write, so patching a 60 GB game
+  costs 60 GB per seat.
+
+With reflinks none of that applies, because at the POSIX level nothing is
+shared. Each Steam sees an ordinary library it owns outright. Copies diverge
+only when a seat updates a game, and then only by the changed blocks.
+
+**Taking part is per seat and off by default**, because this is the only place
+that mounts host storage into a seat. Ticking the box applies straight away:
+the disk device is hotplugged and the games are cloned in within seconds, no
+provisioning run needed. The entry in Steam's `libraryfolders.vdf` is merged
+into whatever is already there rather than replacing it, since a seat that has
+run Steam already owns that file and it lists every library folder Steam knows.
+A Steam that is running keeps its old list until the session restarts.
+
+**Layout.** Under `library_dir`, `pool/steamapps/` is the canonical copy and
+`seats/<name>/` is the one directory mounted into that seat, appearing as a
+second Steam library folder at `/home/player/games`. Steam's own directory stays
+where it is, so `compatdata/`, `shadercache/` and `downloading/` are per seat
+without anything having to be symlinked away.
+
+**What the daemon does, every minute.** Anything fully installed in a seat and
+quiet for two minutes is taken into the pool; anything in the pool is offered to
+every seat that does not have it. `StateFlags` must read exactly 4, which is
+what keeps a half finished download from being shared. `LastOwner` and
+`LastPlayed` are cleared on the way, `InstalledDepots` is not: that block is
+what lets the receiving Steam conclude the files are current rather than
+download them again.
+
+It never deletes. A title uninstalled inside a seat is remembered as declined
+rather than restored on the next pass, which is the difference between a feature
+and something that keeps putting games back on a disk somebody was clearing.
+
+**Only ever forward.** Build ids are compared as numbers, and the pool takes a
+copy only when it has none or when the library offering it is strictly newer.
+The first version compared for inequality in either direction, so a seat one
+patch behind quietly overwrote the pool's newer copy and handed that older build
+to everybody else. Comparing as text has the same shape of bug: build 9 sorts
+after build 10.
+
+**Updates propagate rather than drift.** A seat whose copy is behind the pool is
+brought forward, but only when nothing in that seat is using the shared library.
+That is asked of the seat directly: a small `/proc` walk looks for the mount in
+any process's mappings, open descriptors or working directory, because `lsof` is
+not in a seat and a game that is running has its files open. A seat that is busy
+keeps its copy and the waiting update is reported, so the interface shows
+something pending instead of nothing happening. Overwriting a game under a
+running client corrupts an install rather than improving one.
+
+**The host's own library is watched, not imported once.** An imported library is
+remembered and re-read on every pass, read only in both senses: the daemon takes
+from it and never writes into it, and a game uninstalled there stays in the pool.
+Without that, a game the host updates afterwards never reaches the seats and
+every one of them downloads that update for itself.
+
+## Launchers other than Steam
+
+Steam hands the pool a completion signal and a version number. No other launcher
+offers anything comparable and there is no format they agree on, so inventing a
+manifest for them would mean inventing a standard nobody writes to.
+
+What every launcher does produce is a directory. So each seat has a second
+place, `/home/player/games/shared/`, where one folder is one game: put a game
+there and it reaches the other seats, and the daemon never needs to know which
+launcher made it. Point Heroic, Lutris, Bottles or a downloaded installer at it.
+
+The two signals Steam gives are replaced by facts read off the tree. Finished
+becomes "nothing in it has changed for a couple of minutes", which is honest but
+weaker: a download that stalls for longer than that can be picked up half
+complete, and there is no way to tell from outside. Version becomes the newest
+modification time inside the tree, which is why cloning preserves file times.
+Without that a copy would always look newer than its own original and the two
+would carry each other back and forth forever.
+
+**This needs a filesystem that can share blocks.** btrfs and XFS created with
+`reflink=1` can; ZFS only through block cloning in OpenZFS 2.2 and only at
+dataset granularity; ext4 cannot at all. The daemon probes by cloning a real
+block at startup rather than trusting the filesystem's name, and refuses to open
+a pool where that fails. Refusing is deliberate: a pool that quietly made full
+copies would fill the disk and only announce itself once there was no room left
+to fix it in.
+
+The licensing reality remains, and no amount of this touches it: the files being
+present does not give a seat's Steam account the right to run them. Where the
+account owns the game, Steam finds the files, validates and plays without
+downloading. Where it does not, Steam refuses. The saving is real for the two
+common cases, two people who both own a game and one account signed in on
+several seats.
 
 ## Capacity
 

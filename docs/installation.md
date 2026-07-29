@@ -83,6 +83,27 @@ unprivileged and only asks for root with `--fix`.
 **A CachyOS host is not required either**, beyond the pacman check. Nothing
 CachyOS specific is left inside a seat.
 
+### One thing that is required, for the shared library only
+
+The directory named by `library_dir`, `/srv/polyseat/library` unless changed,
+has to be on a filesystem that can share blocks between files. **btrfs** can, and
+so does **XFS** if it was created with `reflink=1`, which has been the mkfs
+default since 2018. **ext4 cannot**, and neither can tmpfs or any network
+filesystem.
+
+The daemon does not take the filesystem's word for it. At startup it writes a
+block and clones it, because reflink support is a property of the mount and the
+kernel rather than of the label: XFS without `reflink=1` and btrfs with
+`nodatacow` both look like filesystems that should work and do not.
+
+Where the probe fails, the daemon starts normally and the library is off. The
+web interface says which filesystem and why. That is deliberate, in both
+directions: a missing games feature is no reason to take every seat down, and a
+pool that quietly made full copies would fill the disk and only announce itself
+when there was no space left to fix it in.
+
+Everything else in Polyseat works on any filesystem.
+
 ### Host-side pieces
 
 The udev rule under `/etc/udev/rules.d/`, the input helpers under

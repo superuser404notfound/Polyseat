@@ -12,6 +12,7 @@ import (
 
 	"github.com/superuser404notfound/Polyseat/internal/config"
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
+	"github.com/superuser404notfound/Polyseat/internal/library"
 	"github.com/superuser404notfound/Polyseat/internal/sunshine"
 	"github.com/superuser404notfound/Polyseat/internal/supervise"
 )
@@ -39,6 +40,17 @@ type Manager struct {
 	rt map[string]*runtime
 
 	observer *supervise.Process
+
+	// pool is the shared game library, nil when the filesystem cannot share
+	// blocks. libraryErr says why in that case, so the interface can show a
+	// reason instead of an absence.
+	pool       *library.Pool
+	libraryErr string
+
+	// syncMu serialises library work. The timer and the interface's own
+	// buttons both start passes, and two of them cloning into the same seat at
+	// once would race over the same directories.
+	syncMu sync.Mutex
 
 	subsMu sync.Mutex
 	subs   map[int]chan struct{}
@@ -97,6 +109,8 @@ func (m *Manager) Run(ctx context.Context) error {
 		return err
 	}
 
+	m.openLibrary()
+
 	m.startObserver()
 	defer m.observer.Stop()
 
@@ -128,6 +142,12 @@ func (m *Manager) Run(ctx context.Context) error {
 	tick := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
 
+	// The library is on its own, slower timer. It is filesystem work rather
+	// than a look at a container, and running it at the reconcile interval
+	// would scan every seat's library six times a minute for no benefit.
+	sync := time.NewTicker(syncInterval)
+	defer sync.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -144,6 +164,9 @@ func (m *Manager) Run(ctx context.Context) error {
 
 		case <-tick.C:
 			m.reconcileAll(ctx)
+
+		case <-sync.C:
+			m.syncLibrary(ctx)
 		}
 	}
 }
@@ -751,6 +774,7 @@ func (m *Manager) Provision(name string) error {
 			Uplink:  uplink,
 			Image:   m.cfg.Image,
 			Secrets: secrets,
+			Library: m.pool,
 			Log:     func(f string, a ...any) { m.logf(name, f, a...) },
 		}
 
@@ -759,6 +783,7 @@ func (m *Manager) Provision(name string) error {
 		}
 
 		seat.Provisioned = Generation
+		seat.PlayerUID = p.uid
 
 		if err := m.store.Put(seat); err != nil {
 			return err
@@ -1038,6 +1063,20 @@ func (m *Manager) Update(name string, change func(*Seat)) error {
 		return err
 	}
 
+	// Taking part in the shared library is applied right away rather than left
+	// for the next provisioning run. It is one disk device and Incus hotplugs
+	// those, and the first version of this did leave it for provisioning: the
+	// checkbox then changed a stored value and nothing else, the library went
+	// on reporting the seat as absent, and there was nothing on the page saying
+	// why. A setting that needs a second, unnamed step to take effect is a
+	// setting that looks broken.
+	if seat.Library != before.Library {
+		if err := m.applyLibrary(context.Background(), seat); err != nil {
+			m.logf(name, "! the shared library could not be %s: %v",
+				map[bool]string{true: "attached", false: "detached"}[seat.Library], err)
+		}
+	}
+
 	m.notify()
 
 	return nil
@@ -1077,6 +1116,15 @@ func (m *Manager) Delete(name string, keepContainer bool) error {
 
 		if err := m.store.DeleteSecrets(name); err != nil {
 			return err
+		}
+
+		// The seat's own library is left on disk. Deleting a seat should not
+		// silently take somebody's installed games with it, and because the
+		// blocks are shared it frees almost nothing anyway.
+		if m.pool != nil {
+			if err := m.pool.Forget(name); err != nil {
+				m.logf(name, "! the library bookkeeping for this seat could not be cleared: %v", err)
+			}
 		}
 
 		m.mu.Lock()

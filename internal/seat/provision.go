@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
+	"github.com/superuser404notfound/Polyseat/internal/library"
 	"github.com/superuser404notfound/Polyseat/internal/sunshine"
 )
 
@@ -29,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 2
+const Generation = 3
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -54,6 +55,11 @@ type Provisioner struct {
 	// is recreated has to come back with the same Sunshine password, or every
 	// device paired with it would have to be paired again.
 	Secrets Secrets
+
+	// Library is the shared game pool, nil when the host filesystem cannot
+	// share blocks. A seat asking for a library it cannot have is provisioned
+	// without one and says so, rather than failing to build at all.
+	Library *library.Pool
 
 	uid int64 // the player's uid inside the container, learned during the run
 }
@@ -84,6 +90,7 @@ func Steps() []Step {
 		{"user", (*Provisioner).stepUser},
 		{"gpu", (*Provisioner).stepGPU},
 		{"nvidia userspace", (*Provisioner).stepNvidiaUserspace},
+		{"library", (*Provisioner).stepLibrary},
 		{"session", (*Provisioner).stepSession},
 		{"sunshine credentials", (*Provisioner).stepCredentials},
 	}
@@ -651,6 +658,188 @@ func (p *Provisioner) stepNvidiaUserspace(ctx context.Context) error {
 	} else {
 		p.Log("! EGL could not be confirmed here, check the encoder once the session runs")
 	}
+
+	return nil
+}
+
+// ------------------------------------------------------------------- library
+
+// LibraryMount is where a seat's share of the pooled library appears inside the
+// container.
+//
+// A second Steam library folder rather than a replacement for the first. Steam
+// keeps its own client, its runtimes and its per account data under
+// ~/.local/share/Steam, and mounting over that would put the host in the middle
+// of files Steam expects to own. A library folder is a thing Steam already
+// understands, so nothing here asks it to cope with an arrangement it has never
+// seen.
+const LibraryMount = "/home/" + Player + "/games"
+
+// libraryDevice is the Incus device name, kept out of the way of the network
+// and input devices.
+const libraryDevice = "library"
+
+// steamRoot is where Steam keeps itself inside a seat.
+const steamRoot = "/home/" + Player + "/.local/share/Steam"
+
+func (p *Provisioner) stepLibrary(ctx context.Context) error {
+	if !p.Seat.Library || p.Library == nil {
+		// Detaching rather than ignoring. Turning the shared library off for a
+		// seat has to actually take the mount away, or the setting would be a
+		// label with nothing behind it.
+		if _, err := p.Client.Configure(ctx, p.name(), nil, map[string]map[string]string{
+			libraryDevice: nil,
+		}); err != nil {
+			return err
+		}
+
+		if !p.Seat.Library {
+			p.Log("the shared library is off for this seat")
+		} else {
+			p.Log("! the shared library is on for this seat but unavailable, see the daemon log")
+		}
+
+		return nil
+	}
+
+	if p.uid == 0 {
+		if err := p.readUID(ctx); err != nil {
+			return err
+		}
+	}
+
+	// The directory is created on the host with the identifiers it will have
+	// seen from inside. An unprivileged container stores files under mapped
+	// identifiers, so a directory owned by root on the host belongs to nobody
+	// in the seat and the player cannot write to it.
+	hostUID, hostGID, err := p.Client.MapID(p.name(), p.uid, p.uid)
+	if err != nil {
+		return err
+	}
+
+	member := library.Member{
+		Name:  p.Seat.Name,
+		Owner: library.Owner{UID: int(hostUID), GID: int(hostGID)},
+	}
+
+	if err := p.Library.Ensure(member); err != nil {
+		return err
+	}
+
+	source := p.Library.SeatRoot(p.Seat.Name)
+
+	p.Log("mounting %s at %s", source, LibraryMount)
+
+	if _, err := p.Client.Configure(ctx, p.name(), nil, map[string]map[string]string{
+		libraryDevice: {
+			"type":   "disk",
+			"source": source,
+			"path":   LibraryMount,
+		},
+	}); err != nil {
+		return err
+	}
+
+	return p.registerLibrary(ctx)
+}
+
+// registerLibrary tells Steam the folder is there.
+//
+// Best effort by nature, and worth being honest about. Steam owns
+// libraryfolders.vdf and rewrites it whenever it feels like it, so this puts
+// the entry in place for the first start and repairs it on every provision.
+// If a Steam version ever drops the entry, the folder still shows up under Add
+// Library Folder and adding it by hand costs one dialog.
+func (p *Provisioner) registerLibrary(ctx context.Context) error {
+	// Writing into the container needs the container. During provisioning it is
+	// always running by this point, but this step is also reached from the
+	// interface when somebody ticks the box on a stopped seat, and there the
+	// device is all that can be done now. The next provisioning run finishes
+	// the job, and Steam finds the folder under Add Library Folder meanwhile.
+	status, err := p.Client.Status(p.name())
+	if err != nil {
+		return err
+	}
+
+	if status != "Running" {
+		p.Log("the seat is not running, so Steam will be told about the library " +
+			"the next time it is provisioned")
+
+		return nil
+	}
+
+	// The marker file is what makes Steam treat a directory as a library rather
+	// than as an ordinary folder full of games.
+	marker := "\"libraryfolder\"\n{\n\t\"contentid\"\t\t\"0\"\n\t\"label\"\t\t\"Polyseat\"\n}\n"
+
+	if err := p.Client.MakeDir(p.name(), LibraryMount+"/steamapps", 0o755, p.uid, p.uid); err != nil {
+		return err
+	}
+
+	// The launcher agnostic half. Steam gets a library folder it understands;
+	// everything else gets a directory and a note, because there is no format
+	// Heroic, Lutris, Bottles and a downloaded installer all agree on.
+	if err := p.Client.MakeDir(p.name(), LibraryMount+"/shared", 0o755, p.uid, p.uid); err != nil {
+		return err
+	}
+
+	readme := "Anything you put in this directory is shared with the other seats.\n" +
+		"\n" +
+		"One folder per game. Point Heroic, Lutris, Bottles or an installer at\n" +
+		"this directory and the game appears in the other seats within a few\n" +
+		"minutes, without being downloaded again. It works the other way too.\n" +
+		"\n" +
+		"Unlike the Steam library next to it, nothing here tells Polyseat when an\n" +
+		"install has finished, so it waits until the folder has stopped changing\n" +
+		"for a couple of minutes and treats it as done. A download that stalls\n" +
+		"for longer than that can be picked up half complete.\n" +
+		"\n" +
+		"Delete a folder here and it will not be offered to this seat again.\n" +
+		"The other seats keep their copies. Nothing here is a licence: a game\n" +
+		"still has to be one you are allowed to run.\n"
+
+	if err := p.Client.PushFile(p.name(), LibraryMount+"/shared/README.txt",
+		[]byte(readme), 0o644, p.uid, p.uid); err != nil {
+		return err
+	}
+
+	if err := p.Client.PushFile(p.name(), LibraryMount+"/libraryfolder.vdf",
+		[]byte(marker), 0o644, p.uid, p.uid); err != nil {
+		return err
+	}
+
+	if err := p.Client.MakeDir(p.name(), steamRoot+"/steamapps", 0o755, p.uid, p.uid); err != nil {
+		return err
+	}
+
+	// A seat that has run Steam already has this file, and it is Steam's:
+	// it records every library folder Steam knows, including any somebody added
+	// themselves. So the entry is merged in rather than the file replaced.
+	path := steamRoot + "/steamapps/libraryfolders.vdf"
+
+	existing, err := p.Client.ReadFile(p.name(), path)
+	if err != nil {
+		// No file yet, which is a seat where Steam has never run.
+		return p.Client.PushFile(p.name(), path,
+			library.LibraryFolders(steamRoot, LibraryMount), 0o644, p.uid, p.uid)
+	}
+
+	merged, changed := library.MergeLibraryFolder(existing, LibraryMount)
+	if !changed {
+		p.Log("Steam already knows about the shared library")
+
+		return nil
+	}
+
+	if err := p.Client.PushFile(p.name(), path, merged, 0o644, p.uid, p.uid); err != nil {
+		return err
+	}
+
+	// Steam reads this at startup, so a client that is running right now keeps
+	// the old list until the session is restarted. Saying so beats leaving
+	// somebody to wonder why the games are not there yet.
+	p.Log("added the shared library to Steam's library list, " +
+		"a running Steam picks it up when the seat is restarted")
 
 	return nil
 }

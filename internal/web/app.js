@@ -7,6 +7,7 @@
 const el = (id) => document.getElementById(id);
 
 let state = null;
+let library = null;
 let openLogs = new Set();
 let openPairing = new Set();
 let stream = null;
@@ -41,7 +42,15 @@ async function api(method, path, body) {
 
 async function refresh() {
   try {
-    state = await api("GET", "/api/state");
+    // Fetched together, because a seat card and the library view disagreeing
+    // about which seats exist looks like a bug in whichever one you read second.
+    const [next, pool] = await Promise.all([
+      api("GET", "/api/state"),
+      api("GET", "/api/library"),
+    ]);
+
+    state = next;
+    library = pool;
     render();
   } catch (err) {
     if (err.unauthorized) {
@@ -104,6 +113,289 @@ function render() {
   }
 
   seats.replaceChildren(...state.seats.map(card));
+  renderLibrary();
+}
+
+// ------------------------------------------------------------------- library
+
+function renderLibrary() {
+  const body = el("library-body");
+  const saving = el("library-saving");
+
+  el("library-import").disabled = !library || !library.available;
+  el("library-sync").disabled = !library || !library.available;
+
+  if (!library || !library.available) {
+    saving.hidden = true;
+
+    // Saying why rather than hiding the section. "My games are not being
+    // shared" is otherwise a silent failure with nowhere to look.
+    body.replaceChildren(
+      Object.assign(document.createElement("p"), {
+        className: "empty",
+        textContent:
+          "The shared library is off. " +
+          ((library && library.problem) ||
+            "The daemon did not report a reason.") +
+          " Sharing games without copying them needs a filesystem that can " +
+          "share blocks between files: btrfs, or XFS created with reflink=1. " +
+          "ext4 cannot do it.",
+      }),
+    );
+    return;
+  }
+
+  saving.hidden = false;
+  // Phrased as sharing rather than as a download saved, because a title in the
+  // pool that only one seat has was not downloaded twice either. What the
+  // number says is how much the seats' copies would have cost as real copies.
+  saving.textContent = library.saved
+    ? bytes(library.saved) + " shared instead of copied"
+    : "nothing shared yet";
+  saving.className = "pill " + (library.saved ? "online" : "");
+
+  const outside = library.outside || [];
+
+  // Named rather than left out. A seat missing from the pool looks exactly like
+  // a broken pool, and taking part is a per seat setting that is off by default
+  // because it is the only thing that mounts host storage into a seat.
+  const aside =
+    outside.length === 0
+      ? null
+      : Object.assign(document.createElement("p"), {
+          className: "hint",
+          textContent:
+            (outside.length === 1 ? "Seat " : "Seats ") +
+            outside.join(", ") +
+            (outside.length === 1 ? " does" : " do") +
+            " not take part. Turn it on with Edit on the seat, tick " +
+            "\u201cTake part in the shared game library\u201d and save.",
+        });
+
+  const titles = library.titles || [];
+
+  if (titles.length === 0) {
+    body.replaceChildren(
+      ...[
+        Object.assign(document.createElement("p"), {
+          className: "empty",
+          textContent:
+            "Nothing in the pool yet. Install a game in any seat that takes part " +
+            "and it appears here within a minute, then in the other seats. " +
+            "Games already on this machine can be brought in with Import.",
+        }),
+        aside,
+      ].filter(Boolean),
+    );
+    return;
+  }
+
+  const table = document.createElement("table");
+  table.className = "titles";
+
+  const head = document.createElement("thead");
+  head.innerHTML =
+    "<tr><th>Title</th><th>Size</th><th>In</th><th></th></tr>";
+
+  const rows = document.createElement("tbody");
+
+  titles.forEach((title) => rows.append(titleRow(title)));
+
+  table.append(head, rows);
+
+  const sources = library.sources || [];
+
+  const tracking = sources.length
+    ? Object.assign(document.createElement("p"), {
+        className: "hint",
+        textContent:
+          "Also watching " +
+          sources.join(", ") +
+          ", so a game updated there reaches the seats by itself.",
+      })
+    : null;
+
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent =
+    "The pool holds " +
+    bytes(library.bytes) +
+    " in " +
+    library.root +
+    ". Copies in the seats share those blocks, so they cost almost nothing " +
+    "until a seat updates a game. Sharing files is not sharing licences: a " +
+    "seat can only play what its own Steam account owns.";
+
+  body.replaceChildren(...[table, note, tracking, aside].filter(Boolean));
+}
+
+function titleRow(title) {
+  const row = document.createElement("tr");
+
+  const name = document.createElement("td");
+  name.textContent = title.name || title.installdir || title.appid;
+
+  // Where it came from. Both kinds sit in one list because from where somebody
+  // is standing they are both just games in the pool, but a Steam title behaves
+  // differently from a plain folder and the badge is where that shows.
+  if (title.kind === "folder") {
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = "folder";
+    badge.title =
+      "Shared as a plain directory, for launchers other than Steam. " +
+      "Nothing tells Polyseat when such an install has finished, so it waits " +
+      "until the folder stops changing.";
+    name.append(" ", badge);
+  }
+
+  const size = document.createElement("td");
+  size.className = "num";
+  size.textContent = bytes(title.bytes);
+
+  const where = document.createElement("td");
+  const inSeats = title.in || [];
+  const declined = title.declined || [];
+
+  const stale = title.stale || [];
+
+  where.append(
+    Object.assign(document.createElement("span"), {
+      textContent: inSeats.length ? inSeats.join(", ") : "no seat",
+      className: inSeats.length ? "" : "flag",
+    }),
+  );
+
+  // A seat one build behind is not a failure, it is a seat that was busy when
+  // the update came through. Saying so beats leaving somebody to wonder why one
+  // seat is a patch back.
+  if (stale.length) {
+    const waiting = document.createElement("span");
+    waiting.className = "flag";
+    waiting.textContent = " (update waiting for " + stale.join(", ") + ")";
+    waiting.title =
+      "The pool has a newer build. It is applied as soon as nothing in that " +
+      "seat is using the shared library, because replacing files under a " +
+      "running game would corrupt the install.";
+    where.append(waiting);
+  }
+
+  // A seat that turned a title down is shown with a way to offer it again,
+  // rather than looking like the sharing quietly failed for that seat.
+  declined.forEach((seat) => {
+    const button = document.createElement("button");
+    button.className = "quiet tiny";
+    button.textContent = "+ " + seat;
+    button.title =
+      seat + " uninstalled this, so it is not offered again. Click to send it back.";
+    button.onclick = () =>
+      run(() => api("POST", `/api/library/${title.appid}/offer/${seat}`));
+    where.append(" ", button);
+  });
+
+  const actions = document.createElement("td");
+  actions.className = "right";
+
+  const remove = document.createElement("button");
+  remove.className = "quiet tiny danger";
+  remove.textContent = "Remove";
+  remove.title =
+    "Removes this title from the pool. The seats that have it keep it.";
+  remove.onclick = () => {
+    if (
+      !confirm(
+        `Remove "${title.name}" from the shared pool?\n\n` +
+          `The seats that already have it keep their copies, so this frees ` +
+          `nothing until the last of them uninstalls it. It will stop being ` +
+          `offered to new seats.`,
+      )
+    ) {
+      return;
+    }
+
+    run(() => api("DELETE", `/api/library/${title.appid}`));
+  };
+
+  actions.append(remove);
+  row.append(name, size, where, actions);
+
+  return row;
+}
+
+function bytes(n) {
+  if (!n) return "0 B";
+
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i++;
+  }
+
+  return (i === 0 ? n : n.toFixed(1)) + " " + units[i];
+}
+
+// The daemon lists the Steam libraries it can find on the host, so importing is
+// usually a click. Typing a path stays possible for anything on another disk.
+function openImport() {
+  const form = el("import-form");
+  const list = el("import-candidates");
+  const found = (library && library.candidates) || [];
+
+  el("import-error").textContent = "";
+  form.path.value = found[0] || "";
+
+  list.replaceChildren(
+    ...found.map((path) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "quiet tiny";
+      button.textContent = path;
+      button.onclick = () => (form.path.value = path);
+      return button;
+    }),
+  );
+
+  list.hidden = found.length === 0;
+  el("import").showModal();
+}
+
+async function submitImport(event) {
+  event.preventDefault();
+
+  const form = el("import-form");
+  const button = el("import-submit");
+
+  el("import-error").textContent = "";
+  button.disabled = true;
+  button.textContent = "Importing";
+
+  try {
+    const report = await api("POST", "/api/library/import", {
+      path: form.path.value.trim(),
+    });
+
+    el("import").close();
+
+    const taken = (report.harvested || []).length;
+    alert(
+      (taken === 0
+        ? "Now watching that library. Everything installed there is already in the pool."
+        : `Now watching that library, and took ${taken} title${taken === 1 ? "" : "s"} from it.`) +
+        " Anything updated there from now on reaches the seats by itself." +
+        (report.problems && report.problems.length
+          ? "\n\n" + report.problems.join("\n")
+          : ""),
+    );
+
+    await refresh();
+  } catch (err) {
+    el("import-error").textContent = err.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Watch";
+  }
 }
 
 function card(seat) {
@@ -360,6 +652,7 @@ function facts(seat) {
   row("Input broker", seat.broker, seat.broker === "running" ? null : "flag");
   row("Devices", (seat.devices || []).join(", ") || "none attached");
   row("Resolution", seat.resolution);
+  row("Shared library", seat.library ? "yes" : "no");
 
   if (seat.stale) {
     row("Provisioning", "out of date, provision this seat again", "flag");
@@ -594,6 +887,7 @@ function openEditor(seat) {
   form.address.value = seat ? seat.address || "" : "";
   form.gateway.value = seat ? seat.gateway || "" : "";
   form.autostart.checked = seat ? seat.autostart : true;
+  form.library.checked = seat ? seat.library : true;
 
   el("editor").showModal();
 }
@@ -608,6 +902,7 @@ async function saveEditor(event) {
     address: form.address.value.trim(),
     gateway: form.gateway.value.trim(),
     autostart: form.autostart.checked,
+    library: form.library.checked,
   };
 
   try {
@@ -668,6 +963,36 @@ el("password-form").onsubmit = submitPassword;
 el("password-cancel").onclick = () => el("password").close();
 el("logout").onclick = signOut;
 el("account").onclick = () => run(openAccount);
+// Says what it did. A button that silently changes nothing is indistinguishable
+// from a button that is broken, which is exactly how the per seat setting above
+// managed to hide.
+el("library-sync").onclick = () =>
+  run(async () => {
+    const before = JSON.stringify((library && library.titles) || []);
+    const after = await api("POST", "/api/library/sync");
+
+    if (JSON.stringify(after.titles || []) !== before) return;
+
+    const outside = after.outside || [];
+    const members = (after.titles || []).some((t) => (t.in || []).length);
+
+    if (!members && outside.length) {
+      alert(
+        "Nothing changed. " +
+          (outside.length === 1 ? "Seat " : "Seats ") +
+          outside.join(", ") +
+          (outside.length === 1 ? " does" : " do") +
+          " not take part in the shared library yet. Turn it on with Edit on " +
+          "the seat.",
+      );
+      return;
+    }
+
+    alert("Nothing to do: every seat that takes part already has everything in the pool.");
+  });
+el("library-import").onclick = openImport;
+el("import-cancel").onclick = () => el("import").close();
+el("import-form").onsubmit = submitImport;
 
 // Ask before drawing anything, so a signed out visitor gets the login form
 // rather than a flash of an empty seat list.
