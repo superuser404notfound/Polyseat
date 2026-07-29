@@ -1,8 +1,14 @@
 // Polyseat interface.
 //
 // The daemon pushes a token whenever anything changes and this reloads the
-// state. No polling, no diffing, no framework: the whole page is a handful of
-// cards and rebuilding them is cheaper than tracking what moved.
+// state. No polling and no framework: the whole page is a handful of cards and
+// rebuilding one is cheaper than tracking what moved inside it.
+//
+// A card is only rebuilt when that seat's state actually differs, though. The
+// daemon pushes on every log line, and rebuilding everything each time is what
+// made an open panel flicker: it was destroyed and recreated, went back to
+// saying "loading", asked the container all over again, and lost anything half
+// typed into a field.
 
 const el = (id) => document.getElementById(id);
 
@@ -101,6 +107,10 @@ function render() {
 
   const seats = el("seats");
 
+  // Before the empty case below returns, or deleting the last seat would leave
+  // its card and everything it had loaded behind.
+  forgetMissingSeats();
+
   if (state.seats.length === 0) {
     seats.replaceChildren(
       Object.assign(document.createElement("p"), {
@@ -113,8 +123,53 @@ function render() {
     return;
   }
 
-  seats.replaceChildren(...state.seats.map(card));
+  const nodes = state.seats.map(cardFor);
+
+  // Only touch the DOM when the set of cards actually differs.
+  //
+  // The daemon pushes a token on every log line, so this runs often, and it
+  // used to rebuild every card each time. That is what made the interface
+  // flicker: an open panel was destroyed and recreated, went back to saying
+  // "loading" and asked the container all over again, and anything half typed
+  // into a field was gone. Reusing the node for a seat whose state has not
+  // changed leaves all of that alone.
+  const unchanged =
+    nodes.length === seats.children.length &&
+    nodes.every((node, i) => seats.children[i] === node);
+
+  if (!unchanged) seats.replaceChildren(...nodes);
+
   renderLibrary();
+}
+
+// Cards, keyed by seat name, kept as long as the seat looks the same.
+let cards = new Map();
+
+function cardFor(seat) {
+  const json = JSON.stringify(seat);
+  const kept = cards.get(seat.name);
+
+  if (kept && kept.json === json) return kept.node;
+
+  const node = card(seat);
+  cards.set(seat.name, { json, node });
+
+  return node;
+}
+
+// A deleted seat should not leave its card, or what it was showing, behind.
+function forgetMissingSeats() {
+  const live = new Set(state.seats.map((seat) => seat.name));
+
+  for (const name of [...cards.keys()]) {
+    if (!live.has(name)) {
+      cards.delete(name);
+      softwareSeen.delete(name);
+      openSoftware.delete(name);
+      openPairing.delete(name);
+      openLogs.delete(name);
+    }
+  }
 }
 
 // ------------------------------------------------------------------- library
@@ -454,19 +509,34 @@ function softwarePanel(seat) {
   details.ontoggle = () => {
     if (details.open) {
       openSoftware.add(seat.name);
-      loadSoftware(seat, body);
+      // Opening it is somebody asking, so ask the seat.
+      loadSoftware(seat, body, true);
     } else {
       openSoftware.delete(seat.name);
     }
   };
 
-  if (details.open) loadSoftware(seat, body);
+  // Rebuilding a card is not somebody asking. Draw what was last read instead,
+  // so a card that changed for an unrelated reason does not send the panel back
+  // to "loading" and does not exec into the container again.
+  if (details.open) loadSoftware(seat, body, false);
 
   return details;
 }
 
-async function loadSoftware(seat, body) {
-  body.replaceChildren(note("loading"));
+// What was last read from each seat, so a redraw costs nothing.
+let softwareSeen = new Map();
+
+async function loadSoftware(seat, body, fresh) {
+  const seen = softwareSeen.get(seat.name);
+
+  if (seen) {
+    drawSoftware(seat, body, seen);
+
+    if (!fresh) return;
+  } else {
+    body.replaceChildren(note("loading"));
+  }
 
   let status;
 
@@ -480,6 +550,13 @@ async function loadSoftware(seat, body) {
     return;
   }
 
+  softwareSeen.set(seat.name, status);
+  drawSoftware(seat, body, status);
+}
+
+// Draw a status that has already been read. Split out from reading it so that
+// redrawing a card costs nothing and shows no gap.
+function drawSoftware(seat, body, status) {
   body.replaceChildren();
 
   if (!status.available) {
@@ -519,7 +596,7 @@ async function loadSoftware(seat, body) {
       remove.onclick = () =>
         run(async () => {
           await api("DELETE", `/api/seats/${seat.name}/software/${app.id}`);
-          await loadSoftware(seat, body);
+          await loadSoftware(seat, body, true);
         });
 
       item.append(name, remove);
@@ -547,7 +624,7 @@ async function loadSoftware(seat, body) {
       add.onclick = () =>
         run(async () => {
           await api("POST", `/api/seats/${seat.name}/software`, { id: entry.id });
-          await loadSoftware(seat, body);
+          await loadSoftware(seat, body, true);
         });
 
       item.append(name, add);
@@ -586,7 +663,7 @@ function installForm(seat, body) {
         await api("POST", `/api/seats/${seat.name}/software`, {
           id: id.value.trim(),
         });
-        await loadSoftware(seat, body);
+        await loadSoftware(seat, body, true);
       } finally {
         submit.disabled = false;
       }
