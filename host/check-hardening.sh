@@ -18,26 +18,62 @@ FIX=0
 [[ "${1:-}" == "--fix" ]] && FIX=1
 
 step "udev rule"
-if [[ -e /etc/udev/rules.d/70-polyseat-hide.rules ]]; then
+if [[ -e /etc/udev/rules.d/72-polyseat-hide.rules ]]; then
     ok "installed"
 else
     bad "missing: seat devices would be readable on the host desktop"
-    echo "     sudo cp host/70-polyseat-hide.rules /etc/udev/rules.d/ && sudo udevadm control --reload"
+    echo "     sudo cp host/72-polyseat-hide.rules /etc/udev/rules.d/ && sudo udevadm control --reload"
+fi
+
+# The number is not cosmetic. At 70 it sorted before 70-uaccess.rules, which
+# put the tag it had just stripped straight back on, so a copy left behind at
+# the old name is a rule that runs and achieves nothing.
+if [[ -e /etc/udev/rules.d/70-polyseat-hide.rules ]]; then
+    bad "an old copy is still installed as 70-polyseat-hide.rules, where it loses to 70-uaccess.rules"
+    echo "     sudo rm /etc/udev/rules.d/70-polyseat-hide.rules && sudo udevadm control --reload"
 fi
 
 step "Virtual devices readable by the desktop user?"
 leaky=0
-for d in /sys/class/input/event*; do
-    [[ -r "$d/device/name" ]] || continue
-    [[ "$(readlink -f "$d")" == */devices/virtual/* ]] || continue
-    node="/dev/input/${d##*/}"
-    perms=$(stat -c '%U:%G %a' "$node" 2>/dev/null)
+
+# Permissions and the access control list, because they are two different
+# answers. logind grants the desktop user an entry through the uaccess tag and
+# that entry survives a mode change, so a node can read root:root 0600 and
+# still be open to somebody. Reading only the mode is how a controller leaking
+# to the host went unnoticed.
+check_node() {
+    local node=$1 what=$2
+    local perms
+    perms=$(stat -c '%U:%G %a' "$node" 2>/dev/null) || return
+
     if [[ "$perms" != "root:root 600" ]]; then
-        bad "$node is $perms  ($(<"$d/device/name"))"
+        bad "$node is $perms  ($what)"
         leaky=1
     fi
+
+    if getfacl -p "$node" 2>/dev/null | grep -qE '^user:[^:]+:'; then
+        bad "$node has an access control entry for a user  ($what)"
+        leaky=1
+    fi
+}
+
+for d in /sys/class/input/event* /sys/class/input/js*; do
+    [[ -r "$d/device/name" ]] || continue
+    [[ "$(readlink -f "$d")" == */devices/virtual/* ]] || continue
+    check_node "/dev/input/${d##*/}" "$(<"$d/device/name")"
 done
-((leaky)) || ok "all virtual devices are root:root 0600"
+
+# The other half of a gamepad. A uhid device appears both under /dev/input and
+# as /dev/hidrawN, and hidraw is the one Steam reads a DualSense through. It
+# was missing from this check for as long as it was missing from the rule.
+for h in /sys/class/hidraw/hidraw*; do
+    [[ -e "$h" ]] || continue
+    [[ "$(readlink -f "$h")" == */devices/virtual/* ]] || continue
+    name=$(grep -m1 '^HID_NAME=' "$h/device/uevent" 2>/dev/null | cut -d= -f2-)
+    check_node "/dev/${h##*/}" "${name:-unnamed}"
+done
+
+((leaky)) || ok "all virtual input and raw HID devices are root:root 0600 with no ACL"
 
 step "SysRq"
 # Virtual keyboards are attached to the sysrq handler, so a client can send
