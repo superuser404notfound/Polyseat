@@ -164,6 +164,7 @@ def scan(pattern=None):
             "syspath": os.path.realpath(sysdev).removeprefix("/sys"),
             "sysname": device_owner.sysname_of_node(entry),
             "props": classify(os.path.realpath(f"{sysdev}/device")),
+            "raw": hidraw_of(entry),
         }
     return found
 
@@ -327,7 +328,7 @@ class ContainerBackend:
                   feeding it stdin
     """
 
-    def attach_node(self, container, node, major, minor):
+    def attach_node(self, container, node, major, minor, raw=None):
         raise NotImplementedError
 
     def detach_node(self, container, node):
@@ -359,7 +360,11 @@ class IncusBackend(ContainerBackend):
         return subprocess.run(["incus", *args], capture_output=True, text=True,
                               check=check)
 
-    def attach_node(self, container, node, major, minor):
+    # Suffix for the raw HID half of a gamepad, so that both can be found and
+    # removed together without either being mistaken for a device of its own.
+    RAW = "-raw"
+
+    def attach_node(self, container, node, major, minor, raw=None):
         # mode=0666 is not optional: without it the node arrives as
         # root:root 0660 and the compositor cannot open it.
         self._incus("config", "device", "add", container, f"{self.PREFIX}{node}",
@@ -367,14 +372,26 @@ class IncusBackend(ContainerBackend):
                     f"path=/dev/input/{node}", "mode=0666", "required=false",
                     check=False)
 
+        if raw:
+            self._incus("config", "device", "add", container,
+                        f"{self.PREFIX}{node}{self.RAW}",
+                        "unix-char", f"source=/dev/{raw}",
+                        f"path=/dev/{raw}", "mode=0666", "required=false",
+                        check=False)
+
     def detach_node(self, container, node):
-        self._incus("config", "device", "remove", container,
-                    f"{self.PREFIX}{node}", check=False)
+        for name in (f"{self.PREFIX}{node}", f"{self.PREFIX}{node}{self.RAW}"):
+            self._incus("config", "device", "remove", container, name, check=False)
 
     def attached_nodes(self, container):
         listing = self._incus("config", "device", "list", container, check=False)
+
+        # The raw halves are not devices in their own right; they come and go
+        # with the event node they belong to. Reporting them here would have
+        # the stale check treat each one as an orphan and take it away again on
+        # the next pass.
         return [name[len(self.PREFIX):] for name in listing.stdout.split()
-                if name.startswith(self.PREFIX)]
+                if name.startswith(self.PREFIX) and not name.endswith(self.RAW)]
 
     def run(self, container, argv, stdin=None):
         return subprocess.run(["incus", "exec", container, "--", *argv],
@@ -509,8 +526,13 @@ def attach(backend, seat, dev):
     print(f"  + {node:<10} {dev['name']}")
     print(f"    {how}: {' '.join(dev['props'])}")
 
-    # 1) Make the node available inside the container.
-    backend.attach_node(seat, node, dev["major"], minor)
+    # 1) Make the node available inside the container, both halves of it.
+    #
+    # A gamepad made through uhid is also a raw HID node, and that is the one
+    # Steam identifies a DualSense through. Without it Steam saw the pad only
+    # as a generic event device and laid the face buttons out wrong: pressing
+    # cross produced circle, circle produced triangle.
+    backend.attach_node(seat, node, dev["major"], minor, dev.get("raw"))
 
     # 2) Synthesise the udev database entry. libudev reads properties from
     #    there, not from /sys, and without ID_INPUT libinput ignores the device.

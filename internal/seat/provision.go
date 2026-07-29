@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 6
+const Generation = 7
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -216,10 +216,29 @@ func (p *Provisioner) stepNetwork(ctx context.Context) error {
 		return fmt.Errorf("attach the macvlan interface to %s: %w", p.Uplink, err)
 	}
 
-	network := "[Match]\nName=eth1\n\n[Network]\nDHCP=yes\n"
+	// The LAN wins the default route, and it has to win it explicitly.
+	//
+	// A seat has two interfaces that both offer a way out, and the image
+	// configures eth0 with the metric systemd-networkd uses by default. Left
+	// alone, eth1 gets the same one, and a seat ends up with two default routes
+	// of equal weight: which one a connection takes is then a matter of order,
+	// and a reply can come back the way the request did not. Steam was seen
+	// logging on happily over the bridge while Big Picture reported no internet
+	// connection at all.
+	//
+	// eth1 is the right winner. It is the seat's own address on the network,
+	// the one Moonlight reaches it by, and it goes straight to the LAN gateway
+	// rather than through the bridge's translation. eth0 stays reachable as the
+	// management path, which only ever needs the route to its own subnet.
+	const metric = 100
+
+	network := fmt.Sprintf(
+		"[Match]\nName=eth1\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nRouteMetric=%d\n", metric)
+
 	if p.Seat.Address != "" {
-		network = fmt.Sprintf("[Match]\nName=eth1\n\n[Network]\nAddress=%s\nGateway=%s\n",
-			p.Seat.Address, p.Seat.Gateway)
+		network = fmt.Sprintf(
+			"[Match]\nName=eth1\n\n[Network]\nAddress=%s\n\n[Route]\nGateway=%s\nMetric=%d\n",
+			p.Seat.Address, p.Seat.Gateway, metric)
 		p.Log("static address %s via %s", p.Seat.Address, p.Seat.Gateway)
 	} else {
 		p.Log("address by DHCP")
@@ -1016,6 +1035,7 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		{"/usr/local/bin/polyseat-keyboard", asset("assets/keyboard.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-launcher", asset("assets/launcher.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-boxart", asset("assets/boxart.py"), 0o755, 0},
+		{"/usr/local/bin/polyseat-bigpicture", asset("assets/bigpicture.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-pad-pointer", asset("assets/pad-pointer.py"), 0o755, 0},
 	}
 

@@ -206,8 +206,11 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 			Polyseat:  true,
 		},
 		{
-			Name:     "Steam Big Picture",
-			Detached: []string{"setsid steam steam://open/bigpicture"},
+			Name: "Steam Big Picture",
+			// Through a script rather than straight to Steam, because the sway
+			// rule that fullscreens the window matches on its title and a cold
+			// Steam maps the window before it has one. See polyseat-bigpicture.
+			Detached: []string{"setsid /usr/local/bin/polyseat-bigpicture"},
 			// The undo side closes Big Picture again so the seat does not sit
 			// in it until somebody notices.
 			PrepCmd:   []prep{{Do: hideLauncher, Undo: "setsid steam steam://close/bigpicture"}},
