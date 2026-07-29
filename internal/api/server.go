@@ -292,9 +292,19 @@ func (s *Server) warnings() []string {
 			"only be attributed to a seat by name, not structurally.")
 	}
 
-	if _, err := os.Stat("/etc/udev/rules.d/70-polyseat-hide.rules"); err != nil {
+	if _, err := os.Stat("/etc/udev/rules.d/72-polyseat-hide.rules"); err != nil {
 		out = append(out, "The udev rule that hides seat input devices from the "+
 			"host desktop is not installed. Run host/install.sh.")
+	}
+
+	// The number is not cosmetic. At 70 the rule sorted before
+	// 70-uaccess.rules, which put the tag it had just stripped straight back
+	// on, so a copy left behind at the old name is a rule that runs and does
+	// nothing. Worth saying out loud, because everything looks installed.
+	if _, err := os.Stat("/etc/udev/rules.d/70-polyseat-hide.rules"); err == nil {
+		out = append(out, "An old copy of the udev rule is still installed as "+
+			"70-polyseat-hide.rules. It loses to 70-uaccess.rules, which "+
+			"grants the tag back. Remove it and run host/install.sh.")
 	}
 
 	if _, err := os.Stat("/dev/uhid"); err != nil {
