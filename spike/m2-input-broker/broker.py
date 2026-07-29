@@ -38,6 +38,7 @@ import argparse
 import json
 import os
 import re
+import stat as statmod
 import subprocess
 import sys
 import time
@@ -120,18 +121,27 @@ def classify(sysdev):
     return list(dict.fromkeys(props))
 
 
-def scan(pattern):
-    """All virtual event devices whose name matches the pattern.
+def scan(pattern=None):
+    """Every virtual event device, or only those whose name matches a pattern.
 
-    This only narrows the field. Which seat a device belongs to is decided by
-    attribute(), not here.
+    Unfiltered by default, and that is the point. This used to carry a list of
+    name patterns for what Sunshine creates, which quietly decided what could
+    be attributed at all: a device the list did not name was never even
+    considered, so it stayed on the host and never reached its seat. That is
+    how antimicrox, which a seat runs to turn a gamepad into a mouse, ended up
+    driving the host's cursor instead of the seat's.
 
-    The filter on `/devices/virtual/` is a real safeguard though: only what was
-    created through uinput or uhid may enter a seat at all. A pure name filter
-    would be dangerous, since "Controller" would also match the host's ASRock
-    LED controller, which has no business in any seat.
+    Names decide nothing now. What may enter a seat is decided by attribute(),
+    structurally, and a device created on the host is refused there however it
+    is called. The old worry, that "Controller" would also match the host's
+    ASRock LED controller, is answered twice over: that device is not virtual,
+    and it was not created by a container.
+
+    The filter on `/devices/virtual/` stays and is the real safeguard: only
+    what was made through uinput or uhid may enter a seat at all. A pattern can
+    still be passed to narrow things while debugging.
     """
-    rx = re.compile(pattern, re.IGNORECASE)
+    rx = re.compile(pattern, re.IGNORECASE) if pattern else None
     found = {}
     for entry in os.listdir(SYS_INPUT):
         if not entry.startswith("event"):
@@ -140,7 +150,7 @@ def scan(pattern):
         if "/devices/virtual/" not in os.path.realpath(sysdev):
             continue
         name = read(f"{sysdev}/device/name")
-        if not name or not rx.search(name):
+        if not name or (rx and not rx.search(name)):
             continue
         dev = read(f"{sysdev}/dev")
         if not dev:
@@ -397,6 +407,55 @@ class IncusBackend(ContainerBackend):
 FAKEUDEV = "/root/fakeudev.py"
 
 
+def seal(node):
+    """Take a device that belongs to a seat away from the host desktop.
+
+    The udev rule does this at creation time, which is the right moment, but it
+    can only decide by name there. It cannot ask who created the device,
+    because systemd-udevd runs its workers behind a syscall filter that blocks
+    pidfd_open and pidfd_getfd, and those are exactly what reading a foreign
+    descriptor needs. Measured rather than assumed: the same helper answers
+    "container" from a shell and "unknown" under udevd's filter.
+
+    So the structural answer is enforced here instead, by the component that
+    already has it. A name list is an allowlist of the tools somebody thought
+    of, and it failed the first time a seat ran something new: antimicrox
+    called its devices "antimicrox Mouse Emulation", matched nothing, and a
+    controller in a seat drove the host's cursor. Anything this broker has
+    attributed to its seat gets taken off the host, whatever it calls itself.
+
+    The cost is a window of up to one poll interval between a device appearing
+    and being sealed. The name patterns in the udev rule stay for that reason:
+    they close it to zero for everything already known, and this closes the
+    case of everything that is not.
+
+    chmod alone would leave a POSIX ACL behind. logind grants the active
+    desktop user one through the uaccess tag, and that survives a mode change,
+    which is the whole reason the tag exists in the rule as well.
+    """
+    path = f"/dev/input/{node}"
+
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+
+    if st.st_uid == 0 and st.st_gid == 0 and statmod.S_IMODE(st.st_mode) == 0o600:
+        return False
+
+    try:
+        os.chown(path, 0, 0)
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        print(f"  ! {node:<10} could not be taken off the host: {exc}")
+        return False
+
+    subprocess.run(["setfacl", "-b", path], check=False,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    return True
+
+
 def attach(backend, seat, dev):
     node, minor = dev["node"], dev["minor"]
     how = {"owner": "creator verified",
@@ -439,13 +498,14 @@ def detach(backend, seat, node, dev):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--seat", required=True, help="name of the container")
-    ap.add_argument("--match",
-                    default=r"passthrough|x-?box|dualsense|dualshock|nintendo|"
-                            r"sunshine|gamepad|joystick|controller",
-                    help="regular expression on the device name. Only applies "
-                         "to virtual devices. Sunshine calls keyboard and mouse "
-                         "'... passthrough', while gamepads are named after the "
-                         "emulated model (e.g. 'Xbox One')")
+    ap.add_argument("--match", default=None,
+                    help="regular expression on the device name, for narrowing "
+                         "things down while debugging. Empty by default: every "
+                         "virtual device is considered and attribution decides "
+                         "structurally which seat it belongs to, if any. A name "
+                         "list here used to decide what could be seen at all, "
+                         "which silently excluded anything nobody had thought "
+                         "of yet")
     ap.add_argument("--tag", default=None,
                     help="seat tag the device name must carry (default: the "
                          "seat name). Sunshine appends it when XDG_SEAT is set. "
@@ -504,6 +564,11 @@ def main():
         while True:
             current = attribute(scan(args.match), args.seat, tag)
             for node, dev in current.items():
+                # Before attaching, and on every pass afterwards: a udev
+                # retrigger puts the permissions back to what the name rules
+                # decided, and for a device no pattern matches that is open.
+                if seal(node):
+                    print(f"  * {node:<10} taken off the host desktop ({dev['name']})")
                 if node not in known:
                     attach(backend, args.seat, dev)
             for node, dev in list(known.items()):

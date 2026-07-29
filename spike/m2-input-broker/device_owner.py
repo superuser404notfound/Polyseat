@@ -29,7 +29,10 @@ name tag.
 Needs root: reading other processes' descriptors and `pidfd_getfd` are
 privileged.
 
-    sudo ./device_owner.py          # print the mapping for every device
+    sudo ./device_owner.py            # print the mapping for every device
+    sudo ./device_owner.py --udev event27
+                                      # one line for udev: container, host or
+                                      # unknown
 """
 
 import ctypes
@@ -173,9 +176,58 @@ def sysname_of_node(node):
     return os.path.basename(os.path.dirname(real))
 
 
+def udev(node):
+    """Answer, for one device node, whether a container created it.
+
+    This exists so that the udev rule which keeps a seat's input devices away
+    from the host desktop can ask the same structural question the broker asks,
+    instead of matching on the device name.
+
+    The name based version of that rule was a list of three patterns covering
+    what Sunshine creates. It held for exactly as long as Sunshine was the only
+    thing in a seat creating input devices. The first other one, a gamepad to
+    mouse mapper, was called "antimicrox Mouse Emulation", matched nothing, and
+    its devices reached the host desktop with the uaccess tag still on them. A
+    list of names is an allowlist of the tools somebody thought of.
+
+    Three answers, and the difference between the last two matters:
+
+      container   created through uinput by a process inside a container
+      host        created through uinput by a process on the host, which is
+                  legitimate and must not be touched, because the host runs
+                  Steam too and Steam makes virtual gamepads
+      unknown     no uinput descriptor claims it. Either it came through uhid,
+                  where there is nothing to ask, or it is real hardware.
+
+    Only "container" hides anything. Everything else falls through to the name
+    patterns, so this narrows what those have to carry rather than replacing
+    them: a failure here leaves the old behaviour rather than either exposing a
+    seat's devices or hiding the host's.
+    """
+    try:
+        sysname = sysname_of_node(node)
+    except OSError:
+        print("POLYSEAT_OWNER=unknown")
+        return
+
+    mapping = owners()
+
+    if sysname not in mapping:
+        print("POLYSEAT_OWNER=unknown")
+    elif mapping[sysname] is None:
+        print("POLYSEAT_OWNER=host")
+    else:
+        print("POLYSEAT_OWNER=container")
+
+
 def main():
     if os.geteuid() != 0:
         sys.exit("needs root: reading foreign descriptors is privileged")
+
+    # udev calls this per device and reads one KEY=value line off stdout.
+    if len(sys.argv) == 3 and sys.argv[1] == "--udev":
+        udev(sys.argv[2])
+        return
 
     mapping = owners()
     print(f"{len(mapping)} uinput device(s) with a traceable creator\n")

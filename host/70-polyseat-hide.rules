@@ -1,11 +1,37 @@
 # Polyseat: virtual input devices belonging to a seat must never reach the
 # host desktop.
 #
-# Three name patterns, because there are three sources:
+# This rule decides by name, and that is a known weakness rather than the
+# design. The list held for exactly as long as Sunshine was the only thing in a
+# seat creating input devices. The first other one, a gamepad to mouse mapper
+# called "antimicrox Mouse Emulation", matched nothing here and its devices
+# reached the host desktop with the uaccess tag still on them: a controller in
+# a seat moving the host's cursor.
+#
 #   polyseat:*      Polyseat's own test devices
 #   *passthrough*   Sunshine's keyboard, mouse, touch and pen
-#   Sunshine*       Sunshine's gamepads, which are named after the emulated
-#                   model, e.g. "Sunshine X-Box One (virtual) pad (seat1)"
+#   Sunshine*       Sunshine's gamepads, named after the emulated model, e.g.
+#                   "Sunshine X-Box One (virtual) pad (seat1)"
+#   antimicrox*     the mouse and keyboard a seat makes out of its gamepad
+#
+# The right question is not what a device is called but who created it, and
+# device_owner.py answers exactly that: a uinput device lives only as long as
+# the descriptor that made it, that descriptor can be found, and the owner's
+# cgroup names the container. That check cannot run here. systemd-udevd runs
+# its workers behind a syscall filter that blocks pidfd_open and pidfd_getfd,
+# which is what reading a foreign descriptor needs, so the helper answers
+# "unknown" from inside udev and "container" from anywhere else. Measured, not
+# assumed:
+#
+#     systemd-run -p SystemCallFilter="@system-service @module @raw-io" \
+#         device_owner.py --udev event29     ->  POLYSEAT_OWNER=unknown
+#     device_owner.py --udev event29         ->  POLYSEAT_OWNER=container
+#
+# So the structural answer is enforced by the broker instead, which already has
+# it and runs without that filter. This file is the fast path: it closes the
+# window to zero for everything on the list, and the broker closes the case of
+# everything that is not, within one poll interval. Adding a name here is
+# therefore an optimisation, and forgetting to is no longer a hole.
 #
 # Stripping ID_INPUT* alone is not enough. Those devices also carry the
 # "uaccess" tag, and systemd-logind then grants the active desktop user an ACL
@@ -15,9 +41,10 @@
 # So the tag goes as well, and ownership is pinned to root. The seats are
 # unaffected: Incus creates its own node inside the container with its own
 # mode, and the broker only reads /sys.
-SUBSYSTEM=="input", ATTRS{name}=="polyseat:*",   GOTO="polyseat_hide"
+SUBSYSTEM=="input", ATTRS{name}=="polyseat:*",    GOTO="polyseat_hide"
 SUBSYSTEM=="input", ATTRS{name}=="*passthrough*", GOTO="polyseat_hide"
 SUBSYSTEM=="input", ATTRS{name}=="Sunshine*",     GOTO="polyseat_hide"
+SUBSYSTEM=="input", ATTRS{name}=="antimicrox*",   GOTO="polyseat_hide"
 GOTO="polyseat_end"
 
 LABEL="polyseat_hide"

@@ -69,6 +69,44 @@ of creation. Both forgery paths were demonstrated and refused:
 `root:root 0600` with the `uaccess` tag stripped, and opening one as the desktop
 user raises `PermissionError`.
 
+That used to depend on the device being named something the udev rule knew, and
+M7 found what that costs. A seat running antimicrox to turn its gamepad into a
+mouse produced devices called `antimicrox Mouse Emulation`, which matched none
+of the three patterns in the rule and none of the patterns the broker scanned
+for. The result was both halves wrong at once: the devices stayed readable on
+the host, so a controller in a seat moved the host's cursor, and they never
+reached the seat that made them, so the mapping did nothing where it was meant
+to.
+
+Names no longer decide either question. The broker considers every virtual
+input device and lets the structural check say whose it is, and anything it
+attributes to its seat is taken off the host by the broker itself. Verified
+with a device deliberately named nothing in particular:
+
+```
+seat creates "totally-unlisted-widget"   host: crw------- root root   seat: attached
+host creates "hostside-widget"           host: crw-rw---- root input  untouched
+```
+
+The second line matters as much as the first. This machine runs Steam on the
+host as well, and Steam makes virtual gamepads the desktop is supposed to see,
+so "hide every virtual device" would have been the wrong rule.
+
+The structural check cannot run in udev, which is where it would ideally
+happen. systemd-udevd runs its workers behind a syscall filter that blocks
+`pidfd_open` and `pidfd_getfd`, and reading a foreign descriptor needs both:
+
+```
+under udevd's filter   POLYSEAT_OWNER=unknown
+anywhere else          POLYSEAT_OWNER=container
+```
+
+So the name patterns stay in the udev rule as a fast path that closes the
+window to zero for everything already known, and the broker closes the case of
+everything else within one poll interval. The residual exposure is that half
+second, for a device nobody has named in the rule, on a machine where the
+threat model is people in the same house.
+
 **The daemon's interface demands a password and speaks only TLS.** It listens on
 all interfaces, so this is the wall. Measured against the running daemon:
 
