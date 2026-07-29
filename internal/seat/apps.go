@@ -114,7 +114,37 @@ func (p *Provisioner) WriteApps(ctx context.Context) ([]string, bool, error) {
 		return nil, false, err
 	}
 
-	ours, names := polyseatApps(found, p.installedGames(ctx))
+	games := p.installedGames(ctx)
+
+	// Whatever artwork the seat has, turned into cards a client will show.
+	// Sunshine only draws PNG, and everything is drawn as a portrait card, so
+	// a JPEG cover is invisible and a square icon is stretched across the whole
+	// card with the name hidden behind it.
+	var items []artItem
+
+	for _, l := range found {
+		items = append(items, artItem{Key: l.Name, Source: l.image, Label: l.Name})
+	}
+
+	for _, g := range games {
+		items = append(items, artItem{Key: g.Name, Source: g.Image, Label: g.Name})
+	}
+
+	// Assigned even when nothing came back, so that a raw source path is never
+	// what reaches the app list. A missing card is a client drawing the name on
+	// a plain background, which is fine; a JPEG cover is a card with nothing on
+	// it at all, and a square icon is one stretched over the name.
+	art := p.boxart(ctx, items)
+
+	for i := range found {
+		found[i].image = art[found[i].Name]
+	}
+
+	for i := range games {
+		games[i].Image = art[games[i].Name]
+	}
+
+	ours, names := polyseatApps(found, games)
 
 	// A seat that has never been started has no file yet. Not an error: the
 	// merge simply has nothing to preserve.
@@ -514,4 +544,40 @@ func (p *Provisioner) launcherIcons(ctx context.Context, want any) map[string]st
 	}
 
 	return icons
+}
+
+// artItem is one card to make: what to call it, and what to make it from.
+type artItem struct {
+	Key    string `json:"key"`
+	Source string `json:"source"`
+	Label  string `json:"label"`
+}
+
+// boxart builds the cards and returns the file for each key.
+//
+// Best effort, like the icons: an entry with no card is an entry a client draws
+// as its name on a plain background, which is how it was before and is not
+// worth failing a seat's start over.
+func (p *Provisioner) boxart(ctx context.Context, items []artItem) map[string]string {
+	if len(items) == 0 {
+		return nil
+	}
+
+	query, err := json.Marshal(items)
+	if err != nil {
+		return nil
+	}
+
+	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
+		"HOME=/home/"+Player, "/usr/local/bin/polyseat-boxart", string(query))
+	if err != nil || code != 0 {
+		return nil
+	}
+
+	art := map[string]string{}
+	if json.Unmarshal([]byte(strings.TrimSpace(out)), &art) != nil {
+		return nil
+	}
+
+	return art
 }

@@ -1015,6 +1015,7 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		{"/usr/local/bin/polyseat-welcome", asset("assets/welcome.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-keyboard", asset("assets/keyboard.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-launcher", asset("assets/launcher.sh"), 0o755, 0},
+		{"/usr/local/bin/polyseat-boxart", asset("assets/boxart.py"), 0o755, 0},
 		{"/usr/local/bin/polyseat-pad-pointer", asset("assets/pad-pointer.py"), 0o755, 0},
 	}
 
