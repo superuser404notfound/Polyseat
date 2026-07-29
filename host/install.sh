@@ -62,6 +62,46 @@ if ((${#missing[@]})); then
     exit 1
 fi
 
+step "idmap ranges"
+# Without a root entry in both files every container start fails with "System
+# doesn't have a functional idmap setup", which does not mention subuid at all
+# and sends people looking in the wrong place. CachyOS ships an entry for the
+# user and none for root, so this is not a hypothetical.
+#
+# An existing entry is left alone even if it is narrower than this one. Widening
+# somebody's idmap ranges behind their back would silently change what every
+# other container on the machine may map.
+for f in /etc/subuid /etc/subgid; do
+    if [[ -e $f ]] && grep -qE '^root:' "$f"; then
+        ok "$f: $(grep -m1 -E '^root:' "$f")"
+    else
+        # Appended with a newline of its own, because a file that does not end
+        # in one would otherwise gain a joined line rather than a new entry.
+        [[ -e $f ]] || : > "$f"
+        [[ -s $f && -n "$(tail -c1 "$f")" ]] && printf '\n' >> "$f"
+        printf 'root:1000000:1000000000\n' >> "$f"
+        ok "$f: added root:1000000:1000000000"
+    fi
+done
+
+step "Incus"
+# The daemon talks to Incus over its socket and cannot bring it up itself, so
+# this is squarely the installer's job.
+systemctl enable --now incus.socket >/dev/null 2>&1
+ok "incus.socket enabled"
+
+# `incus admin init --minimal` is safe to skip and not safe to repeat: run on an
+# already initialised machine it fails, and the useful signal that it has been
+# initialised is that a storage pool exists.
+if incus storage list --format csv 2>/dev/null | grep -q .; then
+    ok "already initialised, $(incus storage list --format csv 2>/dev/null | wc -l) storage pool(s)"
+else
+    # --minimal picks btrfs by itself when the root filesystem is btrfs, which
+    # is what the shared game library wants anyway.
+    incus admin init --minimal
+    ok "initialised with the defaults"
+fi
+
 step "Building polyseatd"
 # Built here rather than shipped as a binary: there is no release process yet,
 # and a binary of unknown provenance running as root is worse than a compiler.
@@ -101,6 +141,36 @@ fi
 install -m 0644 "$HERE/polyseatd.service" "$UNITDIR/polyseatd.service"
 systemctl daemon-reload
 ok "registered"
+
+step "Group membership"
+# The daemon does not need this. It runs as root and opens every device node
+# directly; that is worth saying plainly, because a step that grants an account
+# read access to every input device on the machine should not be there out of
+# habit.
+#
+# What needs it is the host-side tooling that comes with this repository and is
+# run by hand: uhidgen.py opens /dev/uhid to make a synthetic gamepad, and
+# /dev/uhid and /dev/uinput are root:input 0660. Sunshine running on the host
+# itself needs the same two nodes.
+#
+# On a desktop with an active local session logind already grants that account
+# an access control entry on both, which was measured on the development
+# machine, so there the group changes nothing. It is the cases without one that
+# this covers: a headless host, a second administrator, a session that is not
+# the active one. Group membership works in all of them and an ACL works in
+# none.
+#
+# Not undone by --uninstall. It is a property of the account rather than of this
+# installation, and an account may well have been in that group first.
+target_user=${SUDO_USER:-}
+if [[ -z $target_user || $target_user == root ]]; then
+    warn "no unprivileged account to add: run this with sudo from your own account"
+elif id -nG "$target_user" 2>/dev/null | tr ' ' '\n' | grep -qx input; then
+    ok "$target_user is already in the input group"
+else
+    usermod -aG input "$target_user"
+    ok "$target_user added to the input group, which takes effect at the next login"
+fi
 
 cat <<EOF
 

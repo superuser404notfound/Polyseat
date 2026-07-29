@@ -91,9 +91,13 @@ sudo host/install.sh
 sudo systemctl enable --now polyseatd
 ```
 
-That builds the daemon, places the input helpers under
-`/usr/local/lib/polyseat`, installs the udev rule that keeps seat devices off
-the host desktop, and registers one systemd unit. It creates no seats.
+That checks the packages, gives root the idmap range every container start needs,
+brings up Incus and initialises it if nobody has, builds the daemon, places the
+input helpers under `/usr/local/lib/polyseat`, installs the udev rule that keeps
+seat devices off the host desktop, registers one systemd unit, and adds your
+account to the `input` group so the host-side tooling runs without root. It
+creates no seats, and it can be run again after an update without undoing
+anything.
 
 **Everything else happens at `https://<this machine>:47800`.** The first
 password is generated on first start and written to the log:

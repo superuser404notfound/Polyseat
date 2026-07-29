@@ -43,6 +43,10 @@ CachyOS ships only an entry for the user. Without the root entry every container
 start fails with `System doesn't have a functional idmap setup`, which does not
 point at subuid at all.
 
+The installer adds it, and leaves an existing root entry alone even when it is
+narrower than this one: widening somebody's idmap ranges behind their back
+changes what every other container on the machine may map.
+
 ### Incus itself
 
 `systemctl enable --now incus.socket`, then `incus admin init`. `--minimal` is
@@ -50,16 +54,37 @@ enough to start and picks btrfs automatically when the root filesystem is btrfs.
 The shared library pool of M6 wants btrfs, so this is worth checking rather than
 assuming.
 
-### Group membership is no longer part of this
+The installer does both. The init is skipped when a storage pool already exists,
+because `incus admin init` fails on a machine that has one and there is no
+sensible way to rerun it.
 
-The spike scripts needed the invoking user in `incus-admin`, and with it the
-trap that `usermod -aG` does not affect the running session, so the scripts had
-to re-exec themselves under `sg incus-admin`. None of that applies any more.
-`polyseatd` runs as root from a systemd unit and opens the Incus socket
-directly, and the installer only copies files.
+### Group membership
 
-Adding yourself to `incus-admin` is now purely a convenience for running `incus`
-by hand, and Polyseat does not need it.
+**`incus-admin` is not needed.** The spike scripts needed the invoking user in
+it, and with it the trap that `usermod -aG` does not affect the running session,
+so the scripts had to re-exec themselves under `sg incus-admin`. None of that
+applies any more: `polyseatd` runs as root from a systemd unit and opens the
+Incus socket directly. Adding yourself to `incus-admin` is now purely a
+convenience for running `incus` by hand.
+
+**`input` is added by the installer**, for the account that invoked it. Worth
+being precise about, because a step that grants an account read access to every
+input device on the machine should not be there out of habit:
+
+* The daemon does not need it. It is root and opens device nodes directly.
+* The host-side tooling in this repository does. `uhidgen.py` opens `/dev/uhid`
+  to make a synthetic gamepad for the M2 checks, and `/dev/uhid` and
+  `/dev/uinput` are `root:input` mode 0660. Sunshine running on the host itself
+  wants the same two nodes.
+* On a desktop with an active local session logind grants that account an ACL on
+  both anyway, so there the group changes nothing. Measured on the development
+  machine: `getfacl /dev/uinput` shows `user:rooky:rw-` without any group
+  membership being involved.
+
+So it covers the cases where there is no such session to grant an ACL: a
+headless host, a second administrator, a session that is not the active one.
+`--uninstall` does not take it away again, because it is a property of the
+account rather than of this installation.
 
 ## What is not required
 
