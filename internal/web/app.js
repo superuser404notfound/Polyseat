@@ -1034,17 +1034,38 @@ function facts(seat) {
 
   // The one line worth staring at. A seat that fell back to software encoding
   // starts, streams and looks entirely healthy until somebody plays on it.
+  //
+  // The codecs beside it because naming only one reads as a limit. Sunshine
+  // probes for three and offers whichever the client asks for, so a seat that
+  // said "h264_nvenc" looked as though H.265 were out of the question when it
+  // was there all along.
   if (seat.encoder) {
+    const software = seat.encoder.startsWith("lib");
+    const codecs = (seat.codecs || []).join(", ");
+
     row(
       "Encoder",
-      seat.encoder === "libx264" ? seat.encoder + "  (software, the GPU path is broken)" : seat.encoder,
-      seat.encoder === "libx264" ? "flag bad" : null,
+      software
+        ? seat.encoder + " (software, the GPU path is broken)"
+        : codecs
+          ? `${seat.encoder} (${codecs})`
+          : seat.encoder,
+      software ? "flag bad" : null,
     );
   }
 
   row("Input broker", seat.broker, seat.broker === "running" ? null : "flag");
   row("Devices", (seat.devices || []).join(", ") || "none attached");
-  row("Resolution", seat.resolution);
+
+  // What the session comes up with, and what it is running at now. They differ
+  // whenever somebody is connected, because the output is virtual and becomes
+  // whatever the client asked for.
+  row(
+    "Resolution",
+    seat.output && seat.output !== seat.resolution
+      ? `${seat.output} now, ${seat.resolution} when idle`
+      : seat.resolution,
+  );
   row("Shared library", seat.library ? "yes" : "no");
 
   if (seat.stale) {

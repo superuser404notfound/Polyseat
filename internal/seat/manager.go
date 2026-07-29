@@ -2,6 +2,7 @@ package seat
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -83,6 +84,8 @@ type runtime struct {
 	sway           string
 	sunshine       string
 	encoder        string
+	codecs         []string
+	output         string
 	devices        []string
 	checked        time.Time
 
@@ -446,9 +449,10 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		m.log.Error("read the attached devices", "seat", name, "error", err)
 	}
 
-	encoder := ""
+	encoder, codecs, output := "", []string(nil), ""
 	if sunshine == "active" {
-		encoder = m.readEncoder(ctx, name)
+		encoder, codecs = m.readEncoders(ctx, name)
+		output = m.readOutput(ctx, name)
 	}
 
 	m.checkOrigins(ctx, name, addresses)
@@ -493,7 +497,10 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 
 	if encoder != "" {
 		rt.encoder = encoder
+		rt.codecs = codecs
 	}
+
+	rt.output = output
 
 	state := StateStarting
 	if up {
@@ -626,22 +633,119 @@ func (m *Manager) unitState(ctx context.Context, name, unit string) string {
 // The single most useful line in the whole interface. A seat whose EGL landed
 // on Mesa still starts, still streams and still looks healthy; it just encodes
 // in software, and nobody finds out until a game stutters.
-func (m *Manager) readEncoder(ctx context.Context, name string) string {
+// readEncoders reports which hardware path Sunshine settled on and which
+// codecs it can offer with it.
+//
+// The single most useful line in the whole interface is still whether the GPU
+// path works: a seat that quietly fell back to software looks entirely healthy
+// until somebody tries to play. But reporting only the H.264 encoder, which is
+// what this did, reads as though H.264 were all a seat could do. Sunshine
+// probes for three and offers whichever the client asks for, so the answer is
+// a list.
+func (m *Manager) readEncoders(ctx context.Context, name string) (string, []string) {
 	argv := m.asPlayer(name, "sh", "-c",
 		"journalctl --user -u polyseat-sunshine.service --no-pager 2>/dev/null | "+
-			"grep -oE 'Found H\\.264 encoder: [a-z0-9_]+' | tail -1")
+			"grep -oE 'Found (H\\.264|HEVC|AV1) encoder: [a-z0-9_]+'")
 
 	out, _, err := m.client.Try(ctx, name, argv...)
 	if err != nil {
+		return "", nil
+	}
+
+	return parseEncoders(out)
+}
+
+// parseEncoders reads the lines Sunshine writes while probing.
+//
+// Separate from fetching them because a seat's journal holds every start it
+// has ever had, and only the most recent probe describes what is running now:
+// getting that backwards would report a card that has since been swapped, or a
+// software fallback long after it was fixed.
+func parseEncoders(out string) (string, []string) {
+	seen := map[string]string{}
+	order := []string{"H.264", "HEVC", "AV1"}
+
+	for _, line := range strings.Split(out, "\n") {
+		rest, found := strings.CutPrefix(strings.TrimSpace(line), "Found ")
+		if !found {
+			continue
+		}
+
+		codec, encoder, found := strings.Cut(rest, " encoder: ")
+		if !found || encoder == "" {
+			continue
+		}
+
+		// Later lines overwrite earlier ones, so what remains is the last run.
+		seen[codec] = encoder
+	}
+
+	var codecs []string
+
+	backend := ""
+
+	for _, codec := range order {
+		encoder, ok := seen[codec]
+		if !ok {
+			continue
+		}
+
+		codecs = append(codecs, codec)
+
+		// Every codec of one run shares a backend, so the first says it.
+		if backend == "" {
+			if _, suffix, cut := strings.Cut(encoder, "_"); cut {
+				backend = suffix
+			} else {
+				backend = encoder
+			}
+		}
+	}
+
+	return backend, codecs
+}
+
+// readOutput reports the size the seat's screen is actually running at.
+//
+// Which is not what the seat was configured with, and the difference is the
+// point: the output is virtual, so it becomes whatever a connecting client
+// asked for and goes back afterwards. The interface was showing the configured
+// value and calling it the resolution, so a seat streaming at 2560x1600 still
+// claimed 1920x1080.
+func (m *Manager) readOutput(ctx context.Context, name string) string {
+	rt := m.runtimeOf(name)
+
+	m.mu.Lock()
+	uid := rt.uid
+	m.mu.Unlock()
+
+	argv := m.asPlayer(name, "sh", "-c", fmt.Sprintf(
+		"SWAYSOCK=$(ls -t /run/user/%d/sway-ipc.* 2>/dev/null | head -1) "+
+			"swaymsg -t get_outputs 2>/dev/null", uid))
+
+	out, code, err := m.client.Try(ctx, name, argv...)
+	if err != nil || code != 0 {
 		return ""
 	}
 
-	_, encoder, found := strings.Cut(strings.TrimSpace(out), ": ")
-	if !found {
+	var outputs []struct {
+		CurrentMode struct {
+			Width   int `json:"width"`
+			Height  int `json:"height"`
+			Refresh int `json:"refresh"`
+		} `json:"current_mode"`
+	}
+
+	if json.Unmarshal([]byte(strings.TrimSpace(out)), &outputs) != nil || len(outputs) == 0 {
 		return ""
 	}
 
-	return encoder
+	mode := outputs[0].CurrentMode
+	if mode.Width == 0 || mode.Height == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("%dx%d@%dHz", mode.Width, mode.Height, mode.Refresh/1000)
 }
 
 // asPlayer builds a command run as the seat's player.
@@ -972,10 +1076,12 @@ func (m *Manager) startSession(ctx context.Context, name string) error {
 		return err
 	}
 
-	if encoder := m.readEncoder(ctx, name); encoder != "" {
-		m.logf(name, "Sunshine encoder: %s", encoder)
+	if encoder, codecs := m.readEncoders(ctx, name); encoder != "" {
+		m.logf(name, "Sunshine encoder: %s (%s)", encoder, strings.Join(codecs, ", "))
 
-		if encoder == "libx264" {
+		// libx264 and libx265 are ffmpeg's own, which means the card is not
+		// being used at all.
+		if strings.HasPrefix(encoder, "lib") {
 			m.logf(name, "! that is the software encoder, the GPU path is broken")
 		}
 	}
@@ -1372,6 +1478,8 @@ func (m *Manager) Status(name string) (Status, error) {
 		Sway:      rt.sway,
 		Sunshine:  rt.sunshine,
 		Encoder:   rt.encoder,
+		Codecs:    rt.codecs,
+		Output:    rt.output,
 		Broker:    broker,
 		Devices:   rt.devices,
 		Busy:      rt.busy,

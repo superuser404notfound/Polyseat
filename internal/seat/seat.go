@@ -110,10 +110,22 @@ type Status struct {
 	Sway     string `json:"sway"`
 	Sunshine string `json:"sunshine"`
 
-	// Encoder is what Sunshine actually settled on. The single most useful
-	// piece of information in the whole interface: a seat that silently fell
-	// back to libx264 looks entirely healthy until somebody tries to play.
+	// Encoder is the hardware path Sunshine settled on, "nvenc" or the name of
+	// a software one. The single most useful piece of information in the whole
+	// interface: a seat that silently fell back to libx264 looks entirely
+	// healthy until somebody tries to play.
 	Encoder string `json:"encoder,omitempty"`
+
+	// Codecs are what that encoder can offer, in the order Sunshine probes
+	// them. Reporting only H.264, which this did, reads as though H.264 were
+	// all a seat could do, when Sunshine offers whichever the client asks for.
+	Codecs []string `json:"codecs,omitempty"`
+
+	// Output is the size the seat's screen is running at now, which is not the
+	// Resolution above. That one is what the session comes up with; this one is
+	// whatever a connected client asked for, since the output is virtual and
+	// simply becomes that size.
+	Output string `json:"output,omitempty"`
 
 	// Broker is the state of this seat's input broker process.
 	Broker string `json:"broker"`
