@@ -57,6 +57,12 @@ either end, with no password and no root: the player types
 the Polyseat web interface. Each client also gets the resolution it asked for,
 because the seat's output is virtual and simply becomes that size.
 
+**A controller is enough.** Streaming from an Apple TV or a phone means no
+keyboard and no mouse, and neither Moonlight nor Steam can supply them for a
+launcher's login form. So the seat carries both: an on-screen keyboard, and a
+pointer driven by the gamepad. Nothing happens until Select and Start are
+pressed together, so a controller in a game stays a controller.
+
 It does not share licences: a seat can only play what its own account owns. It
 needs a filesystem that can share blocks, which means btrfs or XFS created with
 `reflink=1`, and the daemon says so plainly rather than quietly making full

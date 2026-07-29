@@ -49,6 +49,15 @@ window#waybar {
     padding: 0 10px;
 }
 
+/* Marked out rather than left as plain text: on a client with no keyboard this
+   is the way to type anything at all, and it has to be findable by someone
+   pushing a pointer around with a thumbstick. */
+#custom-keyboard {
+    background: #2d3b4d;
+    color: #d8dee9;
+    padding: 0 10px;
+}
+
 #custom-seat {
     color: #7fb2d8;
 }

@@ -368,6 +368,43 @@ there is one list of installed software and not two. Flathub is added per user
 for the same reason. The cost is one setuid bwrap per seat, and why that is the
 smaller cost is set out in [`security.md`](security.md).
 
+## The client with no keyboard and no mouse
+
+Which is most of them. A seat streams to an Apple TV, a phone, a television,
+and the person holding the controller has no other input device at all. The app
+list and Steam Big Picture are navigable that way, so starting a game was
+covered; signing in to a store in a launcher was not, and that is the case that
+decides the design.
+
+**The client cannot supply it.** Moonlight on tvOS has an open request for
+entering text into the session and an open bug for keyboard passthrough; what
+it does send is modifiers rather than letters. Steam's own keyboard covers
+Steam, and non-Steam applications only if they were added to Steam and launched
+through it, with several open bugs on Linux about keys that do not type. Neither
+reaches a browser window inside a launcher.
+
+So both halves live in the seat and travel in the video stream like everything
+else. squeekboard draws the keyboard, which was written for phones and turns out
+to work on sway unchanged. `polyseat-pad-pointer` turns the gamepad into a
+pointer to press it with, reachable from Super+K, the bar, and a gamepad button,
+because whoever needs it has the fewest ways to ask.
+
+**Pointer mode is off until asked for, and that is the whole safety story.** A
+helper that turned a thumbstick into a mouse whenever a controller appeared
+would make every game unplayable, so Select and Start together toggle it, a
+chord because single buttons are taken. The gamepad is never grabbed, so games
+see it exactly as before.
+
+Written rather than configured, and that was a deliberate change of mind. The
+obvious answer is an existing remapper, and two were tried. sc-controller ships
+a desktop profile and an on-screen keyboard, and its keyboard no longer starts
+at all under current Python. antimicrox is maintained and works, but its profile
+is an XML format that would have had to be guessed at and could not be verified
+without a controller in hand. A hundred lines that do exactly this can be tested
+instead: a synthetic gamepad is fed into it and what comes out of the pointer
+device is read back, including the case that matters most, which is that nothing
+comes out while the mode is off.
+
 ## Resolution per client
 
 The seat's output is virtual, so unlike a monitor it can simply become the size

@@ -344,6 +344,13 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		// no way to start a launcher that was not in the Sunshine app list, and
 		// no way to install one either.
 		"waybar", "fuzzel", "thunar", "gvfs", "wl-clipboard",
+		// So a seat can be used from a client that has neither keyboard nor
+		// mouse, which is most of them: an Apple TV, a phone, a television.
+		// squeekboard draws the letters and polyseat-pad-pointer turns the
+		// gamepad into a pointer to press them with. Both have to live in the
+		// seat and travel in the video stream, because the client cannot
+		// supply either: Moonlight on tvOS sends modifiers rather than text.
+		"squeekboard", "python-evdev",
 		// Flatpak is how a seat gets software. The player has no sudo by
 		// design, and `flatpak --user` needs none, so this is the one route
 		// that does not either widen what the seat may do or route every
@@ -971,6 +978,8 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		{"/usr/local/bin/polyseat-sunshine-run", asset("assets/sunshine-run.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-resize", asset("assets/resize.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-welcome", asset("assets/welcome.sh"), 0o755, 0},
+		{"/usr/local/bin/polyseat-keyboard", asset("assets/keyboard.sh"), 0o755, 0},
+		{"/usr/local/bin/polyseat-pad-pointer", asset("assets/pad-pointer.py"), 0o755, 0},
 	}
 
 	for _, f := range files {
