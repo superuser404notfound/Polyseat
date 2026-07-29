@@ -355,6 +355,29 @@ hour ago. Entries added by hand through Sunshine's own interface are kept; the
 stock `Low Res Desktop`, which runs `xrandr` against an HDMI output no headless
 container has, is dropped.
 
+**The games are in the list too**, not only the launchers. Picking a launcher
+in Moonlight means waiting for it to start and then steering through its
+interface with a thumbstick; picking the game means picking the game. Steam's
+own manifests say what is installed and Lutris will print a list, so both are
+read, with their artwork where they have it. Steam's tools are kept out by
+name, and only by name: the manifest has no field that says tool, `LastOwner`
+would have been one except that the library pool zeroes it when it clones a
+title, and `DownloadType` does not separate them. So the list is narrow and
+biased towards showing, because a tool in a menu is a wasted line and a hidden
+game is somebody unable to play with no way to find out why.
+
+That scan is on its own minute long timer rather than the ten second sweep,
+because asking Lutris means starting Lutris, and nobody needs to learn within
+ten seconds that a game was uninstalled.
+
+**Every entry Polyseat generates is marked as its own**, which took two goes to
+get right. Keeping entries it did not recognise looked like politeness towards
+somebody who had added an app through Sunshine's interface, and it made removal
+impossible: an uninstalled game stops being generated, so it stops being
+recognised, so it was preserved as somebody's handiwork and stayed in the list
+forever. A file written before the marker existed is converged once by keeping
+nothing, since nothing in it says who wrote what.
+
 **The desktop is for everything else.** sway with an application launcher, a
 bar, a file manager and stock sway keybindings, and a first terminal that prints
 the keys and the install commands instead of a prompt on its own. Somebody who

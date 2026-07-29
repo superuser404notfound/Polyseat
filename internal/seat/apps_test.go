@@ -61,8 +61,9 @@ func names(t *testing.T, list appList) []string {
 
 func ours() []app {
 	return []app{
-		{Name: "Desktop", ImagePath: "desktop.png"},
-		{Name: "Steam Big Picture", Detached: []string{"setsid steam steam://open/bigpicture"}},
+		{Name: "Desktop", ImagePath: "desktop.png", Polyseat: true},
+		{Name: "Steam Big Picture", Polyseat: true,
+			Detached: []string{"setsid steam steam://open/bigpicture"}},
 	}
 }
 
@@ -93,9 +94,16 @@ func TestMergeConvergesSunshinesOwnList(t *testing.T) {
 // Polyseat does not model most of what Sunshine understands, so anything it
 // round trips through its own struct it would silently drop.
 func TestMergeKeepsAnAppAddedByHand(t *testing.T) {
+	// A file Polyseat has written at least once, which is what makes the
+	// unmarked entry below recognisable as somebody else's.
 	existing := `{
   "env": {},
   "apps": [
+    {
+      "name": "Desktop",
+      "image-path": "desktop.png",
+      "polyseat": true
+    },
     {
       "name": "Minecraft",
       "cmd": "/usr/bin/minecraft",
@@ -234,6 +242,108 @@ func TestValidateAppID(t *testing.T) {
 	for id, why := range invalid {
 		if err := ValidateAppID(id); err == nil {
 			t.Errorf("ValidateAppID(%q) = nil, want an error: %s", id, why)
+		}
+	}
+}
+
+// The bug that made the marker necessary, and the one somebody actually
+// reported. A game is uninstalled inside the seat, so the generator stops
+// producing its entry. Without a way to tell that entry from a hand made one it
+// was preserved, and Moonlight went on offering something that started nothing.
+func TestMergeDropsWhatPolyseatNoLongerGenerates(t *testing.T) {
+	existing := `{
+  "env": {},
+  "apps": [
+    {"name": "Desktop", "polyseat": true},
+    {"name": "DREDGE", "detached": ["setsid steam steam://rungameid/1562430"], "polyseat": true},
+    {"name": "Minecraft", "cmd": "/usr/bin/minecraft"}
+  ]
+}`
+
+	list, kept, err := mergeApps(ours(), []byte(existing))
+	if err != nil {
+		t.Fatalf("mergeApps: %v", err)
+	}
+
+	for _, name := range names(t, list) {
+		if name == "DREDGE" {
+			t.Error("an uninstalled game stayed in the app list")
+		}
+	}
+
+	if kept != 1 {
+		t.Errorf("kept %d entries, want only the hand made one", kept)
+	}
+}
+
+// A file from before the marker existed says nothing about who wrote what, and
+// the entries Polyseat had generated are indistinguishable from somebody's own.
+// Keeping none of them converges it in one write; keeping them would strand
+// every stale entry a seat had accumulated.
+func TestMergeConvergesAFileFromBeforeTheMarker(t *testing.T) {
+	existing := `{
+  "env": {},
+  "apps": [
+    {"name": "Desktop"},
+    {"name": "DREDGE", "detached": ["setsid steam steam://rungameid/1562430"]},
+    {"name": "Minecraft", "cmd": "/usr/bin/minecraft"}
+  ]
+}`
+
+	list, kept, err := mergeApps(ours(), []byte(existing))
+	if err != nil {
+		t.Fatalf("mergeApps: %v", err)
+	}
+
+	got := names(t, list)
+	if strings.Join(got, "|") != "Desktop|Steam Big Picture" {
+		t.Errorf("merged list is %v, want only what is generated now", got)
+	}
+
+	if kept != 0 {
+		t.Errorf("kept %d entries out of a file that predates the marker", kept)
+	}
+}
+
+// Everything written carries the marker, or the next merge cannot tell its own
+// work from anybody else's and the whole problem comes back.
+//
+// Against the real generator rather than the fixture above, because the marker
+// was on the struct and missing from every entry it built: the file went out
+// with "polyseat": false throughout and nothing noticed.
+func TestEveryGeneratedEntryIsMarked(t *testing.T) {
+	built, names := polyseatApps(
+		[]installed{{Name: "Heroic", command: "flatpak run com.heroicgameslauncher.hgl"}},
+		[]Game{{Name: "DREDGE", Launch: "steam steam://rungameid/1562430"}},
+	)
+
+	if len(built) != len(names) {
+		t.Fatalf("built %d entries but reported %d names", len(built), len(names))
+	}
+
+	for _, a := range built {
+		if !a.Polyseat {
+			t.Errorf("%q was built without the marker", a.Name)
+		}
+	}
+
+	list, _, err := mergeApps(built, nil)
+	if err != nil {
+		t.Fatalf("mergeApps: %v", err)
+	}
+
+	for _, raw := range list.Apps {
+		var h struct {
+			Name     string `json:"name"`
+			Polyseat bool   `json:"polyseat"`
+		}
+
+		if err := json.Unmarshal(raw, &h); err != nil {
+			t.Fatalf("an entry is not an object: %v", err)
+		}
+
+		if !h.Polyseat {
+			t.Errorf("%q was written without the marker", h.Name)
 		}
 	}
 }

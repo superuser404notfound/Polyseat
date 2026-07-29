@@ -59,6 +59,19 @@ type app struct {
 	Detached  []string `json:"detached,omitempty"`
 	PrepCmd   []prep   `json:"prep-cmd,omitempty"`
 	ImagePath string   `json:"image-path,omitempty"`
+
+	// Polyseat marks the entries this file's generator owns.
+	//
+	// Without it there is no way to tell an entry Polyseat wrote last time from
+	// one somebody added by hand, and the two need opposite treatment: ours
+	// must disappear when whatever produced it is gone, theirs must survive.
+	// Keeping unknown entries and generating from what is installed are
+	// otherwise in direct conflict, which is how an uninstalled game stayed in
+	// Moonlight's list forever. It stopped being generated, so it stopped being
+	// recognised, so it was preserved as somebody's handiwork.
+	//
+	// Sunshine ignores keys it does not know.
+	Polyseat bool `json:"polyseat"`
 }
 
 type prep struct {
@@ -101,40 +114,7 @@ func (p *Provisioner) WriteApps(ctx context.Context) ([]string, bool, error) {
 		return nil, false, err
 	}
 
-	// Picking Desktop should land on something to choose from. Anything else
-	// should not have a launcher sitting on top of it.
-	const (
-		showLauncher = "/usr/local/bin/polyseat-launcher show"
-		hideLauncher = "/usr/local/bin/polyseat-launcher hide"
-	)
-
-	ours := []app{
-		{
-			Name:      "Desktop",
-			PrepCmd:   []prep{{Do: showLauncher}},
-			ImagePath: "desktop.png",
-		},
-		{
-			Name:     "Steam Big Picture",
-			Detached: []string{"setsid steam steam://open/bigpicture"},
-			// The undo side closes Big Picture again so the seat does not sit
-			// in it until somebody notices.
-			PrepCmd:   []prep{{Do: hideLauncher, Undo: "setsid steam steam://close/bigpicture"}},
-			ImagePath: "steam.png",
-		},
-	}
-
-	names := []string{"Desktop", "Steam Big Picture"}
-
-	for _, l := range found {
-		ours = append(ours, app{
-			Name:     l.Name,
-			Detached: []string{"setsid " + l.command},
-			PrepCmd:  []prep{{Do: hideLauncher}},
-		})
-
-		names = append(names, l.Name)
-	}
+	ours, names := polyseatApps(found, p.installedGames(ctx))
 
 	// A seat that has never been started has no file yet. Not an error: the
 	// merge simply has nothing to preserve.
@@ -172,13 +152,94 @@ func (p *Provisioner) WriteApps(ctx context.Context) ([]string, bool, error) {
 	return names, err == nil, err
 }
 
-// mergeApps puts Polyseat's entries first and keeps anything else that the
-// existing file already had, reporting how many of those survived.
+// Picking Desktop should land on something to choose from. Anything else
+// should not have a launcher sitting on top of it.
+const (
+	showLauncher = "/usr/local/bin/polyseat-launcher show"
+	hideLauncher = "/usr/local/bin/polyseat-launcher hide"
+)
+
+// polyseatApps builds every entry Polyseat owns, and the names in order.
 //
-// Takes the old file as bytes rather than reading it, so that what happens to
-// somebody's hand made app entry can be tested without a container to put one
-// in. That is the part worth being sure about: the failure mode is silent and
-// only shows up as work quietly gone after a restart.
+// A function of its arguments rather than part of the writer, because the one
+// thing that has to hold for all of them is that they carry the marker, and
+// that is only checkable if they can be built without a container. Setting it
+// on the struct definition and forgetting it here is exactly what happened
+// once: every entry went out with "polyseat": false, so the file looked to the
+// next merge like one nobody had generated.
+func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
+	ours := []app{
+		{
+			Name:      "Desktop",
+			PrepCmd:   []prep{{Do: showLauncher}},
+			ImagePath: "desktop.png",
+			Polyseat:  true,
+		},
+		{
+			Name:     "Steam Big Picture",
+			Detached: []string{"setsid steam steam://open/bigpicture"},
+			// The undo side closes Big Picture again so the seat does not sit
+			// in it until somebody notices.
+			PrepCmd:   []prep{{Do: hideLauncher, Undo: "setsid steam steam://close/bigpicture"}},
+			ImagePath: "steam.png",
+			Polyseat:  true,
+		},
+	}
+
+	names := []string{"Desktop", "Steam Big Picture"}
+	taken := map[string]bool{"desktop": true, "steam big picture": true}
+
+	add := func(name, launch, image string) {
+		// A game called Desktop, or one whose name matches a launcher, would
+		// otherwise put two entries with the same name in Moonlight and make
+		// which of them runs a matter of luck.
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" || taken[key] {
+			return
+		}
+
+		taken[key] = true
+
+		ours = append(ours, app{
+			Name:      name,
+			Detached:  []string{"setsid " + launch},
+			PrepCmd:   []prep{{Do: hideLauncher}},
+			ImagePath: image,
+			Polyseat:  true,
+		})
+
+		names = append(names, name)
+	}
+
+	for _, l := range launchers {
+		add(l.Name, l.command, l.image)
+	}
+
+	// The games themselves, so that a client with a controller can start one
+	// without first starting a launcher and steering through it.
+	for _, g := range games {
+		add(g.Name, g.Launch, g.Image)
+	}
+
+	return ours, names
+}
+
+// mergeApps puts Polyseat's entries first and keeps anything else that the
+// existing file had and that Polyseat did not write, reporting how many of
+// those survived.
+//
+// The second half of that sentence is what took two attempts. Keeping every
+// entry it did not recognise looked like politeness towards somebody who had
+// added an app through Sunshine's own interface, and it quietly made removal
+// impossible: an uninstalled game stops being generated, so it stops being
+// recognised, so it was preserved as somebody's handiwork and stayed in
+// Moonlight's list forever. Ours are marked now, so the two cases can be told
+// apart instead of guessed at.
+//
+// Takes the old file as bytes rather than reading it, so that both halves can
+// be tested without a container to put an app entry in. Both failure modes are
+// silent: one is work gone after a restart, the other is a menu entry that
+// starts nothing.
 func mergeApps(ours []app, existing []byte) (appList, int, error) {
 	list := appList{
 		// Flatpak puts the wrappers for exported applications in
@@ -214,18 +275,43 @@ func mergeApps(ours []app, existing []byte) (appList, int, error) {
 		return list, 0, nil
 	}
 
-	kept := 0
+	type head struct {
+		Name     string `json:"name"`
+		Polyseat bool   `json:"polyseat"`
+	}
+
+	heads := make([]head, 0, len(old.Apps))
+	marked := false
 
 	for _, raw := range old.Apps {
-		var head struct {
-			Name string `json:"name"`
+		var h head
+		if err := json.Unmarshal(raw, &h); err != nil {
+			h = head{}
 		}
 
-		if err := json.Unmarshal(raw, &head); err != nil {
-			continue
-		}
+		heads = append(heads, h)
 
-		if head.Name == "" || replaced[head.Name] {
+		if h.Polyseat {
+			marked = true
+		}
+	}
+
+	// A file written before the marker existed cannot be read entry by entry:
+	// nothing in it says who put what there, and the entries Polyseat had
+	// generated look exactly like somebody's own. Converging it once, by
+	// keeping nothing, is the only reading that does not leave stale entries
+	// behind forever. It happens at most once per seat, because everything
+	// written from here on is marked.
+	if !marked && len(old.Apps) > 0 {
+		return list, 0, nil
+	}
+
+	kept := 0
+
+	for i, raw := range old.Apps {
+		h := heads[i]
+
+		if h.Name == "" || h.Polyseat || replaced[h.Name] {
 			continue
 		}
 
@@ -236,11 +322,78 @@ func mergeApps(ours []app, existing []byte) (appList, int, error) {
 	return list, kept, nil
 }
 
-// installed is a launcher that is really there, with the command that starts it.
+// installed is a launcher that is really there, with the command that starts it
+// and the icon to show for it.
 type installed struct {
 	Name    string
 	command string
+	image   string
 }
+
+// iconScan finds the icon a desktop entry names, as a file Sunshine can read.
+//
+// Games arrive with artwork of their own, from Steam's cache or Lutris's, and
+// a launcher had nothing, so Moonlight drew it as an unlabelled grey box next
+// to titles that had covers. What a launcher does have is a desktop entry, and
+// that names an icon rather than pointing at one, so the name has to be
+// resolved against the icon themes: hicolor for anything installed, plus the
+// flatpak export directory for anything the player installed themselves.
+//
+// Largest first, because this is scaled up into box art on a television rather
+// than drawn at sixteen pixels in a menu. PNG only: Sunshine hands the file to
+// a client that will not render SVG.
+const iconScan = `
+import glob, json, os, re, sys
+
+home = "/home/player"
+roots = [
+    home + "/.local/share/flatpak/exports/share",
+    "/var/lib/flatpak/exports/share",
+    home + "/.local/share",
+    "/usr/local/share",
+    "/usr/share",
+]
+sizes = ["512x512", "384x384", "256x256", "192x192", "128x128", "96x96", "64x64"]
+
+def icon_file(name):
+    if not name:
+        return ""
+    if os.path.isabs(name) and os.path.exists(name):
+        return name
+    for root in roots:
+        for size in sizes:
+            p = os.path.join(root, "icons/hicolor", size, "apps", name + ".png")
+            if os.path.exists(p):
+                return p
+        p = os.path.join(root, "pixmaps", name + ".png")
+        if os.path.exists(p):
+            return p
+    return ""
+
+def icon_of(*candidates):
+    """The Icon= of the first desktop entry that names one, then that file."""
+    for want in candidates:
+        for root in roots:
+            for path in glob.glob(os.path.join(root, "applications", want + ".desktop")):
+                try:
+                    text = open(path, encoding="utf-8", errors="replace").read()
+                except OSError:
+                    continue
+                m = re.search(r"^Icon=(.+)$", text, re.MULTILINE)
+                if m:
+                    found = icon_file(m.group(1).strip())
+                    if found:
+                        return found
+    return ""
+
+out = {}
+for want in json.loads(sys.argv[1]):
+    # A flatpak's entry is named after its application id; a package's is
+    # usually named after its binary, sometimes after a reverse DNS name.
+    out[want["key"]] = icon_of(*want["names"])
+
+print(json.dumps(out))
+`
 
 // installedLaunchers asks the seat what it has.
 //
@@ -288,6 +441,16 @@ exit 0`
 
 	var found []installed
 
+	// Which desktop entries could name this launcher's icon. Both spellings
+	// per launcher, because a package and a flatpak of the same program do not
+	// agree: net.lutris.Lutris against lutris.
+	type wanted struct {
+		Key   string   `json:"key"`
+		Names []string `json:"names"`
+	}
+
+	var want []wanted
+
 	for _, l := range launchers {
 		switch {
 		// A native package wins over a flatpak of the same thing. Both work,
@@ -301,10 +464,54 @@ exit 0`
 				Name:    l.Name,
 				command: fmt.Sprintf("flatpak run %s", l.Flatpak),
 			})
+		default:
+			continue
+		}
+
+		names := []string{}
+		if l.Flatpak != "" {
+			names = append(names, l.Flatpak)
+		}
+
+		if l.Binary != "" {
+			names = append(names, l.Binary)
+		}
+
+		want = append(want, wanted{Key: l.Name, Names: names})
+	}
+
+	if icons := p.launcherIcons(ctx, want); icons != nil {
+		for i := range found {
+			found[i].image = icons[found[i].Name]
 		}
 	}
 
 	sort.Slice(found, func(i, j int) bool { return found[i].Name < found[j].Name })
 
 	return found, nil
+}
+
+// launcherIcons resolves an icon file for each launcher, keyed by its name.
+//
+// Best effort throughout. A launcher with no icon is a launcher Moonlight
+// draws plainly, which is how it was before and is not worth failing a seat's
+// start over.
+func (p *Provisioner) launcherIcons(ctx context.Context, want any) map[string]string {
+	query, err := json.Marshal(want)
+	if err != nil {
+		return nil
+	}
+
+	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
+		"HOME=/home/"+Player, "python3", "-c", iconScan, string(query))
+	if err != nil || code != 0 {
+		return nil
+	}
+
+	icons := map[string]string{}
+	if json.Unmarshal([]byte(strings.TrimSpace(out)), &icons) != nil {
+		return nil
+	}
+
+	return icons
 }

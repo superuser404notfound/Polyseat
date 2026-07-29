@@ -85,6 +85,14 @@ type runtime struct {
 	encoder        string
 	devices        []string
 	checked        time.Time
+
+	// appsChecked is when the Moonlight app list was last rebuilt from what the
+	// seat has installed. Its own clock because that scan is the expensive one:
+	// it reads Steam's manifests and asks Lutris, which is a GTK application
+	// even when all it does is print a list. On the sweep's own ten seconds
+	// that would be a steady load on a machine meant to be playing games, and
+	// nobody needs to learn within ten seconds that a game was uninstalled.
+	appsChecked time.Time
 }
 
 // NewManager prepares the manager. Nothing is started yet; see Run.
@@ -439,10 +447,19 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		// seat, with nothing to tell the daemon. It stayed in Moonlight's list
 		// afterwards and starting it did nothing.
 		//
-		// Cheap enough for the sweep because it only writes when the result
-		// differs, and Sunshine rereads the file on every request, so a change
-		// takes effect without restarting anything or interrupting a stream.
-		m.refreshApps(ctx, name)
+		// Only writes when the result differs, and Sunshine rereads the file on
+		// every request, so a change takes effect without restarting anything
+		// or interrupting a stream.
+		m.mu.Lock()
+		due := time.Since(rt.appsChecked) >= appsInterval
+		if due {
+			rt.appsChecked = time.Now()
+		}
+		m.mu.Unlock()
+
+		if due {
+			m.refreshApps(ctx, name)
+		}
 	}
 
 	m.mu.Lock()
