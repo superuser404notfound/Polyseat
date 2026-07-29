@@ -466,12 +466,31 @@ to work on sway unchanged. `polyseat-pad-pointer` turns the gamepad into a
 pointer to press it with, reachable from Super+K, the bar, and a gamepad button,
 because whoever needs it has the fewest ways to ask.
 
-**Pointer mode is off until asked for, and that is the whole safety story.** A
-helper that turned a thumbstick into a mouse whenever a controller appeared
-would make every game unplayable, so Select and Start together toggle it, a
-chord because single buttons are taken. The gamepad is never grabbed, so games
-see it exactly as before. Left stick points and right stick scrolls, which is
-the way round the Windows tools do it and worth matching.
+**Pointer mode follows what is in front, and that is the whole safety story.** A
+helper that turned a thumbstick into a mouse while a game was running would make
+every game unplayable, so the compositor is asked instead of guessed at: a
+fullscreen application in front means the controller belongs to it and the mode
+goes off, and back on the desktop it goes on. That is what the Windows tools do
+from the foreground window, and sway can answer it exactly rather than by
+heuristic. Select and Start together still override it by hand, a chord because
+single buttons are taken, and the override holds until something goes fullscreen
+or stops being: that covers a windowed game, and it means a forgotten override
+cannot leave somebody holding a stick that does nothing. The gamepad is never
+grabbed, so games see it exactly as before. Left stick points and right stick
+scrolls, which is the way round the Windows tools do it and worth matching.
+
+Two connections to sway, because a subscribed one only delivers events and
+cannot be asked a question in between, and the tree is asked rather than the
+event read, because an event says what changed and not what is in front
+afterwards: closing a fullscreen window and revealing another one is a single
+event about the window that went away.
+
+One quirk cost a bug. Sway reports `fullscreen_mode` 1 on workspaces themselves,
+inherited from i3, and focuses the workspace when no window holds focus, which
+is the ordinary state of a seat sitting on its launcher. Measured in seat1: the
+only focused node in the whole tree was the workspace. Reading that as an answer
+turned the pointer off on an empty desktop, which is exactly when it is wanted,
+so only `con` and `floating_con` count.
 
 **A gamepad comes and goes and the session does not.** It appears when somebody
 starts streaming and the broker attaches it, and it is gone again when they
