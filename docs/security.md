@@ -92,6 +92,35 @@ The second line matters as much as the first. This machine runs Steam on the
 host as well, and Steam makes virtual gamepads the desktop is supposed to see,
 so "hide every virtual device" would have been the wrong rule.
 
+**A gamepad is two devices and only one of them was being hidden.** Made
+through uhid, it appears both under `/dev/input` and as `/dev/hidrawN`, and
+hidraw is the one Steam reads a DualSense through. The rule here only ever
+matched `SUBSYSTEM=="input"`, and Sunshine ships udev rules of its own that
+hand both halves to the desktop user, which is correct for a Sunshine running
+on this machine and wrong for one running in a seat. So a seat's controller
+was reaching the host's Steam the whole time:
+
+```
+before   /dev/hidraw14  Sunshine PS5 (virtual) pad (seat1)  root:root 660  user:rooky:rw-
+after    /dev/hidraw14  Sunshine PS5 (virtual) pad (seat1)  root:root 600  no entry
+```
+
+Both halves are covered now, by name in the rule and structurally in the
+broker, which finds the hidraw node through sysfs from the event device it has
+already attributed.
+
+The permissions are not the whole test either, and reading them as though they
+were is how this was missed once already. logind grants the desktop user an
+access control entry through the uaccess tag, and that entry survives a mode
+change: a node can read `root:root 0600` and still be open to somebody. The
+broker checks for it and the rule strips the tag.
+
+**Where the rule sits in the sequence is load bearing.** It used to be
+`70-polyseat-hide.rules`, and `70-uaccess.rules` sorts after that, so the tag
+was stripped and then put straight back. It is `72-` now: after everything that
+grants, before `73-seat-late.rules`, which is what turns the tag into an actual
+entry on the node.
+
 The structural check cannot run in udev, which is where it would ideally
 happen. systemd-udevd runs its workers behind a syscall filter that blocks
 `pidfd_open` and `pidfd_getfd`, and reading a foreign descriptor needs both:

@@ -5,7 +5,7 @@ eventually generate and maintain these; for now they are applied by hand.
 
 | | |
 |---|---|
-| `70-polyseat-hide.rules` | udev rule that keeps the seats' virtual devices off the host desktop |
+| `72-polyseat-hide.rules` | udev rule that keeps the seats' virtual devices off the host desktop, input and raw HID alike |
 | `check-hardening.sh` | reports host-side exposures that no seat-side measure can close |
 
 ## Why the udev rule is not optional

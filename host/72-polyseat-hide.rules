@@ -44,6 +44,20 @@
 SUBSYSTEM=="input", ATTRS{name}=="polyseat:*",    GOTO="polyseat_hide"
 SUBSYSTEM=="input", ATTRS{name}=="*passthrough*", GOTO="polyseat_hide"
 SUBSYSTEM=="input", ATTRS{name}=="Sunshine*",     GOTO="polyseat_hide"
+
+# The same devices seen as raw HID, which is a different subsystem and was
+# missed entirely.
+#
+# A gamepad made through uhid appears twice: once under /dev/input and once as
+# /dev/hidrawN. Sunshine ships udev rules of its own that hand both to the
+# desktop user, which is right for a Sunshine running on this machine and wrong
+# for one running in a seat, and this file only ever looked at the input half.
+# So the event node was pinned to root while its hidraw sibling kept an access
+# control entry for the desktop user, and a seat's controller reached the host's
+# Steam, which is exactly how Steam reads a DualSense.
+SUBSYSTEM=="hidraw", ATTRS{name}=="polyseat:*",    GOTO="polyseat_hide"
+SUBSYSTEM=="hidraw", ATTRS{name}=="*passthrough*", GOTO="polyseat_hide"
+SUBSYSTEM=="hidraw", ATTRS{name}=="Sunshine*",     GOTO="polyseat_hide"
 GOTO="polyseat_end"
 
 LABEL="polyseat_hide"

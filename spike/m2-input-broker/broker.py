@@ -407,6 +407,63 @@ class IncusBackend(ContainerBackend):
 FAKEUDEV = "/root/fakeudev.py"
 
 
+def hidraw_of(node):
+    """The hidraw node of the same device, when it has one.
+
+    A gamepad made through uhid appears twice: as an event device under
+    /dev/input, and as a raw HID node under /dev. They are two views of one
+    device and they sit under the same directory in sysfs, which is what this
+    walks up to find.
+    """
+    path = os.path.realpath(f"{SYS_INPUT}/{node}")
+
+    while path and path != "/sys":
+        listing = os.path.join(path, "hidraw")
+
+        if os.path.isdir(listing):
+            for entry in sorted(os.listdir(listing)):
+                if entry.startswith("hidraw"):
+                    return entry
+
+        path = os.path.dirname(path)
+
+    return None
+
+
+def seal_path(path):
+    """Take one device node away from the host desktop."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+
+    acl = False
+    if os.path.exists("/usr/bin/getfacl"):
+        try:
+            out = subprocess.run(["getfacl", "-p", path], check=False,
+                                 capture_output=True, text=True).stdout
+            acl = any(line.startswith("user:") and not line.startswith("user::")
+                      for line in out.splitlines())
+        except OSError:
+            acl = False
+
+    if (st.st_uid == 0 and st.st_gid == 0
+            and statmod.S_IMODE(st.st_mode) == 0o600 and not acl):
+        return False
+
+    try:
+        os.chown(path, 0, 0)
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        print(f"  ! {path} could not be taken off the host: {exc}")
+        return False
+
+    subprocess.run(["setfacl", "-b", path], check=False,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    return True
+
+
 def seal(node):
     """Take a device that belongs to a seat away from the host desktop.
 
@@ -419,41 +476,27 @@ def seal(node):
 
     So the structural answer is enforced here instead, by the component that
     already has it. A name list is an allowlist of the tools somebody thought
-    of, and it failed the first time a seat ran something new: antimicrox
-    called its devices "antimicrox Mouse Emulation", matched nothing, and a
-    controller in a seat drove the host's cursor. Anything this broker has
-    attributed to its seat gets taken off the host, whatever it calls itself.
+    of, and it failed the first time a seat ran something new.
 
-    The cost is a window of up to one poll interval between a device appearing
-    and being sealed. The name patterns in the udev rule stay for that reason:
-    they close it to zero for everything already known, and this closes the
-    case of everything that is not.
+    **Both nodes, not only the event one.** A gamepad made through uhid also
+    appears as a raw HID node, and that is the one Steam reads a DualSense
+    through. The event device was being pinned to root while its hidraw sibling
+    kept an access control entry for the desktop user, put there by Sunshine's
+    own udev rules, which are written for a Sunshine running on the machine
+    rather than in a container. So the seat's controller was reaching the host's
+    Steam the whole time, through a door nobody had looked at.
 
-    chmod alone would leave a POSIX ACL behind. logind grants the active
-    desktop user one through the uaccess tag, and that survives a mode change,
-    which is the whole reason the tag exists in the rule as well.
+    The permissions alone are not the test either. logind grants the desktop
+    user an entry through the uaccess tag, and that survives a mode change, so
+    a node can read root:root 0600 and still be open to somebody.
     """
-    path = f"/dev/input/{node}"
+    changed = seal_path(f"/dev/input/{node}")
 
-    try:
-        st = os.stat(path)
-    except OSError:
-        return False
+    raw = hidraw_of(node)
+    if raw:
+        changed = seal_path(f"/dev/{raw}") or changed
 
-    if st.st_uid == 0 and st.st_gid == 0 and statmod.S_IMODE(st.st_mode) == 0o600:
-        return False
-
-    try:
-        os.chown(path, 0, 0)
-        os.chmod(path, 0o600)
-    except OSError as exc:
-        print(f"  ! {node:<10} could not be taken off the host: {exc}")
-        return False
-
-    subprocess.run(["setfacl", "-b", path], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    return True
+    return changed
 
 
 def attach(backend, seat, dev):

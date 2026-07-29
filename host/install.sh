@@ -42,7 +42,8 @@ if [[ "${1:-}" == "--uninstall" ]]; then
            "$UNITDIR/polyseat-broker@.service"
     rm -fv "$BINDIR/polyseatd"
     rm -rfv "$LIBDIR"
-    rm -fv "$RULEDIR/70-polyseat-hide.rules"
+    rm -fv "$RULEDIR/70-polyseat-hide.rules" \
+           "$RULEDIR/72-polyseat-hide.rules"
     systemctl daemon-reload
     udevadm control --reload
     ok "gone. Seats, their containers and /var/lib/polyseat are untouched."
@@ -79,7 +80,13 @@ for f in broker.py device_owner.py uhid_observer.py fakeudev.py; do
 done
 
 step "udev rule"
-install -m 0644 "$HERE/70-polyseat-hide.rules" "$RULEDIR/70-polyseat-hide.rules"
+# The number matters. Sunshine's own rules hand its virtual devices to the
+# desktop user, which is right for a Sunshine on this machine and wrong for one
+# in a seat, and undoing that has to happen after they have run. 70-uaccess
+# sorts after 70-polyseat did, so this used to lose the race and the tag went
+# straight back on.
+rm -f "$RULEDIR/70-polyseat-hide.rules"
+install -m 0644 "$HERE/72-polyseat-hide.rules" "$RULEDIR/72-polyseat-hide.rules"
 udevadm control --reload
 ok "installed and reloaded"
 
