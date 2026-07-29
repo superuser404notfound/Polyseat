@@ -164,7 +164,7 @@ def scan(pattern=None):
             "syspath": os.path.realpath(sysdev).removeprefix("/sys"),
             "sysname": device_owner.sysname_of_node(entry),
             "props": classify(os.path.realpath(f"{sysdev}/device")),
-            "raw": hidraw_of(entry),
+            **hidraw_info(entry),
         }
     return found
 
@@ -447,6 +447,36 @@ def hidraw_of(node):
     return None
 
 
+def hidraw_info(node):
+    """Everything needed to hand the raw HID node to a container.
+
+    Not only the name. Making the node appear inside the seat is half the job:
+    libudev enumerates from /run/udev/data, so without an entry there and an
+    event to announce it, the device is present and invisible. Steam looks for
+    a DualSense through hidraw, found nothing it could enumerate, and fell back
+    to reading the pad as a nameless collection of axes, which is why cross
+    produced circle.
+    """
+    raw = hidraw_of(node)
+    if not raw:
+        return {"raw": None}
+
+    real = os.path.realpath(f"/sys/class/hidraw/{raw}")
+    dev = read(f"{real}/dev")
+
+    if not dev or ":" not in dev:
+        return {"raw": None}
+
+    major, minor = dev.split(":")
+
+    return {
+        "raw": raw,
+        "raw_major": int(major),
+        "raw_minor": int(minor),
+        "raw_syspath": real.removeprefix("/sys"),
+    }
+
+
 def seal_path(path):
     """Take one device node away from the host desktop."""
     try:
@@ -548,6 +578,22 @@ def attach(backend, seat, dev):
     for p in dev["props"]:
         argv += ["--prop", p]
     backend.run(seat, argv)
+
+    # 4) The same two things for the raw HID node, when there is one. Without
+    #    them the node exists inside the seat and nothing can find it, because
+    #    libudev enumerates from the database rather than from /dev.
+    if dev.get("raw") and dev.get("raw_major") is not None:
+        raw_entry = "I:1\nG:seat\nQ:seat\nV:1\n"
+        backend.run(seat, ["sh", "-c",
+                           "mkdir -p /run/udev/data && cat > "
+                           f"/run/udev/data/c{dev['raw_major']}:{dev['raw_minor']}"],
+                    stdin=raw_entry)
+
+        backend.run(seat, [FAKEUDEV, "add", dev["raw_syspath"],
+                           "--subsystem", "hidraw",
+                           "--devname", dev["raw"],
+                           "--major", str(dev["raw_major"]),
+                           "--minor", str(dev["raw_minor"])])
 
 
 def detach(backend, seat, node, dev):

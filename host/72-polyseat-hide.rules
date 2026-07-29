@@ -41,6 +41,26 @@
 # So the tag goes as well, and ownership is pinned to root. The seats are
 # unaffected: Incus creates its own node inside the container with its own
 # mode, and the broker only reads /sys.
+# Structural, at the moment the device is created, for everything a seat makes
+# through uhid. That is every gamepad, and it is the case names cannot reach:
+# a raw HID node has no name attribute for a pattern to match on, so it stayed
+# open to the desktop until the broker noticed, which is half a second and
+# quite long enough for a program that watches for new devices. The host's
+# Steam was found holding a seat's controller open exactly that way.
+#
+# The observer writes down which container created each uhid device the moment
+# the kernel makes it, keyed by the HID id that is also part of every path
+# underneath. Reading that file is a thing udev's workers are allowed to do,
+# unlike asking a foreign process what it made, which needs pidfd_getfd and is
+# blocked by their syscall filter. So this half of the structural answer can be
+# given here and the uinput half still cannot.
+#
+# A controller the host itself pairs over Bluetooth is also a uhid device, and
+# the observer has no record of it, so it comes back unknown and is left alone.
+SUBSYSTEM=="input|hidraw", DEVPATH=="*/uhid/*", \
+  IMPORT{program}="/usr/local/lib/polyseat/device_owner.py --udev $devpath"
+SUBSYSTEM=="input|hidraw", ENV{POLYSEAT_OWNER}=="container", GOTO="polyseat_hide"
+
 SUBSYSTEM=="input", ATTRS{name}=="polyseat:*",    GOTO="polyseat_hide"
 SUBSYSTEM=="input", ATTRS{name}=="*passthrough*", GOTO="polyseat_hide"
 SUBSYSTEM=="input", ATTRS{name}=="Sunshine*",     GOTO="polyseat_hide"

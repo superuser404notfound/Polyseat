@@ -121,6 +121,31 @@ was stripped and then put straight back. It is `72-` now: after everything that
 grants, before `73-seat-late.rules`, which is what turns the tag into an actual
 entry on the node.
 
+**Covering it by name was not enough either, and the half second cost real
+exposure.** A raw HID node has no `name` attribute, so no pattern can reach one:
+the rule left it alone and the broker sealed it on its next pass. That is half a
+second, and the host's Steam was found holding a seat's controller open, having
+taken it in exactly that window. Permissions are checked when a file is opened
+and never again, so sealing it afterwards does not take it back.
+
+The answer is that the structural check does run in udev after all, for the
+devices that matter most. The uinput half genuinely cannot: reading a foreign
+descriptor needs `pidfd_open` and `pidfd_getfd`, and udevd's workers are behind
+a filter that blocks both. But every gamepad is a uhid device, and the observer
+writes down which container created each one at the moment the kernel makes it,
+keyed by the HID id that is part of every path underneath. Reading that file is
+allowed. So a gamepad and its raw HID node are both sealed at creation, before
+anything can open either:
+
+```
+/sys/.../uhid/0005:054C:0CE6.0056/hidraw/hidraw14   POLYSEAT_OWNER=container
+/sys/.../uhid/0005:054C:0CE6.0056/input/.../event257 POLYSEAT_OWNER=container
+a keyboard plugged into the host                     POLYSEAT_OWNER=unknown
+```
+
+A controller the host pairs over Bluetooth is a uhid device too. The observer
+has no record of it, so it comes back unknown and is left alone.
+
 The structural check cannot run in udev, which is where it would ideally
 happen. systemd-udevd runs its workers behind a syscall filter that blocks
 `pidfd_open` and `pidfd_getfd`, and reading a foreign descriptor needs both:

@@ -36,6 +36,7 @@ privileged.
 """
 
 import ctypes
+import json
 import os
 import re
 import stat
@@ -176,34 +177,80 @@ def sysname_of_node(node):
     return os.path.basename(os.path.dirname(real))
 
 
-def udev(node):
-    """Answer, for one device node, whether a container created it.
+# The record the uhid observer keeps: HID device id to container name.
+UHID_OWNERS = "/run/polyseat/uhid-owners.json"
+
+# A HID device directory is called bus:vendor:product.instance, all hexadecimal,
+# and that string is the key the observer files it under.
+HID_ID_RE = re.compile(r"/([0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4})/")
+
+
+def uhid_owner(devpath):
+    """Which container created this device, according to the uhid observer.
+
+    This is the half of the structural answer that can be given inside udev.
+    Asking a foreign process what it made needs pidfd_open and pidfd_getfd, and
+    systemd-udevd runs its workers behind a syscall filter that blocks both, so
+    the uinput question cannot be answered here at all. Reading a file can be.
+
+    The observer watches the kernel create uhid devices and writes down which
+    process did it, keyed by the HID device id, which is also a component of
+    every path underneath it. So an input node and a raw HID node belonging to
+    the same gamepad both resolve to the same answer.
+    """
+    match = HID_ID_RE.search(devpath if devpath.endswith("/") else devpath + "/")
+    if not match:
+        return None
+
+    try:
+        with open(UHID_OWNERS) as fh:
+            owners = json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+    if not isinstance(owners, dict):
+        return None
+
+    return owners.get(match.group(1))
+
+
+def udev(devpath):
+    """Answer, for one device, whether a container created it.
 
     This exists so that the udev rule which keeps a seat's input devices away
     from the host desktop can ask the same structural question the broker asks,
     instead of matching on the device name.
 
-    The name based version of that rule was a list of three patterns covering
-    what Sunshine creates. It held for exactly as long as Sunshine was the only
-    thing in a seat creating input devices. The first other one, a gamepad to
-    mouse mapper, was called "antimicrox Mouse Emulation", matched nothing, and
-    its devices reached the host desktop with the uaccess tag still on them. A
-    list of names is an allowlist of the tools somebody thought of.
+    The name based version of that rule was a list of patterns covering what
+    Sunshine creates. It held for exactly as long as Sunshine was the only thing
+    in a seat creating input devices, and it never held for a gamepad's raw HID
+    node at all: hidraw devices have no name attribute to match on, so no
+    pattern could reach them. A seat's controller was readable by the host's
+    Steam for as long as it took the broker to notice, which is half a second
+    and quite long enough for a program that watches for new devices.
 
     Three answers, and the difference between the last two matters:
 
-      container   created through uinput by a process inside a container
-      host        created through uinput by a process on the host, which is
-                  legitimate and must not be touched, because the host runs
-                  Steam too and Steam makes virtual gamepads
-      unknown     no uinput descriptor claims it. Either it came through uhid,
-                  where there is nothing to ask, or it is real hardware.
+      container   made by a process inside a container
+      host        made by a process on the host, which is legitimate and must
+                  not be touched: this machine runs Steam too, and Steam makes
+                  virtual gamepads the desktop is supposed to see
+      unknown     nothing here can say. Real hardware, or a uinput device,
+                  which cannot be traced from inside udev.
 
-    Only "container" hides anything. Everything else falls through to the name
-    patterns, so this narrows what those have to carry rather than replacing
-    them: a failure here leaves the old behaviour rather than either exposing a
-    seat's devices or hiding the host's.
+    Only "container" hides anything, so a failure leaves the old behaviour
+    rather than either exposing a seat's devices or hiding the host's.
     """
+    # uhid first, because it is the one that works here and it covers both
+    # halves of a gamepad.
+    owner = uhid_owner(devpath)
+
+    if owner:
+        print("POLYSEAT_OWNER=container")
+        return
+
+    node = os.path.basename(devpath.rstrip("/"))
+
     try:
         sysname = sysname_of_node(node)
     except OSError:
