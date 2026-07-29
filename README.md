@@ -47,6 +47,16 @@ seconds and cost 432 KB.
 where one folder is one game; point Heroic, Lutris or Bottles at it and the game
 appears in the other seats by itself.
 
+**A seat is something you can actually sit down in front of.** Connecting no
+longer drops you at a bare terminal: there is a desktop with an application
+launcher, a bar and a file manager, and Moonlight's app list is generated from
+what the seat really has, so Steam Big Picture and any launcher that has been
+installed are one pick away before a stream even starts. Software goes in from
+either end, with no password and no root: the player types
+`flatpak install ...` in the seat, or somebody installs it into that seat from
+the Polyseat web interface. Each client also gets the resolution it asked for,
+because the seat's output is virtual and simply becomes that size.
+
 It does not share licences: a seat can only play what its own account owns. It
 needs a filesystem that can share blocks, which means btrfs or XFS created with
 `reflink=1`, and the daemon says so plainly rather than quietly making full
@@ -126,7 +136,7 @@ journalctl -fu polyseatd
 | **M4** | Two seats in parallel, input strictly separated | ✅ |
 | **M5** | Daemon + GUI: create, start, pair and monitor seats | ✅ |
 | **M6** | Shared game library: install once, play in every seat | ✅ |
-| **M7** | Polish: per-client resolution, library scanner, finishing touches | |
+| **M7** | A usable seat: desktop, app list, software, per-client resolution | ✅ |
 
 ## License
 

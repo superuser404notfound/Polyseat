@@ -1,8 +1,8 @@
 # Security
 
 What this setup actually guarantees, what it deliberately does not, and why.
-Everything here was measured on the running two-seat rig on 2026-07-28 rather
-than reasoned about.
+Everything here was measured on the running two-seat rig rather than reasoned
+about, on 2026-07-28 and, for what M7 added, on 2026-07-29.
 
 ## The threat model
 
@@ -203,6 +203,45 @@ Consumer NVIDIA hardware offers no isolation between contexts. A seat can
 enumerate GPU processes host-wide through `nvidia-smi`, and the usual caveats
 about reading another context's GPU memory apply. Nothing here changes that; it
 is inherent to putting several tenants on one consumer card.
+
+### bwrap is setuid inside a seat
+
+Seats carry `bubblewrap-suid` rather than the plain package, which means one
+setuid root binary in each container. It is there so that flatpak works, and the
+alternative was worse.
+
+The measurement, because the shape of the problem is not obvious. An
+unprivileged container refuses to mount a fresh `/proc` inside a nested
+namespace. bwrap only needs that when it also unshares the pid namespace, and
+that is exactly what separates the two users of it here:
+
+```
+steam pressure-vessel, no --unshare-pid    works
+flatpak, --unshare-pid                     bwrap: Can't mount proc on /newroot/proc
+```
+
+So Proton was never affected and never will be by this; only flatpak was. The
+obvious fix is `security.nesting=true` on the container, which relaxes what the
+whole container may do for the sake of one program. This is the narrower one:
+the container is unprivileged, so its root is host uid 1000000, and a setuid
+binary in it grants that and nothing more. Someone who gained container root
+through bwrap would hold an ordinary unprivileged account on the host, which is
+the same position a compromised game in the seat already holds.
+
+`security.nesting` stays `false`, and is still set explicitly on every seat.
+
+### A seat can install its own software
+
+The player has no sudo, so `flatpak --user` is the route: the installation lives
+under the player's home, the Flathub remote is added per user rather than system
+wide, and nothing is written outside that home. The daemon's own install button
+runs the same command as the same user, so what the daemon installs and what the
+player installs are one list with one set of rules.
+
+What this widens: a seat can fetch and run arbitrary code from Flathub. Under
+the threat model at the top that is not a new power, since a seat already runs
+whatever its Steam account owns. It would matter for a seat given to a stranger,
+where the answer is the same as everywhere else on this page: do not.
 
 ### Steam listens on the network inside a seat
 
