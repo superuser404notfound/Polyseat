@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 )
 
 // CatalogEntry is something the web interface offers to install into a seat.
@@ -272,15 +274,30 @@ func (m *Manager) InstallSoftware(name, id string) error {
 	}
 
 	return m.operate(name, "installing "+id, func(ctx context.Context) error {
-		out, code, err := m.client.Try(ctx, name, m.playerEnv(
-			"flatpak", "install", "--user", "--assumeyes", "--noninteractive",
-			"flathub", id)...)
+		watch := &installWatch{m: m, seat: name}
+
+		// Under a pseudo terminal, because that is the only way flatpak says
+		// how far it has got. Given --noninteractive, or simply no terminal, it
+		// prints two lines naming what it is about to do and then nothing at
+		// all until it is finished, which for a download of several hundred
+		// megabytes is indistinguishable from being stuck. `script` provides
+		// the terminal; the percentages arrive on the way.
+		//
+		// This is the one place a command is built as a shell string rather
+		// than an argv list. What goes into it is an application id that has
+		// already been through ValidateAppID, which allows letters, digits,
+		// hyphens, underscores and dots and nothing else.
+		command := fmt.Sprintf(
+			"flatpak install --user --assumeyes flathub %s", id)
+
+		code, err := m.client.Exec(ctx, name, m.playerEnv(
+			"script", "-qec", command, "/dev/null"), nil, watch, watch)
 		if err != nil {
 			return err
 		}
 
 		if code != 0 {
-			return fmt.Errorf("%s could not be installed: %s", id, lastLines(out, 3))
+			return fmt.Errorf("%s could not be installed: %s", id, watch.tail())
 		}
 
 		m.logf(name, "%s is installed", id)
@@ -361,5 +378,94 @@ func (m *Manager) refreshApps(ctx context.Context, name string) {
 
 	if changed {
 		m.logf(name, "Moonlight will offer: %s", strings.Join(apps, ", "))
+	}
+}
+
+// percent matches the figure flatpak prints while it works.
+var percent = regexp.MustCompile(`(\d{1,3})%`)
+
+// installWatch reads an install as it happens.
+//
+// flatpak redraws one line with a carriage return rather than printing a new
+// one, so this is a stream of overwrites rather than lines, and what is wanted
+// from it is the last number seen. The figure restarts for each thing being
+// installed, a runtime and then the application, which is what a terminal shows
+// too and is why the interface names what is being installed beside the bar.
+type installWatch struct {
+	m    *Manager
+	seat string
+
+	mu   sync.Mutex
+	last []byte // the end of the output, for saying what went wrong
+	edge []byte // carried between writes, in case a figure was split across two
+	seen int
+}
+
+func (w *installWatch) Write(p []byte) (int, error) {
+	w.mu.Lock()
+
+	chunk := append(append([]byte{}, w.edge...), p...)
+
+	// Enough to hold a figure that arrived in two pieces, and no more.
+	if len(chunk) > 8 {
+		w.edge = append([]byte{}, chunk[len(chunk)-8:]...)
+	} else {
+		w.edge = append([]byte{}, chunk...)
+	}
+
+	w.last = append(w.last, p...)
+	if len(w.last) > 4096 {
+		w.last = w.last[len(w.last)-4096:]
+	}
+
+	found := percent.FindAllSubmatch(chunk, -1)
+
+	w.mu.Unlock()
+
+	if len(found) == 0 {
+		return len(p), nil
+	}
+
+	value, err := strconv.Atoi(string(found[len(found)-1][1]))
+	if err != nil || value < 0 || value > 100 {
+		return len(p), nil
+	}
+
+	w.mu.Lock()
+	changed := value != w.seen
+	w.seen = value
+	w.mu.Unlock()
+
+	// Only on a change, or a hundred identical figures a second would wake the
+	// interface a hundred times for nothing.
+	if changed && w.m != nil {
+		w.m.setProgress(w.seat, value)
+	}
+
+	return len(p), nil
+}
+
+// tail is the end of the output, for an error message.
+func (w *installWatch) tail() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// Carriage returns would put the whole progress bar on one line of the log.
+	text := strings.ReplaceAll(string(w.last), "\r", "\n")
+
+	return lastLines(text, 3)
+}
+
+// setProgress records how far an operation has got and tells the interface.
+func (m *Manager) setProgress(name string, value int) {
+	rt := m.runtimeOf(name)
+
+	m.mu.Lock()
+	changed := rt.progress != value
+	rt.progress = value
+	m.mu.Unlock()
+
+	if changed {
+		m.notify()
 	}
 }

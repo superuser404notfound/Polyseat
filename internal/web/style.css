@@ -258,6 +258,23 @@ pre.log {
 
 /* ---------------------------------------------------------------- pairing */
 
+/* How far an install has got. Only drawn while something is running, so it
+   appears and disappears rather than sitting there empty. */
+.progress {
+  height: 4px;
+  margin: 0.6rem 0 0.2rem;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  background: var(--warn);
+  transition: width 0.3s ease;
+}
+
 .pairing { margin-top: 0.7rem; }
 
 .software { margin-top: 0.7rem; }

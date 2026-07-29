@@ -124,6 +124,14 @@ type Status struct {
 	// Busy names the long running operation in progress, empty when idle.
 	Busy string `json:"busy,omitempty"`
 
+	// Progress is how far that operation has got, 0 to 100, or -1 when it has
+	// nothing to report. Provisioning does not: it is a recipe whose steps are
+	// named in the log as they run. Installing software does, because its
+	// length is decided by a download from somebody else's server, and a
+	// spinner with a line of text leaves you unable to tell a slow install
+	// from a stuck one.
+	Progress int `json:"progress"`
+
 	// Notes are things worth telling somebody about this seat that are not
 	// failures: it works, but something about it will bite later.
 	Notes []string `json:"notes,omitempty"`

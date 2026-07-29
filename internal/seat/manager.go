@@ -93,6 +93,13 @@ type runtime struct {
 	// that would be a steady load on a machine meant to be playing games, and
 	// nobody needs to learn within ten seconds that a game was uninstalled.
 	appsChecked time.Time
+
+	// progress is how far a long operation has got, 0 to 100, or -1 when
+	// there is nothing to say. Only installing software reports it: that is
+	// the operation whose length depends on somebody else's server rather than
+	// on a recipe, so a spinner and a line of text leave you guessing whether
+	// anything is happening at all.
+	progress int
 }
 
 // NewManager prepares the manager. Nothing is started yet; see Run.
@@ -237,7 +244,7 @@ func (m *Manager) runtimeOf(name string) *runtime {
 
 	rt, ok := m.rt[name]
 	if !ok {
-		rt = &runtime{state: StateAbsent, log: NewLog(400), uid: 1000}
+		rt = &runtime{state: StateAbsent, log: NewLog(400), uid: 1000, progress: -1}
 		m.rt[name] = rt
 	}
 
@@ -737,6 +744,7 @@ func (m *Manager) operate(name, label string, fn func(ctx context.Context) error
 	rt.busy = label
 	rt.cancel = cancel
 	rt.lastErr = ""
+	rt.progress = -1
 	m.mu.Unlock()
 
 	m.logf(name, "== %s", label)
@@ -748,6 +756,7 @@ func (m *Manager) operate(name, label string, fn func(ctx context.Context) error
 		m.mu.Lock()
 		rt.busy = ""
 		rt.cancel = nil
+		rt.progress = -1
 
 		if err != nil {
 			rt.lastErr = err.Error()
@@ -1366,6 +1375,7 @@ func (m *Manager) Status(name string) (Status, error) {
 		Broker:    broker,
 		Devices:   rt.devices,
 		Busy:      rt.busy,
+		Progress:  rt.progress,
 		Notes:     rt.notes,
 		Error:     rt.lastErr,
 		Stale:     seat.Provisioned != Generation,

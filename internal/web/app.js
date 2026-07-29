@@ -485,8 +485,12 @@ function card(seat) {
   status.textContent = seat.busy || seat.state;
 
   head.append(title, name, spacer, status);
+
+  const bar = progressBar(seat);
+
   node.append(
     head,
+    ...(bar ? [bar] : []),
     facts(seat),
     actions(seat),
     softwarePanel(seat),
@@ -495,6 +499,29 @@ function card(seat) {
   );
 
   return node;
+}
+
+// How far a long operation has got, when it can say.
+//
+// Only installing software reports this. Provisioning is a recipe whose steps
+// are named in the log as they run, so a bar would add nothing; an install is
+// a download from somebody else's server, where a spinner and a line of text
+// leave you unable to tell slow from stuck.
+function progressBar(seat) {
+  if (!seat.busy || typeof seat.progress !== "number" || seat.progress < 0) {
+    return null;
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "progress";
+
+  const fill = document.createElement("span");
+  fill.style.width = Math.min(100, Math.max(0, seat.progress)) + "%";
+
+  wrap.append(fill);
+  wrap.title = seat.busy + ": " + seat.progress + "%";
+
+  return wrap;
 }
 
 // What is installed in a seat, and how to change it.
@@ -634,8 +661,18 @@ function drawSoftware(seat, body, status) {
       add.textContent = "Install";
       add.onclick = () =>
         run(async () => {
-          await api("POST", `/api/seats/${seat.name}/software`, { id: entry.id });
-          await loadSoftware(seat, body, true);
+          // An install is hundreds of megabytes, and a button that looks
+          // untouched for a minute reads as a button that did not work.
+          add.disabled = true;
+          add.textContent = "Installing";
+
+          try {
+            await api("POST", `/api/seats/${seat.name}/software`, { id: entry.id });
+            await loadSoftware(seat, body, true);
+          } finally {
+            add.disabled = false;
+            add.textContent = "Install";
+          }
         });
 
       item.append(name, add);
@@ -728,8 +765,18 @@ function drawResults(seat, body, results, found, have) {
       add.textContent = "Install";
       add.onclick = () =>
         run(async () => {
-          await api("POST", `/api/seats/${seat.name}/software`, { id: entry.id });
-          await loadSoftware(seat, body, true);
+          // An install is hundreds of megabytes, and a button that looks
+          // untouched for a minute reads as a button that did not work.
+          add.disabled = true;
+          add.textContent = "Installing";
+
+          try {
+            await api("POST", `/api/seats/${seat.name}/software`, { id: entry.id });
+            await loadSoftware(seat, body, true);
+          } finally {
+            add.disabled = false;
+            add.textContent = "Install";
+          }
         });
 
       item.append(add);
