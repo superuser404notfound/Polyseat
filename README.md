@@ -55,7 +55,9 @@ installed are one pick away before a stream even starts. Software goes in from
 either end, with no password and no root: the player types
 `flatpak install ...` in the seat, or somebody installs it into that seat from
 the Polyseat web interface. Each client also gets the resolution it asked for,
-because the seat's output is virtual and simply becomes that size.
+because the seat's output is virtual and simply becomes that size, and the
+framerate it asked for, capped from outside so that games can stay uncapped
+rather than paying vsync latency for it.
 
 **A controller is enough.** Streaming from an Apple TV or a phone means no
 keyboard and no mouse, and neither Moonlight nor Steam can supply them for a
@@ -142,7 +144,7 @@ journalctl -fu polyseatd
 | **M4** | Two seats in parallel, input strictly separated | ✅ |
 | **M5** | Daemon + GUI: create, start, pair and monitor seats | ✅ |
 | **M6** | Shared game library: install once, play in every seat | ✅ |
-| **M7** | A usable seat: desktop, app list, software, per-client resolution | ✅ |
+| **M7** | A usable seat: desktop, app list, software, resolution and framerate per client | ✅ |
 
 ## License
 

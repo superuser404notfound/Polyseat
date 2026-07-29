@@ -506,6 +506,42 @@ never fails: a prep command that returns non-zero stops the stream from starting
 at all, so a seat at the wrong resolution has to be the worst outcome. Bad input
 is reported and ignored rather than guessed at.
 
+## Framerate per client
+
+The output's refresh rate paces anything that waits for vblank, and that is not
+the same as capping the framerate. A game with vsync off renders as fast as the
+card allows: measured in a seat, 1519 frames per second against a client asking
+for 60. Everything above the client's rate is heat and a longer queue rather
+than a frame anybody sees. Turning vsync on to stop it is the wrong trade,
+because latency is what a stream has least of to spare.
+
+So the games stay uncapped and the limit is applied from outside, which is what
+RTSS does on Windows. The Linux equivalent is MangoHud: a Vulkan layer, plus a
+preloaded shim for OpenGL, both reading one configuration file. `polyseat-fps`
+writes the client's framerate into that file on the way in and takes it out
+again on the way out, so one file caps a native game, a game under Proton, a
+flatpak launcher and an emulator without any of them being configured. Measured
+in a seat: 1519 fps uncapped, 58.3 with a 60 fps client connected, and a game
+that was already respecting vsync loses nothing worth measuring.
+
+Three things carry it into place, because there are three ways an application
+gets started in a seat. Sunshine's app list carries the two variables in its
+`env` block, which Sunshine applies to what it launches and not to itself: the
+same library loaded into Sunshine would be limiting the encoder, and loaded into
+sway it would be limiting the desktop. The launcher passes everything it starts
+through `mangohud` for the same reason. And flatpaks get a user wide override,
+because a sandbox sees neither the seat's environment nor its home directory,
+along with the MangoHud layer extension for whichever runtime version they use.
+
+One thing had to be fixed before any of it worked. squeekboard registers a
+virtual keyboard with the compositor when it starts but only gives it a layout
+the first time it is shown, and until then sway hands out a zero length keymap.
+MangoHud maps that without checking the length and dereferences the failure, so
+every Vulkan application in the seat died with SIGSEGV before drawing a frame,
+and opening the on-screen keyboard during a game killed the game. The session
+therefore shows the keyboard once at startup and puts it away again, before
+anybody has connected and while there is nobody to see it.
+
 ## Capacity
 
 Reference machine: RTX 4080 (16 GB), 24 cores, **31 GB RAM**, btrfs.
