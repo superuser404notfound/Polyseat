@@ -116,11 +116,20 @@ for d in dirs:
         if not appid or not name or state != "4" or appid in out:
             continue
 
+        # Steam keeps a title's cover in two different places depending on
+        # when it was cached, and looking in only one of them is how a game
+        # with perfectly good artwork came out as a card with a name on it.
+        # The older layout puts library_600x900.jpg straight into the app's
+        # directory; the newer one calls it library_capsule.jpg and hides it
+        # one level down, under a directory named after a hash.
         cover = ""
-        for candidate in ("library_600x900.jpg", "library_600x900.png"):
-            p = os.path.join(art, appid, candidate)
-            if os.path.exists(p):
-                cover = p
+        for pattern in ("library_600x900.*", "library_capsule.*",
+                        "*/library_600x900.*", "*/library_capsule.*"):
+            found = sorted(glob.glob(os.path.join(art, appid, pattern)))
+            found = [f for f in found if f.lower().endswith((".jpg", ".jpeg", ".png"))]
+
+            if found:
+                cover = found[0]
                 break
 
         out[appid] = {"appid": appid, "name": name, "cover": cover}

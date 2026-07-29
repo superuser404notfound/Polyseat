@@ -201,3 +201,64 @@ func TestScanReadsBothLibrariesWithoutDuplicating(t *testing.T) {
 		t.Errorf("offered %d entries, want 2 without a duplicate: %v", len(found), found)
 	}
 }
+
+// cover writes a cached cover the way Steam does, in whichever layout.
+func cover(t *testing.T, home, appid, rel string) string {
+	t.Helper()
+
+	path := filepath.Join(home, ".local/share/Steam/appcache/librarycache", appid, rel)
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(path, []byte("not really a jpeg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	return path
+}
+
+// Steam keeps a title's cover in two different places depending on when it was
+// cached, and looking in only one of them is how a game with perfectly good
+// artwork came out as a card with nothing but its name on it.
+func TestScanFindsACoverInEitherLayout(t *testing.T) {
+	for name, rel := range map[string]string{
+		"the older layout": "library_600x900.jpg",
+		"the newer one":    "36a1644b03afce1a648ab90b232196609e827539/library_capsule.jpg",
+	} {
+		home := t.TempDir()
+		signIn(t, home)
+		manifest(t, filepath.Join(home, ".local/share/Steam/steamapps"), "42", "A Game", "4")
+		want := cover(t, home, "42", rel)
+
+		found := runScan(t, home)
+		if len(found) != 1 {
+			t.Fatalf("%s: found %d games, want 1", name, len(found))
+		}
+
+		if found[0]["cover"] != want {
+			t.Errorf("%s: cover is %q, want %q", name, found[0]["cover"], want)
+		}
+	}
+}
+
+// Anything that is not a picture must not be handed on as one. Steam keeps
+// other things beside the artwork, and one of them being taken for a cover
+// would put a broken card where a name would have done.
+func TestScanIgnoresWhatIsNotAPicture(t *testing.T) {
+	home := t.TempDir()
+	signIn(t, home)
+	manifest(t, filepath.Join(home, ".local/share/Steam/steamapps"), "42", "A Game", "4")
+	cover(t, home, "42", "library_capsule.txt")
+	cover(t, home, "42", "library_600x900.json")
+
+	found := runScan(t, home)
+	if len(found) != 1 {
+		t.Fatalf("found %d games, want 1", len(found))
+	}
+
+	if found[0]["cover"] != "" {
+		t.Errorf("cover is %q, want nothing", found[0]["cover"])
+	}
+}
