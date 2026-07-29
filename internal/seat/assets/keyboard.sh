@@ -35,6 +35,33 @@ show() {
 case "$1" in
     show) show true ;;
     hide) show false ;;
+    prime)
+        # Show the keyboard once at session start and put it away again.
+        #
+        # This looks pointless and is not. squeekboard registers a virtual
+        # keyboard with the compositor as soon as it starts, but only gives it a
+        # layout the first time it is actually shown. Until then sway hands
+        # every client that asks for the keymap a zero length one, and MangoHud
+        # maps it without checking the length and dereferences the failure:
+        # every Vulkan application in the seat dies with SIGSEGV before it draws
+        # a frame, and opening the keyboard during a game killed the game.
+        #
+        # Showing it once fixes it for the life of the session, so it is done
+        # here, before anybody has connected and while there is nobody to see
+        # it, rather than being discovered later by somebody whose game just
+        # vanished. The framerate cap depends on MangoHud, so this is not
+        # optional: see polyseat-fps.
+        i=0
+        while [ $i -lt 40 ]; do
+            [ -n "$(visible)" ] && break
+            i=$((i + 1))
+            sleep 0.25
+        done
+
+        show true
+        sleep 1
+        show false
+        ;;
     *)
         # Toggle. An unreadable property means squeekboard is not up yet, and
         # the useful thing to do about that is show the keyboard rather than
