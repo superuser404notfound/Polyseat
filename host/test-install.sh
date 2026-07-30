@@ -293,11 +293,15 @@ step "Running install.sh --purge against a seat that exists"
 #
 # A throwaway container standing in for a seat, from the smallest image going,
 # because what is under test is the stopping and deleting and not what is inside.
+#
+# alpine/edge and not a numbered release: the first version of this asked for
+# alpine/3.20, which had aged off the image server by the time it ran, so the
+# purge went untested and said so. A rolling alias does not expire.
 PURGESEAT=seat-purgetest
 
 vm bash -c "mkdir -p /var/lib/polyseat/seats && printf '{\"name\":\"$PURGESEAT\"}\n' > /var/lib/polyseat/seats/$PURGESEAT.json"
 
-if vm bash -c "incus launch images:alpine/3.20 $PURGESEAT >/dev/null 2>&1"; then
+if vm bash -c "incus launch images:alpine/edge $PURGESEAT >/dev/null 2>&1"; then
     ok "a stand-in container is running as $PURGESEAT"
 
     check "it really is running" \
