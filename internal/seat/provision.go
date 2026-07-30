@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 22
+const Generation = 23
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -401,6 +401,17 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		// that does not either widen what the seat may do or route every
 		// install through the host administrator.
 		"flatpak", "bubblewrap-suid", "xdg-desktop-portal-wlr",
+		// The other way software arrives, and the one some things have: an
+		// emulator is quite often published as an AppImage and as nothing else.
+		//
+		// fuse2 rather than the fuse3 the image already has, measured rather
+		// than read: the AppImage runtime dlopens libfuse.so.2 by name, so with
+		// only fuse3 present every classic AppImage stops at
+		//     dlopen(): error loading libfuse.so.2
+		// which reads like a broken download. /dev/fuse is in the container
+		// already and fusermount3 is setuid, so this one package is the whole
+		// of what was missing.
+		"fuse2",
 		// The graphical way in, so that installing something is not a command
 		// somebody has to be told. gnome-software costs almost nothing here
 		// because a seat already has the toolkit underneath it, and with
@@ -1333,6 +1344,17 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		home + "/.config/systemd/user",
 		home + "/.config/systemd/user/polyseat-sunshine.service.d",
 		home + "/.config/systemd/user/polyseat-sway.service.d",
+		// Where AppImages live. Made here rather than when the first one
+		// arrives, because it is also a place somebody is meant to find with a
+		// file manager: an empty directory called Applications says what to do
+		// with it, and a directory that appears only after the daemon has
+		// already put something in it says nothing to anybody.
+		home + "/Applications",
+		// Where a browser saves, and therefore where the scan looks for an
+		// AppImage to adopt. Firefox makes it on first use, which is too late:
+		// the scan would look at a directory that does not exist for as long as
+		// nobody had downloaded anything.
+		home + "/Downloads",
 	} {
 		if err := p.Client.MakeDir(p.name(), dir, 0o755, p.uid, p.uid); err != nil {
 			return err

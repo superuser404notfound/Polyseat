@@ -297,6 +297,12 @@ func (p *Provisioner) installedGames(ctx context.Context) []Game {
 
 	games = append(games, lutris...)
 
+	// Whatever is in ~/Applications. Not a launcher's idea of what is installed
+	// but a directory listing, because an AppImage answers to nobody: the file
+	// is the installation, and the only thing that knows it is there is the
+	// directory it is in.
+	games = append(games, p.appImageGames(ctx)...)
+
 	games = dedupeGames(games)
 
 	sort.Slice(games, func(i, j int) bool { return games[i].Name < games[j].Name })

@@ -361,6 +361,27 @@ the threat model at the top that is not a new power, since a seat already runs
 whatever its Steam account owns. It would matter for a seat given to a stranger,
 where the answer is the same as everywhere else on this page: do not.
 
+### An AppImage is not a flatpak, and is not sandboxed
+
+The second route into a seat is one file in `~/Applications`, run as the player
+with everything the player has. Where a flatpak comes from a signed repository
+and starts inside bwrap, an AppImage comes from wherever its author publishes it
+and starts as an ordinary program: it can read the player's home, the shared
+library and anything else mounted into that seat. That is the same position an
+installed game is in, which is why it is acceptable here at all, and it is worth
+saying plainly rather than leaving somebody to assume the two words mean the
+same amount of containment.
+
+What is checked, and what is not. Downloads run over **https only**, redirects
+included, because what arrives is executed; there is no signature to verify
+because AppImages mostly do not carry one. The file is checked for the AppImage
+magic before the daemon executes it to read its name and icon, so a renamed
+shell script in `~/Downloads` is not adopted and not run. The size is capped at
+6 GB so that a mistyped address cannot fill a seat's disk before the check that
+would have rejected it. **None of that says the AppImage is trustworthy**: it
+says the file is the kind of thing it claims to be and arrived over a connection
+nobody rewrote in transit.
+
 ### Steam listens on the network inside a seat
 
 `0.0.0.0:27036` for Remote Play discovery. Reachable from the LAN like any other

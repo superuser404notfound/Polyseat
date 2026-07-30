@@ -74,6 +74,13 @@ guide() {
     printf '                  flatpak install flathub <application id>\n'
     printf '                  flatpak search <name>\n'
     printf '\n'
+    printf '  AppImage    For what is published no other way, emulators\n'
+    printf '              mostly. Download it with Firefox and leave it in\n'
+    printf '              %s: it moves itself into\n' "$HOME/Downloads"
+    printf '              %s within a minute and turns up\n' "$HOME/Applications"
+    printf '              in the launcher and in Moonlight. The Polyseat page\n'
+    printf '              can also fetch one from an address.\n'
+    printf '\n'
     printf '  ---------------------------------------------------------------\n'
     printf '  Run polyseat-welcome --print to see this again.\n'
     printf '\n'

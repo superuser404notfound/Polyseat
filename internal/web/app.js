@@ -731,7 +731,14 @@ function drawSoftware(seat, body, status) {
     ),
   );
 
-  if (installed.length === 0) {
+  // Two sources, drawn one after the other and independent of each other. A
+  // seat with no flatpak can still be given an AppImage, so a problem with one
+  // of them is said in its own section rather than emptying the panel.
+  if (!status.flatpak) {
+    body.append(
+      note(status.flatpakProblem || "Flathub cannot be used in this seat."),
+    );
+  } else if (installed.length === 0) {
     body.append(note("Nothing is installed in this seat yet."));
   } else {
     const list = document.createElement("ul");
@@ -760,7 +767,9 @@ function drawSoftware(seat, body, status) {
     body.append(list);
   }
 
-  const offer = (status.catalog || []).filter((entry) => !have.has(entry.id));
+  const offer = status.flatpak
+    ? (status.catalog || []).filter((entry) => !have.has(entry.id))
+    : [];
 
   if (offer.length > 0) {
     const grid = document.createElement("ul");
@@ -800,7 +809,110 @@ function drawSoftware(seat, body, status) {
 
   const results = document.createElement("div");
 
-  body.append(searchForm(seat, body, results, have), results);
+  if (status.flatpak) {
+    body.append(searchForm(seat, body, results, have), results);
+  }
+
+  drawAppImages(seat, body, status);
+}
+
+// The second way software arrives: one file, from wherever its author publishes
+// it.
+//
+// Here because a good many emulators are published that way and as nothing
+// else, so a seat that can only install flatpaks is a seat where the answer to
+// "can I play this" is no for reasons that have nothing to do with the game.
+// There is no catalog to browse and no search to run: an AppImage has no index
+// anywhere, so what this can offer is the address somebody found and the list of
+// what that produced.
+function drawAppImages(seat, body, status) {
+  const images = status.appImages || [];
+
+  body.append(
+    note(
+      "AppImages, kept in the player's Applications folder. One is also " +
+        "picked up when it is downloaded inside the seat, so a file saved " +
+        "with Firefox turns up here and in Moonlight within a minute.",
+    ),
+  );
+
+  if (status.appImageProblem) {
+    body.append(note(status.appImageProblem));
+  }
+
+  if (images.length > 0) {
+    const list = document.createElement("ul");
+    list.className = "devices";
+
+    images.forEach((image) => {
+      const item = document.createElement("li");
+
+      const name = document.createElement("span");
+      name.textContent = image.size
+        ? `${image.name} (${image.size})`
+        : image.name;
+      name.title = image.path;
+
+      const remove = document.createElement("button");
+      remove.textContent = "Remove";
+      remove.className = "danger";
+      remove.onclick = () =>
+        run(async () => {
+          await api(
+            "DELETE",
+            `/api/seats/${seat.name}/appimages/${encodeURIComponent(image.file)}`,
+          );
+          await loadSoftware(seat, body, true);
+        });
+
+      item.append(name, remove);
+      list.append(item);
+    });
+
+    body.append(list);
+  }
+
+  const form = document.createElement("form");
+  form.className = "pair";
+
+  const address = document.createElement("input");
+  address.placeholder = "https://.../Something-x86_64.AppImage";
+  address.autocomplete = "off";
+  address.spellcheck = false;
+  address.required = true;
+  address.type = "url";
+
+  const submit = document.createElement("button");
+  submit.className = "primary";
+  submit.textContent = "Download";
+
+  form.append(address, submit);
+
+  form.onsubmit = (event) => {
+    event.preventDefault();
+
+    run(async () => {
+      // A download of several hundred megabytes, so the button says what it is
+      // doing rather than sitting there looking untouched. How far it has got
+      // is the bar on the seat card.
+      submit.disabled = true;
+      submit.textContent = "Downloading";
+
+      try {
+        await api("POST", `/api/seats/${seat.name}/appimages`, {
+          url: address.value.trim(),
+        });
+
+        address.value = "";
+        await loadSoftware(seat, body, true);
+      } finally {
+        submit.disabled = false;
+        submit.textContent = "Download";
+      }
+    });
+  };
+
+  body.append(form);
 }
 
 // Search Flathub by words rather than by application id.

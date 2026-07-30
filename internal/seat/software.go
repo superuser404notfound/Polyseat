@@ -53,13 +53,28 @@ type Installed struct {
 // SoftwareStatus is what the interface needs to draw the software section.
 type SoftwareStatus struct {
 	// Available is whether anything can be installed right now. False for a
-	// seat that is switched off or was built before Polyseat installed
-	// flatpak, and Problem says which.
+	// seat that is switched off, and Problem says so.
+	//
+	// It used to mean "flatpak works here", which conflated two things that
+	// have since stopped being one: an AppImage needs no flatpak, so a seat
+	// where flatpak is missing can still be given software and the panel
+	// should say so rather than going blank.
 	Available bool   `json:"available"`
 	Problem   string `json:"problem,omitempty"`
 
+	// Flatpak is whether this seat has one, with FlatpakProblem saying why not.
+	// False for a seat built before Polyseat installed flatpak.
+	Flatpak        bool   `json:"flatpak"`
+	FlatpakProblem string `json:"flatpakProblem,omitempty"`
+
 	Installed []Installed    `json:"installed"`
 	Catalog   []CatalogEntry `json:"catalog"`
+
+	// AppImages is the other kind: single files in ~/Applications, from
+	// wherever their author publishes them. AppImageProblem is set when the
+	// seat could not be asked, which is not the same as having none.
+	AppImages       []AppImage `json:"appImages"`
+	AppImageProblem string     `json:"appImageProblem,omitempty"`
 }
 
 // flatpakID is the reverse DNS form Flathub uses.
@@ -88,6 +103,7 @@ func (m *Manager) Software(ctx context.Context, name string) (SoftwareStatus, er
 	status := SoftwareStatus{
 		Installed: []Installed{},
 		Catalog:   Catalog,
+		AppImages: []AppImage{},
 	}
 
 	if _, err := m.store.Get(name); err != nil {
@@ -105,6 +121,20 @@ func (m *Manager) Software(ctx context.Context, name string) (SoftwareStatus, er
 		return status, nil
 	}
 
+	status.Available = true
+
+	// Asked first, and its failure is reported rather than returned, because
+	// the two halves of this panel are independent: a seat with no flatpak can
+	// still be given an AppImage, and a seat whose AppImage directory cannot be
+	// read can still install from Flathub.
+	images, err := scanAppImages(ctx, m.client, name)
+	if err != nil {
+		status.AppImageProblem = err.Error()
+	} else {
+		status.AppImages = images
+		status.AppImageProblem = m.appImageRuntime(ctx, name)
+	}
+
 	out, code, err := m.client.Try(ctx, name, m.playerEnv(
 		"flatpak", "list", "--user", "--app", "--columns=application,name,size")...)
 	if err != nil {
@@ -112,12 +142,12 @@ func (m *Manager) Software(ctx context.Context, name string) (SoftwareStatus, er
 	}
 
 	if code != 0 {
-		status.Problem = "this seat has no flatpak yet, provision it again to add it"
+		status.FlatpakProblem = "this seat has no flatpak yet, provision it again to add it"
 
 		return status, nil
 	}
 
-	status.Available = true
+	status.Flatpak = true
 
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimRight(line, "\r")

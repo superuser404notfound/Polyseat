@@ -62,6 +62,8 @@ func New(manager *seat.Manager, credentials *auth.Store, logger *slog.Logger) ht
 	guarded.HandleFunc("GET /api/seats/{name}/software/search", s.searchSoftware)
 	guarded.HandleFunc("POST /api/seats/{name}/software", s.installSoftware)
 	guarded.HandleFunc("DELETE /api/seats/{name}/software/{id}", s.removeSoftware)
+	guarded.HandleFunc("POST /api/seats/{name}/appimages", s.installAppImage)
+	guarded.HandleFunc("DELETE /api/seats/{name}/appimages/{file}", s.removeAppImage)
 	guarded.HandleFunc("GET /api/library", s.getLibrary)
 	guarded.HandleFunc("POST /api/library/sync", s.syncLibrary)
 	guarded.HandleFunc("POST /api/library/import", s.importLibrary)
@@ -783,6 +785,60 @@ func (s *Server) removeSoftware(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": id})
+}
+
+// ----------------------------------------------------------------- appimages
+
+// appImageRequest names one to download.
+type appImageRequest struct {
+	URL string `json:"url"`
+}
+
+func (s *Server) installAppImage(w http.ResponseWriter, r *http.Request) {
+	var req appImageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	// Here as well as in the manager, so that a bad address comes back as a bad
+	// request rather than as a seat that goes busy and then reports a problem
+	// in its log.
+	file, err := seat.ValidateAppImageURL(req.URL)
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if err := s.manager.InstallAppImage(r.PathValue("name"), req.URL); err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	// Accepted rather than OK, for the same reason a flatpak is: an emulator is
+	// several hundred megabytes and this means the download has started.
+	writeJSON(w, http.StatusAccepted, map[string]string{"file": file})
+}
+
+func (s *Server) removeAppImage(w http.ResponseWriter, r *http.Request) {
+	file := r.PathValue("file")
+
+	if err := seat.ValidateAppImageFile(file); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if err := s.manager.RemoveAppImage(r.PathValue("name"), file); err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"file": file})
 }
 
 // ------------------------------------------------------------------ library

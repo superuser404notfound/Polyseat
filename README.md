@@ -117,7 +117,11 @@ launcher is generated from the same scan, so a game is in both menus without
 anybody making a shortcut for it. Software goes in from
 either end with no password and no root: the player types `flatpak install ...`
 in the seat, or somebody installs it into that seat from the Polyseat web
-interface and watches the progress bar.
+interface and watches the progress bar. **AppImages count as software here too**,
+which matters because a good many emulators are published that way and no other:
+paste the address into the web interface, or download the file inside the seat
+with Firefox and leave it in `~/Downloads`, and either way it lands in
+`~/Applications` and appears in both menus by itself.
 
 **Every client gets the picture it asked for.** The seat's output is virtual, so
 it simply becomes the size the client wants, at the refresh rate the client

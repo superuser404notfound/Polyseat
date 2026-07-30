@@ -527,6 +527,32 @@ toolkit underneath it, where bazaar would have been 52 MB and discover 212 MB.
 The web interface is for setting a seat up for somebody before handing it over.
 The command line is for neither and stays anyway.
 
+**AppImages are the other kind, and they need a different mechanism because
+they have no index.** There is no Flathub for them: an AppImage is one file on
+somebody's release page, and the only thing that knows it exists is the
+directory it was put in. So the seat side is a directory listing rather than a
+package manager. `~/Applications` is what is listed, `~/Downloads` is swept into
+it once a minute, and each file's name and icon are read out of the file itself
+with `--appimage-extract`, cached against its size and modification time so that
+a scan costs a listing rather than an unpack. From there they join the same path
+as everything else and become entries in Moonlight and in the seat's launcher.
+
+Three facts about this were measured in a seat rather than assumed. The
+container already has `/dev/fuse` and a setuid `fusermount3`, so nothing about
+the container had to change; what was missing was **fuse2**, because the
+AppImage runtime dlopens `libfuse.so.2` by name and a seat with only fuse3
+stopped every classic AppImage at `dlopen(): error loading libfuse.so.2`.
+`--appimage-extract` needs no FUSE at all, which is why reading the metadata
+works even where running the thing would not. And `curl -#` draws its progress
+bar on standard error with no terminal attached, so unlike flatpak, whose
+progress needs a pseudo terminal, a download reports itself for free.
+
+The magic bytes are checked before anything else happens to a file, in both the
+daemon and the scan. The scan **runs** each file to read its metadata, so a
+shell script somebody renamed to `.AppImage` would otherwise be a program the
+daemon starts once a minute; the check is what keeps the two apart, and a test
+asserts it by failing loudly when the payload runs.
+
 A **sandbox has to be told about the shared library**, and that was found by
 trying it rather than by reading a manifest. M6 said a launcher other than
 Steam could share games through the seat's library directory, and for a flatpak
