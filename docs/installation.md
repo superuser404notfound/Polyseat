@@ -190,6 +190,35 @@ Nothing on its own. It is a client of the daemon's API. Configuration is owned
 by the daemon and everything else is a generated artifact, as set out in
 [`architecture.md`](architecture.md).
 
+## Removing it again
+
+`--uninstall` takes out the daemon, its unit, the udev rule and the helpers, and
+deliberately leaves the seats, their containers and `/var/lib/polyseat` alone.
+Installing again picks them up where they were.
+
+`--purge` takes the seats as well, and exists for the order it does things in
+rather than for the list of things it removes. The daemon supervises every seat
+and reads inside each running one every ten seconds; deleting a container while
+that is going on lands an exec in a shutdown, and Incus answers with a "Stopping
+instance" task that never finishes. On this machine that took a restart of the
+Incus daemon and killing the container's cgroup by hand to get out of, twice, so
+both the order and the way out are written into the script:
+
+* stop `polyseatd` first, before touching anything it owns
+* stop each seat, wait a minute, and if Incus has accepted the stop and left the
+  container running anyway, kill its cgroup and restart Incus
+* only then delete the containers and the daemon's state
+
+The seat names come from the seat records and from nowhere else. Matching
+container names against a pattern would put an unrelated container one typo away
+from being deleted.
+
+The shared game library is kept unless `--library` is given, because it is the
+expensive thing: the seats' copies come back from it by reflink in a second,
+where downloading them again does not. Packages and Incus are left alone in both
+cases. They are not Polyseat's to remove, and a script that uninstalls somebody's
+container manager because it once installed it is a script nobody should run.
+
 ## Testing the installer
 
 `host/test-install.sh` runs the installer against a throwaway Arch **virtual

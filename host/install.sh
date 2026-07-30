@@ -12,8 +12,12 @@
 #
 # Arch-based only: it queries pacman.
 #
-#   sudo ./install.sh            install
-#   sudo ./install.sh --uninstall
+#   sudo ./install.sh                    install
+#   sudo ./install.sh --uninstall        remove Polyseat, keep the seats
+#   sudo ./install.sh --purge            remove the seats as well
+#   sudo ./install.sh --purge --library  and the shared game library
+#
+# --yes answers the question --purge asks.
 set -euo pipefail
 
 BINDIR=/usr/local/bin
@@ -31,6 +35,139 @@ step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 [[ $EUID -eq 0 ]] || { echo "needs root"; exit 1; }
 
+STATEDIR=/var/lib/polyseat
+LIBRARYDIR=/srv/polyseat/library
+
+# state_of reports what Incus thinks of a container: RUNNING, STOPPED, ERROR or
+# nothing at all.
+#
+# Asked of `incus list` rather than `incus info`, because a container whose stop
+# has half finished answers `incus info` with "Invalid PID -1" and nothing else,
+# which is exactly the case this has to survive.
+state_of() {
+    incus list "$1" -c ns -f csv 2>/dev/null | awk -F, -v n="$1" '$1 == n { print $2 }'
+}
+
+# stop_seat brings a container down, and insists.
+#
+# `incus stop` has been seen to return success and leave the container running,
+# with a "Stopping instance" task of its own that never ends. Waiting longer does
+# not help: what does is killing the processes in the container's cgroup and
+# restarting the Incus daemon, which clears the stuck task. Both were needed to
+# take this machine's seats down, so both are written here rather than left for
+# the next person to work out under pressure.
+stop_seat() {
+    local name=$1 waited=0
+
+    [[ -n "$(state_of "$name")" ]] || return 0
+
+    incus stop "$name" >/dev/null 2>&1 || true
+
+    while [[ "$(state_of "$name")" == "RUNNING" && $waited -lt 60 ]]; do
+        sleep 2
+        waited=$((waited + 2))
+    done
+
+    [[ "$(state_of "$name")" == "RUNNING" ]] || { ok "$name stopped"; return 0; }
+
+    warn "$name did not stop when asked, killing what is left of it"
+
+    local cg=/sys/fs/cgroup/lxc.payload.$name
+
+    if [[ -e $cg/cgroup.kill ]]; then
+        echo 1 > "$cg/cgroup.kill" 2>/dev/null || true
+    elif [[ -e $cg/cgroup.procs ]]; then
+        while read -r pid; do kill -9 "$pid" 2>/dev/null || true; done < "$cg/cgroup.procs"
+    fi
+
+    sleep 3
+    systemctl restart incus.service 2>/dev/null || true
+    sleep 5
+
+    [[ "$(state_of "$name")" == "RUNNING" ]] && bad "$name is still running" || ok "$name stopped"
+}
+
+if [[ "${1:-}" == "--purge" ]]; then
+    shift
+
+    library=false
+    assume_yes=false
+
+    for arg in "$@"; do
+        case "$arg" in
+            --library) library=true ;;
+            --yes) assume_yes=true ;;
+            *) echo "unknown option: $arg"; exit 1 ;;
+        esac
+    done
+
+    # The names come from the seat records and from nowhere else. Matching
+    # container names against a pattern would put somebody's unrelated container
+    # one typo away from being deleted.
+    seats=()
+    if [[ -d $STATEDIR/seats ]]; then
+        for f in "$STATEDIR"/seats/*.json; do
+            [[ -e $f ]] || continue
+            seats+=("$(basename "$f" .json)")
+        done
+    fi
+
+    step "This removes Polyseat and everything it built"
+    echo "  seats to delete:      ${seats[*]:-none found}"
+    echo "  daemon state:         $STATEDIR (seat definitions, pairings, the web password)"
+    if $library; then
+        echo "  shared game library:  $LIBRARYDIR, and its games with it"
+    else
+        echo "  shared game library:  $LIBRARYDIR is KEPT, so the games come back"
+    fi
+    echo "  packages and Incus:   left alone, they are not Polyseat's to remove"
+    echo
+
+    if ! $assume_yes; then
+        read -r -p "  Type purge to go ahead: " answer
+        [[ $answer == "purge" ]] || { echo "  nothing done"; exit 1; }
+    fi
+
+    # The daemon first, and this is the whole reason --purge exists rather than
+    # being a paragraph in a document. It supervises every seat and reads inside
+    # each running one every ten seconds; deleting a container underneath that
+    # lands an exec in a shutdown, and Incus answers with a "Stopping instance"
+    # task that never finishes. That is how this machine's seats had to be taken
+    # apart by hand, and the order is the fix.
+    step "Stopping the daemon before touching anything it owns"
+    systemctl disable --now polyseatd.service 2>/dev/null || true
+    ok "polyseatd stopped"
+
+    if ((${#seats[@]})); then
+        step "Deleting the seats"
+
+        for name in "${seats[@]}"; do
+            stop_seat "$name"
+
+            if [[ -n "$(state_of "$name")" ]]; then
+                incus delete -f "$name" >/dev/null 2>&1 && ok "$name deleted" ||
+                    bad "$name could not be deleted"
+            else
+                ok "$name had no container"
+            fi
+        done
+    fi
+
+    step "Removing what the daemon kept"
+    rm -rfv "$STATEDIR" /etc/polyseat
+
+    if $library; then
+        rm -rfv "$LIBRARYDIR"
+    else
+        ok "$LIBRARYDIR kept"
+    fi
+
+    # Everything the plain uninstall does, by running that path. The marker is
+    # so that it does not sign off by promising the seats are untouched, having
+    # just deleted them.
+    POLYSEAT_PURGED=1 exec "$0" --uninstall
+fi
+
 if [[ "${1:-}" == "--uninstall" ]]; then
     step "Removing"
     systemctl disable --now polyseatd.service 2>/dev/null || true
@@ -46,7 +183,23 @@ if [[ "${1:-}" == "--uninstall" ]]; then
            "$RULEDIR/72-polyseat-hide.rules"
     systemctl daemon-reload
     udevadm control --reload
-    ok "gone. Seats, their containers and /var/lib/polyseat are untouched."
+    if [[ -n "${POLYSEAT_PURGED:-}" ]]; then
+        ok "gone, seats and all. $LIBRARYDIR is the only thing that may be left."
+    else
+        ok "gone. Seats, their containers and $STATEDIR are untouched."
+    fi
+
+    # Said here because the order matters and is not obvious. The daemon has just
+    # been stopped, so the containers can be removed safely now; doing it while it
+    # was still running is what leaves Incus with a stop that never finishes.
+    if [[ -d $STATEDIR/seats ]] && compgen -G "$STATEDIR/seats/*.json" >/dev/null; then
+        echo
+        echo "  The seats are still here. Now that the daemon is stopped they can be"
+        echo "  removed safely, or leave them and they come back on the next install:"
+        echo
+        echo "    sudo $0 --purge"
+    fi
+
     exit 0
 fi
 

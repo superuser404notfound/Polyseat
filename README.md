@@ -169,7 +169,15 @@ git pull && sudo host/install.sh && sudo systemctl restart polyseatd
 
 **Removing it** leaves your seats alone: `sudo host/install.sh --uninstall`
 takes out the daemon, its unit, the udev rule and the helpers, and touches
-neither the containers nor `/var/lib/polyseat`.
+neither the containers nor `/var/lib/polyseat`. Install it again and the seats
+come back as they were.
+
+To take the seats with it, `sudo host/install.sh --purge`, which asks first and
+keeps the shared game library so the games do not have to be downloaded again;
+add `--library` to remove that too. It stops the daemon before touching anything
+it owns, which is the point of having it: deleting a container while the daemon
+is still reading inside it leaves Incus with a stop that never finishes. Neither
+command removes the packages or Incus, which are not Polyseat's to remove.
 
 ## What it does not do
 

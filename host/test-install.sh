@@ -269,6 +269,42 @@ check "the helpers are gone"             vm bash -c '! test -e /usr/local/lib/po
 check "the idmap entry is kept"          vm grep -qE '^root:' /etc/subuid
 check "the group membership is kept"     vm bash -c "id -nG $TESTUSER | tr ' ' '\n' | grep -qx input"
 
+# ------------------------------------------------------------------ the purge
+
+step "Running install.sh --purge against a seat that exists"
+# The part that cannot be tested by talking about it. --purge deletes containers,
+# and the reason it exists is the order it does things in: the daemon supervises
+# every seat and reads inside each running one every ten seconds, so deleting a
+# container underneath it lands an exec in a shutdown and leaves Incus with a
+# "Stopping instance" task that never finishes. That is what happened by hand on
+# the development machine.
+#
+# A throwaway container standing in for a seat, from the smallest image going,
+# because what is under test is the stopping and deleting and not what is inside.
+PURGESEAT=seat-purgetest
+
+vm bash -c "mkdir -p /var/lib/polyseat/seats && printf '{\"name\":\"$PURGESEAT\"}\n' > /var/lib/polyseat/seats/$PURGESEAT.json"
+
+if vm bash -c "incus launch images:alpine/3.20 $PURGESEAT >/dev/null 2>&1"; then
+    ok "a stand-in container is running as $PURGESEAT"
+
+    check "it really is running" \
+        vm bash -c "incus list $PURGESEAT -c ns -f csv | grep -q RUNNING"
+
+    if vm bash -c "bash /root/polyseat/host/install.sh --purge --yes >/root/purge.log 2>&1"; then
+        ok "the purge finished without an error"
+    else
+        bad "the purge failed"
+        vm bash -c "tail -5 /root/purge.log" || true
+    fi
+
+    check "the container is gone"           vm bash -c "! incus list $PURGESEAT -c n -f csv | grep -q ."
+    check "the daemon state is gone"        vm bash -c "! test -e /var/lib/polyseat"
+    check "it did not take Incus with it"   vm bash -c "incus list -f csv >/dev/null"
+else
+    note "no container image could be fetched, the purge is untested in this run"
+fi
+
 step "Result"
 printf '  %d passed, %d failed\n\n' "$pass" "$fail"
 
