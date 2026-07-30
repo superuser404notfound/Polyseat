@@ -154,6 +154,14 @@ driver, and on AMD it wants `cap_sys_admin` on the Sunshine binary, which is not
 something a container is going to be given. Same setting on both vendors, for
 two different reasons. Optionally gamescope nested per game for scaling and FPS caps.
 
+**Split frame encoding is turned on rather than left to the driver.** Cards from
+the RTX 4080 up carry two NVENC units and Sunshine can spread one frame across
+both, which by its own description significantly reduces host processing latency
+for a marginal loss of compression. The driver's own rule only does it at 4K and
+above, which is the wrong rule for a seat: a client at 1080p or 1440p gets the
+same benefit and would otherwise leave half the encoder idle. A card with one
+unit ignores the setting, and it is written only into a seat built for NVENC.
+
 ## GUI instead of CLI
 
 The heart is a **daemon with an API**; the GUI is a client of it. A web UI, not
@@ -306,7 +314,7 @@ after build 10.
 
 **Updates propagate rather than drift.** A seat whose copy is behind the pool is
 brought forward, but only when nothing in that seat is using the shared library.
-That is asked of the seat directly: a small `/proc` walk looks for either mount
+That is asked of the seat directly: a `/proc` walk looks for either mount
 path in any process's mappings, open descriptors or working directory, because
 `lsof` is not in a seat and a game that is running has its files open. Either
 path, because a Steam game running out of the shared library has it open as
@@ -314,6 +322,14 @@ Steam's own `steamapps` and never mentions `/home/player/games` at all. A seat t
 keeps its copy and the waiting update is reported, so the interface shows
 something pending instead of nothing happening. Overwriting a game under a
 running client corrupts an install rather than improving one.
+
+**That walk is three commands, and it used to be fifteen hundred.** The first
+version looped over `/proc` in the shell: a `grep` per process and a `readlink`
+per open descriptor. Measured on an idle seat with 58 processes and 1369 open
+descriptors, that came to 990 ms of the seat's own CPU, once a minute, for a
+question whose answer is almost always no, and it was spent while somebody was
+streaming out of that seat. One `grep` over every `maps` file at once and two
+`find -lname` passes answer the same three questions in 14 ms on the same seat.
 
 **The host's own library is watched, not imported once.** An imported library is
 remembered and re-read on every pass, read only in both senses: the daemon takes
@@ -691,6 +707,19 @@ again on the way out, so one file caps a native game, a game under Proton, a
 flatpak launcher and an emulator without any of them being configured. Measured
 in a seat: 1519 fps uncapped, 58.3 with a 60 fps client connected, and a game
 that was already respecting vsync loses nothing worth measuring.
+
+**Two lines go into that file beside the cap, and they are about age rather than
+count.** `fps_limit_method=early` changes when the limiter waits: MangoHud's
+default renders the frame the moment the previous one was presented and sleeps
+out the rest of the interval, so what goes out is already almost an interval old
+before anything has encoded it. Sleeping first and rendering last costs the same
+heat and the same framerate. `vulkan_present_mode=mailbox` is the same idea one
+step further along: a FIFO swapchain queues frames and waits for them to drain,
+and nobody sees the far end of that queue over a stream, so the newest frame is
+kept and the rest dropped. Both are written only alongside a cap. Mailbox never
+blocks the game, so with the cap gone it is nothing that paces a seat, and a
+game left running after a stream ended would go straight back to the thousands
+of frames a second the cap exists to prevent.
 
 Three things carry it into place, because there are three ways an application
 gets started in a seat. Sunshine's app list carries the two variables in its

@@ -106,6 +106,42 @@ func TestFpsLeavesNoOverlayOnTheStream(t *testing.T) {
 	}
 }
 
+// The cap decides how many frames are drawn, these two decide how old the one
+// that goes out is. MangoHud's default is to render a frame the moment the last
+// one was presented and then sleep, which hands the stream a picture that is
+// already almost an interval old, and a FIFO swapchain adds a queue on top.
+func TestFpsAsksForTheFreshestFrameItCan(t *testing.T) {
+	conf, _ := runFps(t, "60")
+
+	for _, want := range []string{"fps_limit_method=early", "vulkan_present_mode=mailbox"} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("%q is missing, so the cap costs a frame it does not have to:\n%s", want, conf)
+		}
+	}
+}
+
+// Mailbox never blocks the game, so with the cap gone nothing paces it at all.
+// Written together with a cap or not at all: a game left running after the
+// stream ended would otherwise go back to rendering thousands of frames a
+// second, which is what the cap exists to prevent.
+func TestFpsLeavesNoPresentModeBehindWithoutACap(t *testing.T) {
+	home := t.TempDir()
+
+	if conf, _, _ := runFpsIn(t, home, "60"); !strings.Contains(conf, "vulkan_present_mode") {
+		t.Fatalf("the seat never had a present mode set, so this test proves nothing:\n%s", conf)
+	}
+
+	conf, _, _ := runFpsIn(t, home, "60", "off")
+
+	if strings.Contains(conf, "vulkan_present_mode") {
+		t.Errorf("the cap is off and the present mode stayed:\n%s", conf)
+	}
+
+	if strings.Contains(conf, "fps_limit_method") {
+		t.Errorf("the cap is off and the limiter method stayed:\n%s", conf)
+	}
+}
+
 // A stream that has ended must leave the seat uncapped, otherwise the last
 // client to connect decides the framerate of everything after it, including
 // somebody playing on the seat directly.

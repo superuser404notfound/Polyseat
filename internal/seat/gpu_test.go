@@ -253,6 +253,38 @@ func TestNVIDIAStackIsWhatItAlwaysWas(t *testing.T) {
 	}
 }
 
+// Split frame encoding is an NVENC setting and nothing else. Left to the driver
+// it only comes on at 4K, which leaves a card's second encoder idle for every
+// client below that; written into an AMD seat it is a line Sunshine does not
+// know.
+func TestSunshineConfigSplitsFramesOnlyWhereThereIsNvenc(t *testing.T) {
+	for _, tc := range []struct {
+		gpu  GPU
+		want bool
+	}{
+		{GPU{Vendor: VendorNVIDIA}, true},
+		{GPU{Vendor: VendorAMD, RenderNode: "/dev/dri/renderD129"}, false},
+	} {
+		s := stackFor(tc.gpu)
+
+		conf, err := render("assets/sunshine.conf", map[string]string{
+			"Origins":    "https://10.20.30.71:47990",
+			"Resolution": "1920x1080",
+			"Encoder":    s.encoder,
+			"Adapter":    s.adapter,
+		})
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+
+		got := strings.Contains(string(conf), "\nnvenc_split_encode = enabled")
+
+		if got != tc.want {
+			t.Errorf("%s: split frame encoding present = %v, want %v", tc.gpu.Vendor, got, tc.want)
+		}
+	}
+}
+
 // The generated file rather than the struct, because the struct being right and
 // the template ignoring it is a real way to get this wrong.
 func TestSunshineConfigSaysWhichEncoder(t *testing.T) {

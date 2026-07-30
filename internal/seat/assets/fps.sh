@@ -56,6 +56,28 @@ write() {
         # write a file it had just written perfectly well.
         if [ -n "$1" ]; then
             echo "fps_limit=$1"
+
+            # How the limiter waits, and it is not a detail. MangoHud's default
+            # is "late": render the frame the moment the last one was presented,
+            # then sleep out the rest of the interval. The frame is therefore
+            # almost a whole interval old by the time it is shown, and on a
+            # stream that age is added to every other delay in the chain.
+            # "early" sleeps first and renders last, so what goes out is as
+            # fresh as the cap allows. Same framerate, same heat, less lag.
+            echo "fps_limit_method=early"
+
+            # And how the finished frame reaches the compositor. A game with a
+            # FIFO swapchain queues frames and waits for them to drain, which is
+            # a queue nobody sees the far end of over a stream. Mailbox keeps
+            # only the newest, so the frame sway hands to Sunshine is the last
+            # one the game drew rather than the oldest one still in line.
+            #
+            # Deliberately written only alongside a cap. Mailbox never blocks
+            # the game, so it is the cap that keeps a seat from rendering flat
+            # out; without one, a game left running after the stream ended would
+            # go back to the thousands of frames a second this file exists to
+            # prevent.
+            echo "vulkan_present_mode=mailbox"
         fi
     } > "$CONF.tmp" 2>/dev/null || {
         say "cannot write $CONF, leaving the framerate alone"
