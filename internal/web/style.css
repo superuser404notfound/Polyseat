@@ -393,6 +393,16 @@ dialog label.check {
   color: var(--text);
 }
 
+/* A range input matches neither of the selectors below, so without this it sits
+   inline against the end of its label rather than under it like every other
+   field in the dialog. */
+dialog input[type="range"] {
+  display: block;
+  width: 100%;
+  margin-top: 0.45rem;
+  accent-color: var(--accent);
+}
+
 dialog input[type="text"], dialog input:not([type]) {
   display: block;
   width: 100%;

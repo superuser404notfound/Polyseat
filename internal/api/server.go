@@ -436,6 +436,8 @@ type seatRequest struct {
 	Address    *string `json:"address"`
 	Gateway    *string `json:"gateway"`
 	Library    *bool   `json:"library"`
+
+	PointerSpeed *float64 `json:"pointer_speed"`
 }
 
 func (s *Server) createSeat(w http.ResponseWriter, r *http.Request) {
@@ -464,6 +466,10 @@ func (s *Server) createSeat(w http.ResponseWriter, r *http.Request) {
 		// machine that already has games is asking for exactly this. Existing
 		// seats keep whatever they had, which for seats built before M6 is off.
 		Library: value(req.Library, true),
+
+		// Zero rather than the default written out, so that a change to the
+		// default reaches every seat that never chose a number of its own.
+		PointerSpeed: value(req.PointerSpeed, 0),
 	}
 
 	if err := s.manager.Create(created); err != nil {
@@ -508,6 +514,10 @@ func (s *Server) updateSeat(w http.ResponseWriter, r *http.Request) {
 
 		if req.Library != nil {
 			current.Library = *req.Library
+		}
+
+		if req.PointerSpeed != nil {
+			current.PointerSpeed = *req.PointerSpeed
 		}
 	})
 	if err != nil {

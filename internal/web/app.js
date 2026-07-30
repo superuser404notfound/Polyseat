@@ -1384,8 +1384,27 @@ function openEditor(seat) {
   form.gateway.value = seat ? seat.gateway || "" : "";
   form.autostart.checked = seat ? seat.autostart : true;
   form.library.checked = seat ? seat.library : true;
+  form.pointer_speed.value = (seat && seat.pointer_speed) || DEFAULT_POINTER_SPEED;
+  describePointerSpeed();
 
   el("editor").showModal();
+}
+
+// The default the daemon uses for a seat that has never been given a number of
+// its own. Repeated here rather than fetched, because the slider has to show
+// something before anything has been saved.
+const DEFAULT_POINTER_SPEED = 0.45;
+
+// Says what the number means. A slider from 0.15 to 1.2 tells somebody nothing
+// on its own, and the honest translation is a time: how long the pointer takes
+// to cross the screen with the stick held over.
+function describePointerSpeed() {
+  const speed = Number(el("editor-form").pointer_speed.value);
+  const seconds = 1 / speed;
+
+  el("pointer-speed-note").textContent =
+    `Crosses the screen in ${seconds.toFixed(1)} seconds at full deflection.` +
+    (Math.abs(speed - DEFAULT_POINTER_SPEED) < 0.001 ? " This is the default." : "");
 }
 
 async function saveEditor(event) {
@@ -1399,6 +1418,7 @@ async function saveEditor(event) {
     gateway: form.gateway.value.trim(),
     autostart: form.autostart.checked,
     library: form.library.checked,
+    pointer_speed: Number(form.pointer_speed.value),
   };
 
   try {
@@ -1454,6 +1474,7 @@ function connect() {
 el("add").onclick = () => openEditor(null);
 el("editor-cancel").onclick = () => el("editor").close();
 el("editor-form").onsubmit = saveEditor;
+el("editor-form").pointer_speed.oninput = describePointerSpeed;
 el("login-form").onsubmit = submitLogin;
 el("setup-form").onsubmit = submitSetup;
 el("password-form").onsubmit = submitPassword;

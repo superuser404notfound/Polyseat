@@ -1029,6 +1029,13 @@ func (m *Manager) startSession(ctx context.Context, name string) error {
 		m.logf(name, "! %v, the web interface may refuse saves", err)
 	}
 
+	// Written on every start as well as while provisioning, so that a seat that
+	// was switched off when somebody moved the slider comes up with the value
+	// they chose rather than with the one it was built with.
+	if err := p.WritePointerConfig(ctx); err != nil {
+		m.logf(name, "! the pointer speed could not be applied: %v", err)
+	}
+
 	origins, err := p.WriteSunshineConfig(ctx)
 	if err != nil {
 		return err
@@ -1210,6 +1217,32 @@ func (m *Manager) Create(seat Seat) error {
 
 // Update changes a seat definition. The name cannot change, because it is also
 // the container name and the tag Sunshine writes into its device names.
+// applyPointerSpeed pushes the pointer speed into a seat that is running.
+//
+// Silent about a seat that is switched off: there is nothing to write into and
+// nothing lost, because startSession writes it again on the way up.
+func (m *Manager) applyPointerSpeed(ctx context.Context, seat Seat) {
+	if status, err := m.client.Status(seat.Name); err != nil || status != "Running" {
+		return
+	}
+
+	p := &Provisioner{
+		Client: m.client,
+		Seat:   seat,
+		Image:  m.cfg.Image,
+		Log:    func(f string, a ...any) { m.logf(seat.Name, f, a...) },
+		uid:    m.runtimeOf(seat.Name).uid,
+	}
+
+	if err := p.WritePointerConfig(ctx); err != nil {
+		m.logf(seat.Name, "! the pointer speed could not be applied: %v", err)
+
+		return
+	}
+
+	m.logf(seat.Name, "pointer speed set to %.2f screens per second", seat.PointerSpeed)
+}
+
 func (m *Manager) Update(name string, change func(*Seat)) error {
 	seat, err := m.store.Get(name)
 	if err != nil {
@@ -1246,6 +1279,13 @@ func (m *Manager) Update(name string, change func(*Seat)) error {
 			m.logf(name, "! the shared library could not be %s: %v",
 				map[bool]string{true: "attached", false: "detached"}[seat.Library], err)
 		}
+	}
+
+	// The same reasoning as the library above, and more so: this is a setting
+	// somebody adjusts while holding the controller, so waiting for the next
+	// provisioning run would make it look like it does nothing at all.
+	if seat.PointerSpeed != before.PointerSpeed {
+		m.applyPointerSpeed(context.Background(), seat)
 	}
 
 	m.notify()

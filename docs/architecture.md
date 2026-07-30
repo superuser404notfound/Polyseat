@@ -489,6 +489,19 @@ motion coming out of the pointer device, 647 pixels per second at 1080p, 433 at
 720p and 1289 at 2160p. The number itself came from the first person to use it
 saying it was too fast.
 
+**And it is a per seat setting**, because it is a matter of whose hand is on the
+stick: the number that suits somebody on a television is too much for somebody on
+a phone, and two people can be playing at once. The daemon writes it into
+`~/.config/polyseat/pointer.conf` and the helper rereads that file when it
+changes, so moving the slider is felt within a couple of seconds without
+restarting the session or provisioning again. That mattered enough to build:
+this is a setting somebody adjusts while holding the controller and watching the
+result, and one that needed a second, unnamed step would look like it did
+nothing. A value the helper cannot use is ignored rather than argued with, since
+a pointer at the wrong speed is a nuisance and a helper that exits over a
+malformed line leaves somebody on a television with no pointer and nothing on
+screen saying why.
+
 Two connections to sway, because a subscribed one only delivers events and
 cannot be asked a question in between, and the tree is asked rather than the
 event read, because an event says what changed and not what is in front

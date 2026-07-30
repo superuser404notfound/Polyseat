@@ -65,9 +65,10 @@ emulators alike. Measured in a seat: 14866 fps uncapped becomes 60.00 fps with a
 **A controller is enough.** Streaming from an Apple TV or a phone means no
 keyboard and no mouse, and neither Moonlight nor Steam can supply them for a
 launcher's login form. So the seat carries both: an on-screen keyboard, and a
-pointer driven by the gamepad, left stick to move and right stick to scroll.
-Nothing happens until Select and Start are pressed together, so a controller in
-a game stays a controller.
+pointer driven by the gamepad, left stick to move and right stick to scroll. It
+turns itself on when the desktop is in front and hands the controller back to a
+fullscreen game, and how fast it moves is a slider on the seat's card that takes
+effect while somebody is holding the controller.
 
 Confirmed on real hardware, most recently on 2026-07-29. The logs of each step
 live in [`spike/`](spike/) and record what works, what does not, and why.

@@ -54,6 +54,18 @@ type Seat struct {
 	// A seat left without it keeps its games entirely to itself.
 	Library bool `json:"library"`
 
+	// PointerSpeed is how much of the screen the gamepad pointer crosses in a
+	// second at full deflection. Zero means the built-in default.
+	//
+	// Per seat rather than one setting for the machine, because it is a matter
+	// of whose hand is on the stick and what they are looking at: the same
+	// number that suits somebody on a television is too much for somebody on a
+	// phone, and two people can be playing at once.
+	//
+	// A fraction of the screen and not a number of pixels, so that it keeps
+	// meaning the same thing when a client connects at a different resolution.
+	PointerSpeed float64 `json:"pointer_speed,omitempty"`
+
 	// PlayerUID is the player's uid inside the container, learned during
 	// provisioning and written down here.
 	//
@@ -188,6 +200,15 @@ func (s *Seat) Validate() error {
 
 	if !resolutionRE.MatchString(s.Resolution) {
 		return fmt.Errorf("resolution has to look like 1920x1080@60Hz")
+	}
+
+	// A pointer nobody can move and one that crosses the screen in a tenth of a
+	// second are both useless, and the second is worse: it cannot be corrected
+	// with the same stick that caused it.
+	if s.PointerSpeed != 0 &&
+		(s.PointerSpeed < MinPointerSpeed || s.PointerSpeed > MaxPointerSpeed) {
+		return fmt.Errorf("the pointer speed has to be between %.2f and %.2f screens per second",
+			MinPointerSpeed, MaxPointerSpeed)
 	}
 
 	if s.Address != "" {

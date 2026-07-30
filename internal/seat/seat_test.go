@@ -281,3 +281,34 @@ func TestParseOrigins(t *testing.T) {
 		}
 	}
 }
+
+// Both ends of the slider are useless and the fast one is worse: a pointer that
+// crosses the screen in a tenth of a second cannot be corrected with the stick
+// that sent it there.
+func TestSeatRejectsAPointerSpeedNobodyCouldUse(t *testing.T) {
+	for name, speed := range map[string]float64{
+		"far too slow":  0.01,
+		"just too slow": MinPointerSpeed - 0.01,
+		"just too fast": MaxPointerSpeed + 0.01,
+		"absurdly fast": 40,
+		"negative":      -0.5,
+	} {
+		s := Seat{Name: "seat1", Resolution: "1920x1080@60Hz", PointerSpeed: speed}
+
+		if err := s.Validate(); err == nil {
+			t.Errorf("%s: %v was accepted", name, speed)
+		}
+	}
+}
+
+// Zero is how a seat says it wants whatever the default is, so that changing the
+// default reaches every seat that never chose a number of its own.
+func TestSeatAcceptsNoPointerSpeedAndSensibleOnes(t *testing.T) {
+	for _, speed := range []float64{0, MinPointerSpeed, DefaultPointerSpeed, MaxPointerSpeed} {
+		s := Seat{Name: "seat1", Resolution: "1920x1080@60Hz", PointerSpeed: speed}
+
+		if err := s.Validate(); err != nil {
+			t.Errorf("%v was rejected: %v", speed, err)
+		}
+	}
+}

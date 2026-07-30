@@ -83,6 +83,13 @@ CURVE = 2.5
 # seat's session comes up at before anybody connects.
 FALLBACK_HEIGHT = 1080
 
+# Where the daemon writes the seat's own speed, set from the web interface.
+#
+# Reread while running rather than read once, because it is adjusted by somebody
+# holding the controller and looking at the result. A setting that needs the
+# session restarted to take effect is a setting that looks broken.
+CONFIG = os.path.expanduser("~/.config/polyseat/pointer.conf")
+
 # Scroll steps per second at full deflection.
 SCROLL_SPEED = 12.0
 
@@ -115,6 +122,45 @@ TOGGLE = (ecodes.BTN_SELECT, ecodes.BTN_START)
 
 def log(message):
     print(f"polyseat-pad-pointer: {message}", flush=True)
+
+
+def configured_speed():
+    """The seat's own speed, or None to keep the built-in one.
+
+    Anything unreadable or out of range is ignored rather than argued with. A
+    pointer at the wrong speed is a nuisance; a helper that exits over a
+    malformed line leaves somebody with no pointer at all and nothing on screen
+    saying why.
+    """
+    try:
+        with open(CONFIG) as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return None
+
+    for line in lines:
+        key, _, value = line.partition("=")
+        if key.strip() != "speed":
+            continue
+
+        try:
+            speed = float(value.strip())
+        except ValueError:
+            return None
+
+        return speed if 0.10 <= speed <= 1.50 else None
+
+    return None
+
+
+def config_stamp():
+    """Something that changes when the file does."""
+    try:
+        info = os.stat(CONFIG)
+    except OSError:
+        return None
+
+    return (info.st_mtime_ns, info.st_size)
 
 
 class Sway:
@@ -473,10 +519,13 @@ def main():
     active = not fullscreen
 
     height = sway.screen_height() or FALLBACK_HEIGHT
-    speed = SPEED * height
+    setting = configured_speed()
+    stamp = config_stamp()
+    speed = (setting or SPEED) * height
 
     log(f"pointer mode {'off' if fullscreen else 'on'} to begin with, "
-        f"{speed:.0f} pixels per second across a {height} pixel screen")
+        f"{speed:.0f} pixels per second across a {height} pixel screen"
+        + ("" if setting is None else f", from this seat's setting of {setting:.2f}"))
 
     held = set()
     # Left stick points, right stick scrolls. That is the way round the
@@ -506,7 +555,7 @@ def main():
 
             if now_height != height:
                 height = now_height
-                speed = SPEED * height
+                speed = (setting or SPEED) * height
                 log(f"screen is {height} pixels tall, {speed:.0f} pixels per second")
 
             now_fullscreen = sway.fullscreen_in_front()
@@ -581,6 +630,16 @@ def main():
         if now - last_scan >= 2.0:
             last_scan = now
             rescan()
+
+            # The web interface may have changed this seat's speed. Compared
+            # rather than reread every time round, so that a helper sitting idle
+            # is not opening a file ninety times a second.
+            if config_stamp() != stamp:
+                stamp = config_stamp()
+                setting = configured_speed()
+                speed = (setting or SPEED) * height
+                log(f"pointer speed is now {speed:.0f} pixels per second"
+                    + ("" if setting is None else f", from a setting of {setting:.2f}"))
 
         if not active:
             continue
