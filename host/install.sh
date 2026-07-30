@@ -233,42 +233,121 @@ if ((${#missing[@]})); then
 fi
 
 step "NVIDIA driver"
-# Checked and not installed, and refused rather than warned about, because
-# without it a seat comes up and streams in software and looks entirely healthy.
+# The one hard requirement that is not a Polyseat package, and the one worth
+# refusing over: a seat built without a working driver comes up, streams in
+# software and looks entirely healthy. The encoder line on its card is the only
+# place it shows.
 #
 # What NVENC needs is the driver's own userspace, libcuda.so.1 and
 # libnvidia-encode.so.1, which nvidia-container-toolkit injects into every seat
-# from the host. Both belong to nvidia-utils on Arch, verified with pacman -Qo
-# rather than assumed: the cuda package is the toolkit, nvcc and the runtime, and
-# a seat needs none of it. Installing a driver is also not this script's business:
-# the userspace has to match a kernel module, and which module package is right
-# depends on the card and the kernel.
-if ! pacman -Qq nvidia-utils >/dev/null 2>&1; then
-    bad "nvidia-utils is missing, and a seat cannot use the GPU without it"
-    echo "    It carries libcuda.so.1 and libnvidia-encode.so.1, which are what"
-    echo "    the container toolkit injects into a seat for NVENC. Install the"
-    echo "    driver for your kernel first, then run this again."
-    exit 1
-fi
-
-if driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null) &&
-   [[ -n $driver ]]; then
+# from the host. Both belong to nvidia-utils, established with pacman -Qo rather
+# than assumed. The cuda package is the toolkit, nvcc and the CUDA runtime, and a
+# seat needs none of it.
+if [[ -n "${POLYSEAT_ALLOW_NO_GPU:-}" ]]; then
+    warn "POLYSEAT_ALLOW_NO_GPU is set, so the driver is not checked"
+    echo "    Seats built on this machine will encode in software."
+elif driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null) &&
+     [[ -n $driver ]]; then
     ok "driver $driver is loaded and answering"
 else
-    bad "nvidia-utils is installed but nvidia-smi does not answer"
-    echo "    The kernel module is not loaded, or it does not match the userspace."
-    echo "    A seat built now would stream in software without saying so."
+    # Is there an NVIDIA card at all? Asked of sysfs rather than lspci, which is
+    # a package of its own and may not be there. 0x10de is NVIDIA.
+    has_nvidia=false
+    for v in /sys/bus/pci/devices/*/vendor; do
+        [[ -r $v ]] && [[ "$(<"$v")" == "0x10de" ]] && has_nvidia=true && break
+    done
+
+    if ! $has_nvidia; then
+        bad "no NVIDIA card found in this machine"
+        echo "    Polyseat encodes with NVENC. Nothing here will work on another"
+        echo "    vendor's GPU yet, and a seat would stream in software."
+        exit 1
+    fi
+
+    # The module package name is derived from the kernel package and cannot be
+    # guessed at: on this machine the module comes from linux-cachyos-nvidia-open,
+    # on plain Arch it would be nvidia-open or nvidia-open-dkms, and installing
+    # the wrong one leaves a machine with no graphics at all. So it is worked out
+    # from what this kernel actually is and offered rather than assumed.
+    kernel_pkg=$(pacman -Qoq "/usr/lib/modules/$(uname -r)/vmlinuz" 2>/dev/null | head -1 || true)
+
+    # A module package that is already installed is not wanted again, and its
+    # presence changes the answer: everything is there and the module is simply
+    # not loaded, which a reboot fixes and an install does not.
+    module=""
+    have_module=false
+
+    for candidate in "${kernel_pkg:+$kernel_pkg-nvidia-open}" \
+                     "${kernel_pkg:+$kernel_pkg-nvidia}" \
+                     nvidia-open-dkms nvidia-dkms; do
+        [[ -n $candidate ]] || continue
+
+        if pacman -Qq "$candidate" >/dev/null 2>&1; then
+            have_module=true
+            module=$candidate
+            break
+        fi
+
+        if [[ -z $module ]] && pacman -Si "$candidate" >/dev/null 2>&1; then
+            module=$candidate
+        fi
+    done
+
+    wanted=()
+    $have_module || [[ -z $module ]] || wanted+=("$module")
+    pacman -Qq nvidia-utils >/dev/null 2>&1 || wanted+=(nvidia-utils)
+
+    if grep -q "^\[multilib\]" /etc/pacman.conf 2>/dev/null &&
+       ! pacman -Qq lib32-nvidia-utils >/dev/null 2>&1; then
+        wanted+=(lib32-nvidia-utils)
+    fi
+
+    bad "the NVIDIA driver is not answering"
+    echo
+
+    if ((${#wanted[@]} == 0)); then
+        echo "    An NVIDIA card is here and the driver packages are installed"
+        echo "    ($module, nvidia-utils), so the module is simply not loaded."
+        echo "    Reboot, or modprobe nvidia, and run this again."
+        exit 1
+    fi
+
+    echo "    An NVIDIA card is here, but nvidia-smi does not answer, so either the"
+    echo "    userspace or the kernel module is missing. For this kernel"
+    echo "    (${kernel_pkg:-unknown}) that means:"
+    echo
+    echo "      ${wanted[*]}"
+    echo
+
+    if ((${#wanted[@]})) && [[ -t 0 ]] && [[ -z "${POLYSEAT_NO_DRIVER_INSTALL:-}" ]]; then
+        read -r -p "    Install those now? [y/N] " answer
+
+        if [[ $answer == y || $answer == Y ]]; then
+            if pacman -S --needed --noconfirm "${wanted[@]}"; then
+                echo
+                ok "installed ${wanted[*]}"
+                echo "    The module is not loaded yet. Reboot, then run this again."
+            else
+                echo
+                bad "that did not work, install the driver by hand and run this again"
+            fi
+
+            exit 1
+        fi
+    fi
+
+    echo "    Install them, reboot, and run this again."
     exit 1
 fi
 
 # A warning and not a refusal: everything works without it except the 32 bit
-# games, and Steam has a great many of those.
+# games, and Steam's own client and a great many games are 32 bit.
 if pacman -Qq lib32-nvidia-utils >/dev/null 2>&1; then
     ok "lib32-nvidia-utils, so 32 bit games get the GPU too"
-else
+elif [[ -z "${POLYSEAT_ALLOW_NO_GPU:-}" ]]; then
     warn "lib32-nvidia-utils is missing, so 32 bit games in a seat will not find the GPU"
-    echo "    Enable the multilib repository and install it. Steam's own client and"
-    echo "    a good many games are 32 bit."
+    grep -q "^\[multilib\]" /etc/pacman.conf 2>/dev/null ||
+        echo "    Enable the multilib repository in /etc/pacman.conf first."
 fi
 
 step "idmap ranges"

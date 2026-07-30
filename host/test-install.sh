@@ -159,10 +159,22 @@ ok "copied"
 
 # ------------------------------------------------------------- the thing itself
 
+step "The driver check, which this machine cannot pass"
+# The test machine is a virtual one with no GPU, so the installer refuses to run
+# on it, and that refusal has to be tested rather than worked around silently:
+# without it every check below would be testing an installer that never ran.
+check "it refuses without a working driver" \
+    vm bash -c '! SUDO_USER='"$TESTUSER"' bash /root/polyseat/host/install.sh </dev/null >/root/nogpu.log 2>&1'
+check "and says why"                        \
+    vm grep -qiE "no NVIDIA card|driver is not answering" /root/nogpu.log
+
 step "Running install.sh"
+# POLYSEAT_ALLOW_NO_GPU is the door the check above leaves open for exactly this:
+# a machine that is knowingly without a GPU. Everything the installer does apart
+# from that one check is the same.
 # Kept, because two of its steps report rather than change anything and the only
 # place their verdict exists is in what they printed.
-if vm bash -c "SUDO_USER=$TESTUSER bash /root/polyseat/host/install.sh >/root/install.log 2>&1; rc=\$?; cat /root/install.log; exit \$rc"; then
+if vm bash -c "SUDO_USER=$TESTUSER POLYSEAT_ALLOW_NO_GPU=1 bash /root/polyseat/host/install.sh >/root/install.log 2>&1; rc=\$?; cat /root/install.log; exit \$rc"; then
     ok "it finished without an error"
 else
     bad "it failed"
@@ -243,7 +255,7 @@ check "the interface answers on 47800"   vm bash -c 'curl -sk --max-time 10 -o /
 step "Running it a second time"
 # An installer that only works on a machine it has never touched is an installer
 # nobody can rerun after a change, which is exactly what happens on every update.
-if vm env SUDO_USER="$TESTUSER" bash /root/polyseat/host/install.sh >/dev/null 2>&1; then
+if vm env SUDO_USER="$TESTUSER" POLYSEAT_ALLOW_NO_GPU=1 bash /root/polyseat/host/install.sh >/dev/null 2>&1; then
     ok "it is idempotent"
 else
     bad "it fails when run twice"
