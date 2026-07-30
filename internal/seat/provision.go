@@ -1177,6 +1177,10 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		return err
 	}
 
+	if err := p.writeLauncherDefaults(ctx); err != nil {
+		return err
+	}
+
 	if _, err := p.WriteSunshineConfig(ctx); err != nil {
 		return err
 	}
@@ -1369,6 +1373,145 @@ const (
 	MinPointerSpeed     = 0.10
 	MaxPointerSpeed     = 1.50
 )
+
+// steamDefaultFolder points Steam's install dialog at the shared library.
+//
+// Steam has no setting for this that exists before somebody signs in. What it
+// keeps is LastInstallFolderIndex, directly under UserLocalConfigStore in
+// userdata/<account>/config/localconfig.vdf, and that file is created by signing
+// in: the index is the position of the folder in libraryfolders.vdf, which was
+// established by setting it once by hand and looking at what changed.
+//
+// So this runs over the accounts that exist, and only writes the key when it is
+// absent. A value that is there is either somebody's own choice or the last
+// folder they installed into, and both are answers this has no business
+// overruling.
+//
+// Only ever with Steam stopped, which is why it is called while provisioning and
+// when a session starts. Steam holds this file in memory and writes it out when
+// it exits, so editing it underneath a running client changes nothing and loses
+// the edit.
+const steamDefaultFolder = `
+import glob, os, re, sys
+
+mount = sys.argv[1]
+home = sys.argv[2]
+
+folders = home + "/.local/share/Steam/config/libraryfolders.vdf"
+
+index, current = None, None
+
+try:
+    for line in open(folders, encoding="utf-8", errors="ignore"):
+        entry = re.match(r'\s*"(\d+)"\s*$', line)
+        if entry:
+            current = entry.group(1)
+            continue
+
+        path = re.match(r'\s*"path"\s+"([^"]+)"', line)
+        if path and os.path.realpath(path.group(1)) == os.path.realpath(mount):
+            index = current
+except OSError:
+    pass
+
+if index is None:
+    print("no shared library folder in Steam's list yet")
+    raise SystemExit(0)
+
+done = []
+
+for conf in glob.glob(home + "/.local/share/Steam/userdata/*/config/localconfig.vdf"):
+    try:
+        text = open(conf, encoding="utf-8", errors="ignore").read()
+    except OSError:
+        continue
+
+    if "LastInstallFolderIndex" in text:
+        continue
+
+    brace = text.find("{")
+    if brace < 0:
+        continue
+
+    text = text[:brace + 1] + '\n\t"LastInstallFolderIndex"\t\t"%s"' % index + text[brace + 1:]
+
+    tmp = conf + ".polyseat"
+
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+        os.replace(tmp, conf)
+        done.append(conf.split("/userdata/")[-1].split("/")[0])
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+if done:
+    print("Steam will install into the shared library for account(s) %s" % ", ".join(done))
+`
+
+// writeLauncherDefaults points the launchers at the shared directory, so that
+// installing a game there is the default rather than a choice somebody has to
+// know about.
+//
+// Only when the file is not there. Provisioning runs again on every generation,
+// and a player who has set their own default has that in exactly this file:
+// replacing it would quietly undo their choice on the next update. A default is
+// only a default until somebody disagrees with it.
+//
+// Lutris keeps this as `system.game_path` in `~/.config/lutris/system.yml`,
+// which is `settings.CONFIG_DIR/system.yml` in its own source, read into a
+// `{"system": {...}}` mapping. Its own default is `~/Games`, which is private to
+// the seat and reaches nobody else.
+func (p *Provisioner) writeLauncherDefaults(ctx context.Context) error {
+	if p.uid == 0 {
+		if err := p.readUID(ctx); err != nil {
+			return err
+		}
+	}
+
+	home := "/home/" + Player
+	conf := home + "/.config/lutris/system.yml"
+
+	script := fmt.Sprintf(`set -e
+if [ -e %[1]s ]; then exit 0; fi
+mkdir -p "$(dirname %[1]s)"
+printf '# Written by Polyseat when this seat was built, and only when this file
+' > %[1]s
+printf '# did not exist. Your own setting wins: change it in Lutris and it stays.
+' >> %[1]s
+printf 'system:
+  game_path: %[2]s
+' >> %[1]s
+`, conf, LibraryMount+"/shared")
+
+	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
+		"HOME="+home, "sh", "-c", script)
+	if err != nil {
+		return err
+	}
+
+	if code != 0 {
+		p.Log("! Lutris could not be pointed at the shared directory: %s", lastLines(out, 2))
+	}
+
+	out, code, err = p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
+		"HOME="+home, "python3", "-c", steamDefaultFolder, LibraryMount, home)
+	if err != nil {
+		return err
+	}
+
+	if code != 0 {
+		p.Log("! Steam's install folder could not be set: %s", lastLines(out, 2))
+	} else if line := strings.TrimSpace(out); line != "" {
+		p.Log("%s", line)
+	}
+
+	return nil
+}
 
 // SessionPath is where a seat records the stream in progress.
 const SessionPath = "/home/" + Player + "/.local/share/polyseat/session.json"

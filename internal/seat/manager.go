@@ -1409,6 +1409,15 @@ func (m *Manager) startSession(ctx context.Context, name string) error {
 		m.logf(name, "! the pointer speed could not be applied: %v", err)
 	}
 
+	// Steam is not running yet at this point, which is the only time this can be
+	// written: it keeps the file in memory and writes it out when it exits. It
+	// is here as well as in provisioning because the account that owns the file
+	// does not exist until somebody has signed in, which is always after the
+	// seat was built.
+	if err := p.writeLauncherDefaults(ctx); err != nil {
+		m.logf(name, "! the launcher defaults could not be written: %v", err)
+	}
+
 	origins, err := p.WriteSunshineConfig(ctx)
 	if err != nil {
 		return err
