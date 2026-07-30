@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 11
+const Generation = 12
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"

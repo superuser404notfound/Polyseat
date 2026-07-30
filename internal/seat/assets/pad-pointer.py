@@ -57,11 +57,24 @@ from evdev import ecodes
 # firm push.
 DEADZONE = 0.18
 
-# Pixels per second at full deflection, and the curve applied before it. The
-# square makes small movements fine and large ones fast, which is what makes a
-# stick usable for pointing at all.
-SPEED = 1100.0
+# How much of the screen the pointer crosses in a second at full deflection, and
+# the curve applied before it. The square makes small movements fine and large
+# ones fast, which is what makes a stick usable for pointing at all.
+#
+# A fraction of the screen rather than a number of pixels, because a seat's
+# output becomes whatever size the connected client asked for. The first version
+# was 1100 pixels per second, which on a phone streaming 1280x720 threw the
+# pointer across the screen and on a 4K television crawled. Now it takes the same
+# time to cross the screen on all of them.
+#
+# The number itself came from the first person to use it saying it was too fast.
+# 0.6 crosses a 1080p screen top to bottom in a second and two thirds.
+SPEED = 0.6
 CURVE = 2.0
+
+# What to assume when the compositor cannot be asked. 1080p is the resolution a
+# seat's session comes up at before anybody connects.
+FALLBACK_HEIGHT = 1080
 
 # Scroll steps per second at full deflection.
 SCROLL_SPEED = 12.0
@@ -116,6 +129,7 @@ class Sway:
 
     MAGIC = b"i3-ipc"
     SUBSCRIBE = 2
+    GET_OUTPUTS = 3
     GET_TREE = 4
 
     def __init__(self):
@@ -129,7 +143,10 @@ class Sway:
         try:
             self.events = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self.events.connect(self.path)
-            self._send(self.events, self.SUBSCRIBE, b'["window"]')
+            # Outputs as well as windows, because the size of the screen the
+            # pointer moves across changes at runtime: polyseat-resize gives the
+            # output the mode the connecting client asked for.
+            self._send(self.events, self.SUBSCRIBE, b'["window","output"]')
             self._recv(self.events)
         except OSError as exc:
             log(f"could not subscribe to sway, pointer mode stays manual: {exc}")
@@ -183,21 +200,57 @@ class Sway:
 
             return False
 
-    def fullscreen_in_front(self):
-        """Is the focused window fullscreen."""
-        if not self.path:
-            return False
-
+    def _query(self, kind):
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.connect(self.path)
 
             try:
-                self._send(sock, self.GET_TREE)
-                tree = self._recv(sock)
+                self._send(sock, kind)
+
+                return self._recv(sock)
             finally:
                 sock.close()
         except (OSError, ValueError):
+            return None
+
+    def screen_height(self):
+        """How tall the output is, in pixels, or None."""
+        if not self.path:
+            return None
+
+        return self._height_of(self._query(self.GET_OUTPUTS))
+
+    @staticmethod
+    def _height_of(outputs):
+        """The height of the output the pointer moves across, or None.
+
+        The first one with a size. An output sway knows about but is not driving
+        reports a geometry of 0 by 0, measured by adding a second headless
+        output to a seat and disabling it, so a truthy height is the whole test
+        and there is no need to look at the active flag as well. Taking a zero
+        from one of those would leave the pointer with a speed of nothing.
+        """
+        if not isinstance(outputs, list):
+            return None
+
+        for output in outputs:
+            if not isinstance(output, dict):
+                continue
+
+            height = (output.get("rect") or {}).get("height")
+            if height:
+                return height
+
+        return None
+
+    def fullscreen_in_front(self):
+        """Is the focused window fullscreen."""
+        if not self.path:
+            return False
+
+        tree = self._query(self.GET_TREE)
+        if not isinstance(tree, dict):
             return False
 
         return self._focused_is_fullscreen(tree)
@@ -412,7 +465,11 @@ def main():
     fullscreen = sway.fullscreen_in_front()
     active = not fullscreen
 
-    log(f"pointer mode {'off' if fullscreen else 'on'} to begin with")
+    height = sway.screen_height() or FALLBACK_HEIGHT
+    speed = SPEED * height
+
+    log(f"pointer mode {'off' if fullscreen else 'on'} to begin with, "
+        f"{speed:.0f} pixels per second across a {height} pixel screen")
 
     held = set()
     # Left stick points, right stick scrolls. That is the way round the
@@ -435,6 +492,15 @@ def main():
                 more, _, _ = select([sway.events.fileno()], [], [], 0)
                 if not more:
                     break
+
+            # The output may have taken the mode a connecting client asked for,
+            # which changes how far a second of full deflection should carry.
+            now_height = sway.screen_height() or FALLBACK_HEIGHT
+
+            if now_height != height:
+                height = now_height
+                speed = SPEED * height
+                log(f"screen is {height} pixels tall, {speed:.0f} pixels per second")
 
             now_fullscreen = sway.fullscreen_in_front()
 
@@ -517,8 +583,8 @@ def main():
 
         if x or y:
             pointer.move(
-                (abs(x) ** CURVE) * (1 if x > 0 else -1) * SPEED * elapsed,
-                (abs(y) ** CURVE) * (1 if y > 0 else -1) * SPEED * elapsed,
+                (abs(x) ** CURVE) * (1 if x > 0 else -1) * speed * elapsed,
+                (abs(y) ** CURVE) * (1 if y > 0 else -1) * speed * elapsed,
             )
 
         # Scrolling is inverted against the axis: pushing the stick up should

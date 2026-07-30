@@ -479,6 +479,16 @@ cannot leave somebody holding a stick that does nothing. The gamepad is never
 grabbed, so games see it exactly as before. Left stick points and right stick
 scrolls, which is the way round the Windows tools do it and worth matching.
 
+**How fast it moves is a fraction of the screen, not a number of pixels.** A
+seat's output becomes whatever size the connected client asked for, so a fixed
+1100 pixels per second, which is what this started with, threw the pointer
+across a phone streaming 720p and crawled on a 4K television. It now crosses the
+screen height in a second and two thirds whatever the resolution: measured by
+feeding a synthetic gamepad in at full deflection and summing the relative
+motion coming out of the pointer device, 647 pixels per second at 1080p, 433 at
+720p and 1289 at 2160p. The number itself came from the first person to use it
+saying it was too fast.
+
 Two connections to sway, because a subscribed one only delivers events and
 cannot be asked a question in between, and the tree is asked rather than the
 event read, because an event says what changed and not what is in front
