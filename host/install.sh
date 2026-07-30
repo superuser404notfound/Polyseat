@@ -232,6 +232,45 @@ if ((${#missing[@]})); then
     fi
 fi
 
+step "NVIDIA driver"
+# Checked and not installed, and refused rather than warned about, because
+# without it a seat comes up and streams in software and looks entirely healthy.
+#
+# What NVENC needs is the driver's own userspace, libcuda.so.1 and
+# libnvidia-encode.so.1, which nvidia-container-toolkit injects into every seat
+# from the host. Both belong to nvidia-utils on Arch, verified with pacman -Qo
+# rather than assumed: the cuda package is the toolkit, nvcc and the runtime, and
+# a seat needs none of it. Installing a driver is also not this script's business:
+# the userspace has to match a kernel module, and which module package is right
+# depends on the card and the kernel.
+if ! pacman -Qq nvidia-utils >/dev/null 2>&1; then
+    bad "nvidia-utils is missing, and a seat cannot use the GPU without it"
+    echo "    It carries libcuda.so.1 and libnvidia-encode.so.1, which are what"
+    echo "    the container toolkit injects into a seat for NVENC. Install the"
+    echo "    driver for your kernel first, then run this again."
+    exit 1
+fi
+
+if driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null) &&
+   [[ -n $driver ]]; then
+    ok "driver $driver is loaded and answering"
+else
+    bad "nvidia-utils is installed but nvidia-smi does not answer"
+    echo "    The kernel module is not loaded, or it does not match the userspace."
+    echo "    A seat built now would stream in software without saying so."
+    exit 1
+fi
+
+# A warning and not a refusal: everything works without it except the 32 bit
+# games, and Steam has a great many of those.
+if pacman -Qq lib32-nvidia-utils >/dev/null 2>&1; then
+    ok "lib32-nvidia-utils, so 32 bit games get the GPU too"
+else
+    warn "lib32-nvidia-utils is missing, so 32 bit games in a seat will not find the GPU"
+    echo "    Enable the multilib repository and install it. Steam's own client and"
+    echo "    a good many games are 32 bit."
+fi
+
 step "idmap ranges"
 # Without a root entry in both files every container start fails with "System
 # doesn't have a functional idmap setup", which does not mention subuid at all

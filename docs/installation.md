@@ -38,6 +38,28 @@ into every seat out of the host's package cache, which tied the seats to a
 CachyOS host and was where the mirror lag problem came from. Provisioning
 removes that repository from seats that still carry it.
 
+### The NVIDIA driver
+
+Checked and refused rather than installed or warned about.
+
+What NVENC needs is the driver's own userspace, `libcuda.so.1` and
+`libnvidia-encode.so.1`, which `nvidia-container-toolkit` injects into every seat
+from the host. Both belong to `nvidia-utils`, established with `pacman -Qo`
+rather than assumed. The `cuda` package is the toolkit, `nvcc` and the CUDA
+runtime, and a seat needs none of it: the machine this was developed on happens
+to have `cuda` installed, which is exactly the trap that makes "it works here"
+worthless as evidence.
+
+`lib32-nvidia-utils` is a warning rather than a refusal. Everything works without
+it except the 32 bit games, and Steam's own client and a great many games are 32
+bit.
+
+Not installed, because a driver userspace has to match a kernel module and which
+module package is right depends on the card and the kernel. Refused rather than
+warned about, because a seat built without a working driver comes up, streams in
+software and looks entirely healthy; the encoder line on its card is the only
+place it shows, and by then somebody has spent twenty minutes on it.
+
 ### idmap ranges
 
 `/etc/subuid` and `/etc/subgid` need an entry for **root**:

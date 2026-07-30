@@ -23,7 +23,7 @@ input devices, shares the game library, and repairs what drifts.
 |---|---|
 | **Host** | Arch-based. The installer queries `pacman` rather than pretending to be portable. |
 | **Packages** | `incus`, `nvidia-container-toolkit`, `bpftrace`, `python`, `go`. The installer installs whichever of them are missing. |
-| **GPU** | NVIDIA. The encoder is NVENC and the seats are given the NVIDIA userspace directly. |
+| **GPU** | NVIDIA, with the driver installed and answering. `nvidia-utils` carries the two libraries NVENC needs, `libcuda.so.1` and `libnvidia-encode.so.1`, and the container toolkit injects them into every seat. `lib32-nvidia-utils` as well, or 32 bit games will not find the GPU. The `cuda` package is the toolkit and is **not** needed. The installer refuses rather than warns if the driver is missing, because a seat without it comes up, streams in software and looks perfectly healthy. |
 | **Filesystem** | btrfs, or XFS created with `reflink=1`, **and only for the shared game library**. `ext4` cannot share blocks, and neither can tmpfs or a network filesystem. Seats still work on those; the shared library simply stays off and every seat downloads its own games. The installer tests it and says which it found. |
 | **Network** | One wired interface the seats can take a macvlan from, so each seat is a host of its own on the LAN and can use the standard Sunshine ports. |
 
