@@ -1150,8 +1150,10 @@ function facts(seat) {
 
   row("Shared library", seat.library ? "yes" : "no");
 
-  if (seat.stale) {
-    row("Provisioning", "out of date, provision this seat again", "flag");
+  if (!seat.built) {
+    row("Not built yet", "Start builds it, which takes a few minutes");
+  } else if (seat.stale) {
+    row("Provisioning", "out of date, rebuild this seat", "flag");
   }
 
   (seat.notes || []).forEach((note) => row("Note", note, "flag"));
@@ -1181,9 +1183,13 @@ function actions(seat) {
   if (running) button("Stop", () => api("POST", `/api/seats/${seat.name}/stop`));
   else button("Start", () => api("POST", `/api/seats/${seat.name}/start`), "primary");
 
-  button(seat.state === "absent" ? "Build" : "Provision", () =>
-    api("POST", `/api/seats/${seat.name}/provision`),
-  );
+  // A seat nobody has built yet gets Start and nothing else. Start builds it,
+  // and offering Build beside it was offering the same thing twice under two
+  // names, one of which read as though something had gone wrong with a seat
+  // created a minute ago.
+  if (seat.built) {
+    button("Rebuild", () => api("POST", `/api/seats/${seat.name}/provision`));
+  }
 
   button("Edit", () => {
     openEditor(seat);

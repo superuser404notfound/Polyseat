@@ -150,10 +150,23 @@ func (m *Manager) Run(ctx context.Context) error {
 	m.reconcileAll(ctx)
 
 	for _, s := range seats {
-		if s.Autostart {
-			m.log.Info("autostarting seat", "seat", s.Name)
-			_ = m.Start(s.Name)
+		if !s.Autostart {
+			continue
 		}
+
+		// Autostart brings up what exists. It does not build, even though Start
+		// does now: building takes minutes, downloads an image and installs a
+		// distribution's worth of packages, and a daemon restart is not somebody
+		// asking for that. Pressing Start in the interface is.
+		if s.Provisioned == 0 {
+			m.log.Info("not autostarting a seat that has never been built", "seat", s.Name)
+			m.logf(s.Name, "not built yet, so not started with the daemon. Press Start when you want it built")
+
+			continue
+		}
+
+		m.log.Info("autostarting seat", "seat", s.Name)
+		_ = m.Start(s.Name)
 	}
 
 	events, err := m.client.Lifecycles(ctx)
@@ -1034,7 +1047,12 @@ func staleSeats(seats []Seat) []string {
 	var out []string
 
 	for _, seat := range seats {
-		if seat.Provisioned != Generation {
+		// Only a seat that was built and is now behind. One that has never been
+		// built is not out of date, it is new, and starting it builds it: the
+		// banner that offers to bring seats up to date would otherwise open with
+		// a sentence about an older version of the daemon for a seat created a
+		// minute ago.
+		if seat.Provisioned != 0 && seat.Provisioned != Generation {
 			out = append(out, seat.Name)
 		}
 	}
@@ -1153,6 +1171,19 @@ func sweep(names []string, busy func(string) string, provision func(string) erro
 }
 
 func (m *Manager) Provision(name string) error {
+	return m.operate(name, "provisioning", func(ctx context.Context) error {
+		return m.build(ctx, name)
+	})
+}
+
+// build is provisioning without the operation around it, so that starting a seat
+// that has never been built can do it as part of starting.
+//
+// Separate for exactly that: a brand new seat used to answer Start with "this
+// seat has no container yet, provision it first", and its card offered to
+// provision a seat that had never been provisioned as though it were out of
+// date. Two words for one thing, and the second of them wrong.
+func (m *Manager) build(ctx context.Context, name string) error {
 	seat, err := m.store.Get(name)
 	if err != nil {
 		return err
@@ -1171,36 +1202,34 @@ func (m *Manager) Provision(name string) error {
 		return err
 	}
 
-	return m.operate(name, "provisioning", func(ctx context.Context) error {
-		m.setState(name, StateBuilding)
+	m.setState(name, StateBuilding)
 
-		// The broker has nothing to do while a seat is being rebuilt, and
-		// provisioning restarts the container underneath it.
-		m.stopBroker(name)
+	// The broker has nothing to do while a seat is being rebuilt, and
+	// provisioning restarts the container underneath it.
+	m.stopBroker(name)
 
-		p := &Provisioner{
-			Client:  m.client,
-			Seat:    seat,
-			Uplink:  uplink,
-			Image:   m.cfg.Image,
-			Secrets: secrets,
-			Library: m.pool,
-			Log:     func(f string, a ...any) { m.logf(name, f, a...) },
-		}
+	p := &Provisioner{
+		Client:  m.client,
+		Seat:    seat,
+		Uplink:  uplink,
+		Image:   m.cfg.Image,
+		Secrets: secrets,
+		Library: m.pool,
+		Log:     func(f string, a ...any) { m.logf(name, f, a...) },
+	}
 
-		if err := p.Run(ctx); err != nil {
-			return err
-		}
+	if err := p.Run(ctx); err != nil {
+		return err
+	}
 
-		seat.Provisioned = Generation
-		seat.PlayerUID = p.uid
+	seat.Provisioned = Generation
+	seat.PlayerUID = p.uid
 
-		if err := m.store.Put(seat); err != nil {
-			return err
-		}
+	if err := m.store.Put(seat); err != nil {
+		return err
+	}
 
-		return m.startSession(ctx, name)
-	})
+	return m.startSession(ctx, name)
 }
 
 // Start brings a seat up: container, session, broker.
@@ -1212,13 +1241,28 @@ func (m *Manager) Start(name string) error {
 	return m.operate(name, "starting", func(ctx context.Context) error {
 		m.setState(name, StateStarting)
 
+		// A seat nobody has built yet is built here, rather than being told to
+		// go and press the other button. Somebody who has just created a seat
+		// wants it running; that it has to be built first is this program's
+		// business and not theirs.
+		seat, err := m.store.Get(name)
+		if err != nil {
+			return err
+		}
+
+		if seat.Provisioned == 0 {
+			m.logf(name, "this seat has never been built, doing that first")
+
+			return m.build(ctx, name)
+		}
+
 		status, err := m.client.Status(name)
 		if err != nil {
 			return err
 		}
 
 		if status == "" {
-			return fmt.Errorf("this seat has no container yet, provision it first")
+			return fmt.Errorf("this seat has no container, build it again")
 		}
 
 		if status != "Running" {
@@ -1778,7 +1822,8 @@ func (m *Manager) Status(name string) (Status, error) {
 		Progress:  rt.progress,
 		Notes:     rt.notes,
 		Error:     rt.lastErr,
-		Stale:     seat.Provisioned != Generation,
+		Built:     seat.Provisioned != 0,
+		Stale:     seat.Provisioned != 0 && seat.Provisioned != Generation,
 	}, nil
 }
 

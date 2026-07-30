@@ -193,7 +193,11 @@ type Status struct {
 	// Error is the last failure, kept until something succeeds.
 	Error string `json:"error,omitempty"`
 
-	// Stale means the seat was provisioned by an older generation.
+	// Built says whether this seat has ever been provisioned. A seat that has
+	// not is new rather than broken, and starting it builds it.
+	Built bool `json:"built"`
+
+	// Stale means the seat was built, by an older generation.
 	Stale bool `json:"stale"`
 }
 

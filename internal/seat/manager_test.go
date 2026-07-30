@@ -13,14 +13,13 @@ func TestStaleSeatsAreTheOnesAnotherGenerationBuilt(t *testing.T) {
 	seats := []Seat{
 		{Name: "current", Provisioned: Generation},
 		{Name: "behind", Provisioned: Generation - 1},
-		{Name: "never", Provisioned: 0},
 		{Name: "ahead", Provisioned: Generation + 1},
 		{Name: "also-current", Provisioned: Generation},
 	}
 
 	got := staleSeats(seats)
 
-	want := []string{"behind", "never", "ahead"}
+	want := []string{"behind", "ahead"}
 	if len(got) != len(want) {
 		t.Fatalf("picked %v, want %v", got, want)
 	}
@@ -29,6 +28,24 @@ func TestStaleSeatsAreTheOnesAnotherGenerationBuilt(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("picked %v, want %v, and in the order the seats are shown", got, want)
 		}
+	}
+}
+
+// A seat nobody has built yet is not out of date, it is new, and starting it
+// builds it. Counting it here was how the interface came to open with "seat vince
+// was built by an older version of the daemon" above a seat created a minute
+// earlier, next to a row saying it was out of date and a button offering to
+// provision something that had never been provisioned.
+func TestStaleSeatsLeavesANeverBuiltSeatAlone(t *testing.T) {
+	seats := []Seat{
+		{Name: "brand-new", Provisioned: 0},
+		{Name: "behind", Provisioned: Generation - 1},
+	}
+
+	got := staleSeats(seats)
+
+	if len(got) != 1 || got[0] != "behind" {
+		t.Errorf("picked %v, want only behind", got)
 	}
 }
 
