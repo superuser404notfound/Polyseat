@@ -241,6 +241,34 @@ where downloading them again does not. Packages and Incus are left alone in both
 cases. They are not Polyseat's to remove, and a script that uninstalls somebody's
 container manager because it once installed it is a script nobody should run.
 
+## Resetting the machine to test the installer on it
+
+`host/reset-machine.sh` puts this machine back to before Polyseat, so that the
+one path a developed-on machine can never test by accident can be tested
+deliberately: what a new user does first.
+
+It is not part of uninstalling Polyseat. `--uninstall` leaves the seats and
+`--purge` leaves the packages and Incus, on purpose. This removes them anyway,
+and keeps the shared game library unless `--library` is given, because the seats'
+copies come back from it by reflink in a second.
+
+Everything in it was learned by doing it by hand three times:
+
+* Stop Incus before removing its package, or the running daemon outlives it. The
+  first run left an `incusd`, two `dnsmasq` children and two bridges behind, all
+  belonging to a package that was no longer installed.
+* Delete the btrfs subvolumes before removing `/var/lib/incus`. `rm` cannot
+  delete a subvolume, and the first attempt left two thirds of the directory
+  there while reporting nothing.
+* Unmount the three tmpfs mounts under it as well. `rm` says "device or resource
+  busy" for those and carries on, which reads as success.
+* Remove the leftover `incusbr` bridges. They outlive both the daemon and the
+  package, and a stale one is the sort of thing that makes the next install look
+  haunted.
+* Do not pipe a long step through `sed` for the sake of indentation. It buffers
+  when its output is not a terminal, and a working run that prints nothing for
+  three minutes is indistinguishable from a hung one.
+
 ## Testing the installer
 
 `host/test-install.sh` runs the installer against a throwaway Arch **virtual

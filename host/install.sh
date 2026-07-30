@@ -61,7 +61,12 @@ stop_seat() {
 
     [[ -n "$(state_of "$name")" ]] || return 0
 
-    incus stop "$name" >/dev/null 2>&1 || true
+    # Under a timeout, because this call is the one that hangs. `incus stop` has
+    # been seen to sit there for minutes with the server's own "Stopping
+    # instance" task never finishing, and without a bound the loop below, which
+    # exists precisely for that case, is never reached: the first version of this
+    # waited three minutes inside the call it was supposed to be recovering from.
+    timeout 45 incus stop "$name" >/dev/null 2>&1 || true
 
     while [[ "$(state_of "$name")" == "RUNNING" && $waited -lt 60 ]]; do
         sleep 2
@@ -145,7 +150,7 @@ if [[ "${1:-}" == "--purge" ]]; then
             stop_seat "$name"
 
             if [[ -n "$(state_of "$name")" ]]; then
-                incus delete -f "$name" >/dev/null 2>&1 && ok "$name deleted" ||
+                timeout 180 incus delete -f "$name" >/dev/null 2>&1 && ok "$name deleted" ||
                     bad "$name could not be deleted"
             else
                 ok "$name had no container"
