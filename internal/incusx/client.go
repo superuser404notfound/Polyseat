@@ -33,9 +33,76 @@ import (
 // ImagesRemote is the default image server Incus ships with.
 const ImagesRemote = "https://images.linuxcontainers.org"
 
+// opTimeout bounds the operations that are not a download or somebody's package
+// manager: starting, stopping, deleting, changing a device.
+//
+// Bounded because one of them was not, twice in one hour. Incus reports the
+// result of an operation over the connection the client opened, and that
+// connection can stop delivering while staying open: the daemon was found parked
+// in WaitContext inside Start for a container Incus had already brought up, and
+// again inside an exec, while the same commands from a shell answered at once. A
+// seat then sits in "starting" with an empty log and no way out but a restart of
+// the daemon, which is the worst shape a failure can take.
+const opTimeout = 3 * time.Minute
+
 // Client talks to the local Incus daemon.
+//
+// The connection is replaced rather than only complained about when it stops
+// answering. See stalled.
 type Client struct {
+	mu  sync.RWMutex
 	srv incus.InstanceServer
+
+	// dial opens a new connection. A field rather than a call so that the
+	// repair below can be tested: the real one needs the Incus socket, which a
+	// test running as an ordinary user cannot open, and a repair that quietly
+	// fails to happen looks exactly like one that worked.
+	dial func() (incus.InstanceServer, error)
+}
+
+// bounded gives a context a deadline if it does not have one, leaving a caller
+// that set its own alone. Provisioning installs packages for minutes at a time
+// and passes its own context; nothing here should shorten that.
+func bounded(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+
+	return context.WithTimeout(ctx, d)
+}
+
+// stalled repairs the connection when a wait timed out, and returns the error.
+//
+// A timed out wait means Incus accepted the operation and never reported what
+// became of it, which in every case seen here was the connection and not the
+// operation: the container really had started. So the error is reported once,
+// the connection is replaced, and the next call works. The old connection is
+// left to be collected rather than disconnected, because the lifecycle listener
+// is riding on it and cutting that would take the daemon down with it.
+func (c *Client) stalled(err error) error {
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+
+	if c.dial == nil {
+		return err
+	}
+
+	if srv, dialErr := c.dial(); dialErr == nil {
+		c.mu.Lock()
+		c.srv = srv
+		c.mu.Unlock()
+	}
+
+	return err
+}
+
+// server is the connection as it stands now.
+func (c *Client) server() incus.InstanceServer {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.srv
 }
 
 // Connect opens the local Unix socket. The daemon runs as root, so no
@@ -46,19 +113,21 @@ func Connect() (*Client, error) {
 		return nil, fmt.Errorf("connect to Incus: %w", err)
 	}
 
-	return &Client{srv: srv}, nil
+	return &Client{srv: srv, dial: func() (incus.InstanceServer, error) {
+		return incus.ConnectIncusUnix("", nil)
+	}}, nil
 }
 
 // Close releases the connection.
 func (c *Client) Close() {
 	if c.srv != nil {
-		c.srv.Disconnect()
+		c.server().Disconnect()
 	}
 }
 
 // ServerVersion reports what the daemon on the other end is, for the doctor.
 func (c *Client) ServerVersion() (string, error) {
-	info, _, err := c.srv.GetServer()
+	info, _, err := c.server().GetServer()
 	if err != nil {
 		return "", err
 	}
@@ -72,7 +141,7 @@ func (c *Client) ServerVersion() (string, error) {
 // instance. Callers distinguish "absent" from "stopped" that way without
 // having to inspect an error.
 func (c *Client) Status(name string) (string, error) {
-	state, _, err := c.srv.GetInstanceState(name)
+	state, _, err := c.server().GetInstanceState(name)
 	if err != nil {
 		if isNotFound(err) {
 			return "", nil
@@ -112,7 +181,7 @@ func (c *Client) Create(ctx context.Context, name, image string) error {
 		return fmt.Errorf("fetch image %q: %w", image, err)
 	}
 
-	op, err := c.srv.CreateInstanceFromImage(remote, *img, api.InstancesPost{
+	op, err := c.server().CreateInstanceFromImage(remote, *img, api.InstancesPost{
 		Name: name,
 		Type: api.InstanceTypeContainer,
 	})
@@ -138,16 +207,22 @@ func (c *Client) Create(ctx context.Context, name, image string) error {
 
 // Delete removes a stopped instance.
 func (c *Client) Delete(ctx context.Context, name string) error {
-	op, err := c.srv.DeleteInstance(name)
+	ctx, cancel := bounded(ctx, opTimeout)
+	defer cancel()
+
+	op, err := c.server().DeleteInstance(name)
 	if err != nil {
 		return err
 	}
 
-	return op.WaitContext(ctx)
+	return c.stalled(op.WaitContext(ctx))
 }
 
 func (c *Client) changeState(ctx context.Context, name, action string, timeout int, force bool) error {
-	op, err := c.srv.UpdateInstanceState(name, api.InstanceStatePut{
+	ctx, cancel := bounded(ctx, opTimeout)
+	defer cancel()
+
+	op, err := c.server().UpdateInstanceState(name, api.InstanceStatePut{
 		Action:  action,
 		Timeout: timeout,
 		Force:   force,
@@ -156,7 +231,7 @@ func (c *Client) changeState(ctx context.Context, name, action string, timeout i
 		return err
 	}
 
-	return op.WaitContext(ctx)
+	return c.stalled(op.WaitContext(ctx))
 }
 
 // Start boots the instance.
@@ -187,7 +262,7 @@ func (c *Client) Restart(ctx context.Context, name string, timeout int) error {
 // every update has to carry back so concurrent writers cannot overwrite each
 // other silently.
 func (c *Client) Instance(name string) (*api.Instance, string, error) {
-	return c.srv.GetInstance(name)
+	return c.server().GetInstance(name)
 }
 
 // idmapEntry is one line of an instance's identifier mapping, as Incus records
@@ -213,7 +288,7 @@ type idmapEntry struct {
 // security.idmap.isolated changes that per container and a daemon that had
 // hardcoded the common case would write unreadable files without saying so.
 func (c *Client) MapID(name string, uid, gid int64) (hostUID, hostGID int64, err error) {
-	inst, _, err := c.srv.GetInstance(name)
+	inst, _, err := c.server().GetInstance(name)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -254,7 +329,10 @@ func (c *Client) MapID(name string, uid, gid int64) (hostUID, hostGID int64, err
 // whether anything actually changed. A device mapped to nil is removed. Absent
 // keys are left untouched, so this converges rather than replaces.
 func (c *Client) Configure(ctx context.Context, name string, config map[string]string, devices map[string]map[string]string) (bool, error) {
-	inst, etag, err := c.srv.GetInstance(name)
+	ctx, cancel := bounded(ctx, opTimeout)
+	defer cancel()
+
+	inst, etag, err := c.server().GetInstance(name)
 	if err != nil {
 		return false, err
 	}
@@ -301,19 +379,22 @@ func (c *Client) Configure(ctx context.Context, name string, config map[string]s
 		return false, nil
 	}
 
-	op, err := c.srv.UpdateInstance(name, put, etag)
+	op, err := c.server().UpdateInstance(name, put, etag)
 	if err != nil {
 		return false, err
 	}
 
-	return true, op.WaitContext(ctx)
+	return true, c.stalled(op.WaitContext(ctx))
 }
 
 // UnsetConfig removes configuration keys. Separate from Configure because a
 // merge cannot express "absent" without giving up the ability to set an empty
 // value.
 func (c *Client) UnsetConfig(ctx context.Context, name string, keys ...string) error {
-	inst, etag, err := c.srv.GetInstance(name)
+	ctx, cancel := bounded(ctx, opTimeout)
+	defer cancel()
+
+	inst, etag, err := c.server().GetInstance(name)
 	if err != nil {
 		return err
 	}
@@ -333,12 +414,12 @@ func (c *Client) UnsetConfig(ctx context.Context, name string, keys ...string) e
 		return nil
 	}
 
-	op, err := c.srv.UpdateInstance(name, put, etag)
+	op, err := c.server().UpdateInstance(name, put, etag)
 	if err != nil {
 		return err
 	}
 
-	return op.WaitContext(ctx)
+	return c.stalled(op.WaitContext(ctx))
 }
 
 func sameDevice(a, b map[string]string) bool {
@@ -359,7 +440,7 @@ func sameDevice(a, b map[string]string) bool {
 // Used to generate Sunshine's allowed CSRF origins, which is why it is the
 // running address that matters rather than anything configured.
 func (c *Client) Addresses(name string) (map[string][]string, error) {
-	state, _, err := c.srv.GetInstanceState(name)
+	state, _, err := c.server().GetInstanceState(name)
 	if err != nil {
 		return nil, err
 	}
@@ -439,7 +520,7 @@ func (c *Client) Exec(ctx context.Context, name string, argv []string, stdin io.
 
 	done := make(chan bool)
 
-	op, err := c.srv.ExecInstance(name, req, &incus.InstanceExecArgs{
+	op, err := c.server().ExecInstance(name, req, &incus.InstanceExecArgs{
 		Stdin:    stdin,
 		Stdout:   stdout,
 		Stderr:   stderr,
@@ -449,7 +530,7 @@ func (c *Client) Exec(ctx context.Context, name string, argv []string, stdin io.
 		return -1, err
 	}
 
-	if err := op.WaitContext(ctx); err != nil {
+	if err := c.stalled(op.WaitContext(ctx)); err != nil {
 		return -1, err
 	}
 
@@ -546,7 +627,7 @@ func (c *Client) PushFile(name, path string, content []byte, mode int, uid, gid 
 		}
 	}
 
-	return c.srv.CreateInstanceFile(name, path, incus.InstanceFileArgs{
+	return c.server().CreateInstanceFile(name, path, incus.InstanceFileArgs{
 		Content:   bytes.NewReader(content),
 		UID:       uid,
 		GID:       gid,
@@ -568,7 +649,7 @@ func (c *Client) MakeDir(name, path string, mode int, uid, gid int64) error {
 	for i := range parts {
 		current := "/" + strings.Join(parts[:i+1], "/")
 
-		err := c.srv.CreateInstanceFile(name, current, incus.InstanceFileArgs{
+		err := c.server().CreateInstanceFile(name, current, incus.InstanceFileArgs{
 			UID:  uid,
 			GID:  gid,
 			Mode: mode,
@@ -589,7 +670,7 @@ func (c *Client) MakeDir(name, path string, mode int, uid, gid int64) error {
 
 // ReadFile returns the contents of a file inside the instance.
 func (c *Client) ReadFile(name, path string) ([]byte, error) {
-	reader, _, err := c.srv.GetInstanceFile(name, path)
+	reader, _, err := c.server().GetInstanceFile(name, path)
 	if err != nil {
 		return nil, err
 	}
@@ -626,7 +707,7 @@ type Lifecycle struct {
 // crash or by somebody typing `incus stop`. The daemon has to notice either
 // way.
 func (c *Client) Lifecycles(ctx context.Context) (<-chan Lifecycle, error) {
-	listener, err := c.srv.GetEventsByType([]string{"lifecycle"})
+	listener, err := c.server().GetEventsByType([]string{"lifecycle"})
 	if err != nil {
 		return nil, err
 	}

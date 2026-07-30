@@ -647,9 +647,21 @@ that runs after an operation finishes gets two minutes, having had no caller to
 cancel it at all: it used `context.Background()`, so one stuck exec leaked a
 goroutine for the life of the daemon.
 
-What this does not yet do is reconnect. A daemon whose connection has gone bad
-now reports errors on the cards instead of hanging, and a restart fixes it, which
-is a great deal better than silence but still a restart.
+It happened twice in an hour, the second time inside `Start` for a container
+Incus had already brought up, so the operations are bounded too: three minutes
+for the ones that are neither a download nor somebody's package manager, and a
+caller that set its own deadline keeps it, because provisioning installs packages
+for minutes at a time and passes a context of its own.
+
+And a wait that times out now replaces the connection before returning, so the
+next call works and nobody has to restart the daemon. Only that failure: a
+container that genuinely refuses to start must not cost the connection every
+time. The old connection is left to be collected rather than disconnected,
+because the lifecycle listener is riding on it and cutting that would take the
+daemon down with it. The dialling is a field on the client rather than a call, so
+the repair can be tested at all: the real one needs the Incus socket, which a
+test running as an ordinary user cannot open, and a repair that quietly fails to
+happen looks exactly like one that worked.
 
 ## Capacity
 
