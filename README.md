@@ -110,7 +110,9 @@ appears in the other seats by itself.
 desktop with an application launcher, a bar and a file manager, not on a bare
 terminal. Moonlight's app list is generated from what the seat really has, with
 box art, so Steam Big Picture, any installed launcher and the installed games
-themselves are one pick away before a stream even starts. Software goes in from
+themselves are one pick away before a stream even starts. The desktop's own
+launcher is generated from the same scan, so a game is in both menus without
+anybody making a shortcut for it. Software goes in from
 either end with no password and no root: the player types `flatpak install ...`
 in the seat, or somebody installs it into that seat from the Polyseat web
 interface and watches the progress bar.

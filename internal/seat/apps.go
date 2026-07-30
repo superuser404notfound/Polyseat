@@ -2,6 +2,7 @@ package seat
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -147,6 +148,13 @@ func (p *Provisioner) WriteApps(ctx context.Context) ([]string, bool, error) {
 
 	for i := range games {
 		games[i].Image = art[games[i].Name]
+	}
+
+	// The same games in the seat's own launcher. Not part of the app list and
+	// not worth failing it over, so a problem here is said out loud and the
+	// list is written anyway.
+	if err := p.writeGameEntries(ctx, games); err != nil {
+		p.Log("! the games could not be added to the seat's own launcher: %v", err)
 	}
 
 	ours, names := polyseatApps(found, games)
@@ -671,6 +679,120 @@ type artItem struct {
 // Best effort, like the icons: an entry with no card is an entry a client draws
 // as its name on a plain background, which is how it was before and is not
 // worth failing a seat's start over.
+// entryDir is where a seat's own application launcher looks.
+const entryDir = "/home/" + Player + "/.local/share/applications"
+
+// entryPrefix marks the entries this writes, so that removing the ones for
+// games that are gone cannot touch anything else in that directory.
+const entryPrefix = "polyseat-game-"
+
+// writeGameEntries puts the installed games into the seat's own launcher.
+//
+// Moonlight's list and the launcher inside the seat are two different menus and
+// only the first had the games in it. The second is what somebody sees once
+// they are streaming the desktop, and it was showing Steam, Firefox, Lutris and
+// a file manager while the games it could start were nowhere: Steam writes a
+// desktop entry for a game only when somebody asks it for a shortcut, and
+// nobody had.
+//
+// Written from the same scan and with the same artwork as the app list, so the
+// two menus cannot disagree about what is installed.
+//
+// The file is named after its own contents, which is what keeps this cheap. It
+// runs on the same minute timer as the app list, and in the steady state that
+// is one directory listing and nothing else: a file that is there is a file
+// that is current, and a game whose name or artwork changed writes a new one
+// and takes the old one away.
+func (p *Provisioner) writeGameEntries(ctx context.Context, games []Game) error {
+	want := map[string][]byte{}
+
+	for _, g := range games {
+		if strings.TrimSpace(g.Name) == "" || strings.TrimSpace(g.Launch) == "" {
+			continue
+		}
+
+		body := desktopEntry(g)
+		sum := sha1.Sum(body)
+
+		want[fmt.Sprintf("%s/%s%x.desktop", entryDir, entryPrefix, sum[:8])] = body
+	}
+
+	out, _, err := p.Client.Try(ctx, p.name(), "sh", "-c",
+		"ls -1 "+entryDir+"/"+entryPrefix+"*.desktop 2>/dev/null")
+	if err != nil {
+		return err
+	}
+
+	have := map[string]bool{}
+
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			have[line] = true
+		}
+	}
+
+	for path, body := range want {
+		if have[path] {
+			continue
+		}
+
+		if err := p.Client.PushFile(p.name(), path, body, 0o644, p.uid, p.uid); err != nil {
+			return err
+		}
+	}
+
+	for path := range have {
+		if _, keep := want[path]; keep {
+			continue
+		}
+
+		if _, _, err := p.Client.Try(ctx, p.name(), "rm", "-f", path); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// desktopEntry renders one game as a launcher entry.
+func desktopEntry(g Game) []byte {
+	var b strings.Builder
+
+	b.WriteString("[Desktop Entry]\n")
+	b.WriteString("Type=Application\n")
+	b.WriteString("Name=" + oneLine(g.Name) + "\n")
+	b.WriteString("Exec=" + oneLine(g.Launch) + "\n")
+
+	// The card drawn for Moonlight, because it is the picture the seat already
+	// has for this game and a launcher entry with no icon is a blank square.
+	if g.Image != "" {
+		b.WriteString("Icon=" + oneLine(g.Image) + "\n")
+	}
+
+	b.WriteString("Categories=Game;\n")
+	b.WriteString("StartupNotify=false\n")
+
+	// So that anything reading this directory later can tell whose it is.
+	b.WriteString("X-Polyseat=game\n")
+
+	return []byte(b.String())
+}
+
+// oneLine makes a value safe to put in a desktop entry.
+//
+// A key runs to the end of the line, so a newline anywhere in a value does not
+// truncate the value, it invents a key. Game names come from somebody else's
+// manifest, so they are not assumed to be well behaved.
+func oneLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r < ' ' {
+			return -1
+		}
+
+		return r
+	}, strings.TrimSpace(s))
+}
+
 func (p *Provisioner) boxart(ctx context.Context, items []artItem) map[string]string {
 	if len(items) == 0 {
 		return nil

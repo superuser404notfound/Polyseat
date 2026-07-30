@@ -56,7 +56,9 @@ guide() {
     printf '\n'
     printf '  Games       Steam and Lutris are installed. Pick "Steam Big\n'
     printf '              Picture" in Moonlight to go straight there, or\n'
-    printf '              open either from the launcher.\n'
+    printf '              open either from the launcher. Installed games are\n'
+    printf '              in both menus by themselves, so a game is one pick\n'
+    printf '              away without opening a launcher at all.\n'
     printf '\n'
 
     if [ -d "$HOME/games" ]; then

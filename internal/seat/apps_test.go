@@ -440,3 +440,60 @@ func TestAppListCarriesTheFramerateCapIntoWhatItStarts(t *testing.T) {
 		t.Errorf("PATH is %q, so an installed launcher cannot be started", list.Env["PATH"])
 	}
 }
+
+// The seat's own launcher shows the games too, and the entry has to survive a
+// name that is not well behaved. A key in a desktop entry runs to the end of
+// the line, so a newline in a title would not truncate the title, it would
+// invent a key.
+func TestDesktopEntryIsOneKeyPerLine(t *testing.T) {
+	got := string(desktopEntry(Game{
+		Name:   "Assassin's Creed\nExec=rm -rf /",
+		Launch: "steam steam://rungameid/3751950",
+		Image:  "/home/player/.local/share/polyseat/art/26df6f40.png",
+	}))
+
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+
+	seen := map[string]string{}
+
+	for _, line := range lines[1:] {
+		key, value, found := strings.Cut(line, "=")
+		if !found {
+			t.Fatalf("line %q is neither a key nor a value:\n%s", line, got)
+		}
+
+		if _, twice := seen[key]; twice {
+			t.Errorf("%s appears twice, so a name smuggled in a key:\n%s", key, got)
+		}
+
+		seen[key] = value
+	}
+
+	if seen["Exec"] != "steam steam://rungameid/3751950" {
+		t.Errorf("Exec is %q, want the launch command", seen["Exec"])
+	}
+
+	if strings.Contains(seen["Name"], "rm -rf") == false {
+		t.Errorf("the name lost its text along with its newline: %q", seen["Name"])
+	}
+
+	if seen["Icon"] == "" {
+		t.Error("no icon, so the launcher shows a blank square next to the game")
+	}
+}
+
+// And the file name has to follow the contents, because that is what makes the
+// minute timer cheap and what replaces an entry when its artwork improves.
+func TestDesktopEntryChangesWithWhatItSays(t *testing.T) {
+	game := Game{Name: "DREDGE", Launch: "steam steam://rungameid/1562430", Image: "/art/old.png"}
+
+	before := desktopEntry(game)
+
+	game.Image = "/art/new.png"
+
+	after := desktopEntry(game)
+
+	if string(before) == string(after) {
+		t.Fatal("the entry did not change when the artwork did, so the file name would not either")
+	}
+}
