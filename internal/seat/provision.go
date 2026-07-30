@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 14
+const Generation = 15
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -899,14 +899,11 @@ func (p *Provisioner) stepNvidiaUserspace(ctx context.Context) error {
 // ------------------------------------------------------------------- library
 
 // LibraryMount is where a seat's share of the pooled library appears inside the
-// container.
+// container, for everything that is not Steam.
 //
-// A second Steam library folder rather than a replacement for the first. Steam
-// keeps its own client, its runtimes and its per account data under
-// ~/.local/share/Steam, and mounting over that would put the host in the middle
-// of files Steam expects to own. A library folder is a thing Steam already
-// understands, so nothing here asks it to cope with an arrangement it has never
-// seen.
+// Steam gets it somewhere else, see steamApps. This one carries shared/, which
+// is the launcher agnostic half, and it is also what the app list is generated
+// from.
 const LibraryMount = "/home/" + Player + "/games"
 
 // libraryDevice is the Incus device name, kept out of the way of the network
@@ -916,19 +913,46 @@ const libraryDevice = "library"
 // steamRoot is where Steam keeps itself inside a seat.
 const steamRoot = "/home/" + Player + "/.local/share/Steam"
 
+// steamApps is Steam's own library folder, and the pooled directory is mounted
+// straight onto it.
+//
+// This was a second library folder next to Steam's own for a long time, which
+// worked and was still wrong. Steam always registers its own directory as
+// folder 0, puts it back on every start, and installs there unless somebody
+// picks otherwise in a dialog that then remembers the choice per account. So a
+// seat came up offering two destinations, defaulted to the private one, and the
+// shared library only worked for people who noticed the dropdown. Mounting the
+// pool onto Steam's own folder leaves exactly one destination, and it is the
+// shared one, from the moment the seat is created.
+//
+// It is only the library folder that is mounted, not ~/.local/share/Steam:
+// Steam keeps its client, its runtimes and its per account data there, and
+// putting a shared directory under those would be handing the host files Steam
+// expects to own alone.
+const steamApps = steamRoot + "/steamapps"
+
+// steamLibraryDevice is the Incus device carrying it.
+const steamLibraryDevice = "steamlib"
+
 func (p *Provisioner) stepLibrary(ctx context.Context) error {
 	if !p.Seat.Library || p.Library == nil {
 		// Detaching rather than ignoring. Turning the shared library off for a
 		// seat has to actually take the mount away, or the setting would be a
 		// label with nothing behind it.
 		if _, err := p.Client.Configure(ctx, p.name(), nil, map[string]map[string]string{
-			libraryDevice: nil,
+			libraryDevice:      nil,
+			steamLibraryDevice: nil,
 		}); err != nil {
 			return err
 		}
 
 		if !p.Seat.Library {
-			p.Log("the shared library is off for this seat")
+			// Worth spelling out, because the shared library is now Steam's own
+			// library folder rather than a second one next to it. Taking it away
+			// takes the games out of this seat's Steam with it. Nothing is
+			// deleted and turning it back on brings them back, but somebody
+			// watching the log deserves to know why the list emptied.
+			p.Log("the shared library is off for this seat, so its games are no longer in this seat's Steam")
 		} else {
 			p.Log("! the shared library is on for this seat but unavailable, see the daemon log")
 		}
@@ -974,37 +998,122 @@ func (p *Provisioner) stepLibrary(ctx context.Context) error {
 		return err
 	}
 
+	if err := p.mountSteamLibrary(ctx, source); err != nil {
+		return err
+	}
+
 	return p.registerLibrary(ctx)
 }
 
-// registerLibrary tells Steam the folder is there.
+// adoptSteamApps takes over whatever Steam already keeps in its own library
+// folder, so that mounting the pool onto it hides nothing.
 //
-// Best effort by nature, and worth being honest about. Steam owns
-// libraryfolders.vdf and rewrites it whenever it feels like it, so this puts
-// the entry in place for the first start and repairs it on every provision.
-// If a Steam version ever drops the entry, the folder still shows up under Add
-// Library Folder and adding it by hand costs one dialog.
-func (p *Provisioner) registerLibrary(ctx context.Context) error {
-	// Writing into the container needs the container. During provisioning it is
-	// always running by this point, but this step is also reached from the
-	// interface when somebody ticks the box on a stopped seat, and there the
-	// device is all that can be done now. The next provisioning run finishes
-	// the job, and Steam finds the folder under Add Library Folder meanwhile.
+// A seat that has run Steam always has something there, even before anybody
+// installs a game: the Steam Controller configurations, sourcemods, workshop
+// content. A seat somebody has been playing on can have entire games. The mount
+// would make all of it invisible at once, so it moves into the pool first,
+// where it becomes shared, which is where somebody who turned the shared
+// library on wanted their games in the first place.
+//
+// Copied and then removed rather than moved: mv across a mount point is a copy
+// and a delete anyway, and doing it in that order means a failure leaves the
+// original where it was. The copy is a reflink where the filesystem allows it,
+// which is the same filesystem the pool is on, so it costs no space.
+//
+// Nothing in the pool is overwritten. Where both sides have the same game, the
+// pool's copy is the one the other seats already share, and the private one is
+// at best an identical duplicate.
+const adoptSteamApps = `set -e
+mkdir -p "$2"
+if [ -d "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ]; then
+	du -sh "$1" | cut -f1
+	cp -a -n --reflink=auto "$1/." "$2/"
+	rm -rf "$1"
+fi
+mkdir -p "$1"
+`
+
+// mountSteamLibrary puts the pooled directory where Steam keeps its own games.
+func (p *Provisioner) mountSteamLibrary(ctx context.Context, source string) error {
+	pooled := source + "/steamapps"
+
+	instance, _, err := p.Client.Instance(p.name())
+	if err != nil {
+		return err
+	}
+
+	if instance.Devices[steamLibraryDevice]["source"] == pooled {
+		return nil
+	}
+
+	// Taking the files over needs the container running. This step is also
+	// reached from the interface when somebody ticks the box on a stopped seat,
+	// and mounting over files that have not been taken over yet would hide
+	// somebody's games rather than share them. So it waits: the seat gets the
+	// mount the next time it is provisioned, which is the next time it starts.
 	status, err := p.Client.Status(p.name())
 	if err != nil {
 		return err
 	}
 
 	if status != "Running" {
-		p.Log("the seat is not running, so Steam will be told about the library " +
-			"the next time it is provisioned")
+		p.Log("the seat is not running, so Steam's library folder is left as it is for now")
 
 		return nil
 	}
 
-	// The marker file is what makes Steam treat a directory as a library rather
-	// than as an ordinary folder full of games.
-	marker := "\"libraryfolder\"\n{\n\t\"contentid\"\t\t\"0\"\n\t\"label\"\t\t\"Polyseat\"\n}\n"
+	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "sh", "-c",
+		adoptSteamApps, "sh", steamApps, LibraryMount+"/steamapps")
+	if err != nil {
+		return err
+	}
+
+	if code != 0 {
+		return fmt.Errorf("taking over Steam's library folder: %s", strings.TrimSpace(out))
+	}
+
+	if moved := strings.TrimSpace(out); moved != "" {
+		p.Log("moved %s from Steam's own library folder into the shared one", moved)
+	}
+
+	p.Log("mounting %s at %s, so the shared library is Steam's own", pooled, steamApps)
+
+	_, err = p.Client.Configure(ctx, p.name(), nil, map[string]map[string]string{
+		steamLibraryDevice: {
+			"type":   "disk",
+			"source": pooled,
+			"path":   steamApps,
+		},
+	})
+
+	return err
+}
+
+// registerLibrary sets up the half of the shared library that is not Steam's,
+// and takes the old Steam entry back out.
+//
+// There is nothing left to register with Steam: the pooled directory is Steam's
+// own library folder now, so it is found by being where Steam already looks.
+// What is left to do is the opposite. Seats built before this have the pool
+// registered a second time under /home/player/games, and that entry now reaches
+// the same files by a second path, which shows every shared game twice.
+func (p *Provisioner) registerLibrary(ctx context.Context) error {
+	// Writing into the container needs the container. During provisioning it is
+	// always running by this point, but this step is also reached from the
+	// interface when somebody ticks the box on a stopped seat, and there the
+	// device is all that can be done now. The next provisioning run finishes
+	// the job.
+	status, err := p.Client.Status(p.name())
+	if err != nil {
+		return err
+	}
+
+	if status != "Running" {
+		p.Log("the seat is not running, so the shared directory is set up " +
+			"the next time it is provisioned")
+
+		return nil
+	}
 
 	if err := p.Client.MakeDir(p.name(), LibraryMount+"/steamapps", 0o755, p.uid, p.uid); err != nil {
 		return err
@@ -1037,43 +1146,49 @@ func (p *Provisioner) registerLibrary(ctx context.Context) error {
 		return err
 	}
 
-	if err := p.Client.PushFile(p.name(), LibraryMount+"/libraryfolder.vdf",
-		[]byte(marker), 0o644, p.uid, p.uid); err != nil {
+	// The marker that used to make Steam treat this directory as a library
+	// folder. It is removed rather than left: the directory is still there and
+	// still shared, but it is no longer a Steam library, and a file claiming
+	// otherwise is an invitation to add the same games a second time.
+	if _, _, err := p.Client.Try(ctx, p.name(), "rm", "-f", LibraryMount+"/libraryfolder.vdf"); err != nil {
 		return err
 	}
 
-	if err := p.Client.MakeDir(p.name(), steamRoot+"/steamapps", 0o755, p.uid, p.uid); err != nil {
-		return err
+	return p.unregisterOldLibrary(ctx)
+}
+
+// unregisterOldLibrary takes the shared library back out of Steam's own list of
+// library folders, where earlier versions of Polyseat put it.
+//
+// Both files, because Steam keeps two. config/libraryfolders.vdf is the one it
+// reads today; steamapps/libraryfolders.vdf is the older location, it is the
+// one Polyseat used to write, and it now lives in the pooled directory itself.
+// Leaving either would put the entry back the next time Steam reconciles them.
+func (p *Provisioner) unregisterOldLibrary(ctx context.Context) error {
+	for _, path := range []string{
+		steamRoot + "/config/libraryfolders.vdf",
+		steamApps + "/libraryfolders.vdf",
+	} {
+		existing, err := p.Client.ReadFile(p.name(), path)
+		if err != nil {
+			// No file, which is a seat where Steam has never run. Nothing to
+			// take out, and Steam writes its own on first start.
+			continue
+		}
+
+		dropped, changed := library.DropLibraryFolder(existing, LibraryMount)
+		if !changed {
+			continue
+		}
+
+		if err := p.Client.PushFile(p.name(), path, dropped, 0o644, p.uid, p.uid); err != nil {
+			return err
+		}
+
+		// Steam reads these at startup, so a client running right now keeps the
+		// old list until the session is restarted.
+		p.Log("removed the second, now duplicate, library entry from %s", path)
 	}
-
-	// A seat that has run Steam already has this file, and it is Steam's:
-	// it records every library folder Steam knows, including any somebody added
-	// themselves. So the entry is merged in rather than the file replaced.
-	path := steamRoot + "/steamapps/libraryfolders.vdf"
-
-	existing, err := p.Client.ReadFile(p.name(), path)
-	if err != nil {
-		// No file yet, which is a seat where Steam has never run.
-		return p.Client.PushFile(p.name(), path,
-			library.LibraryFolders(steamRoot, LibraryMount), 0o644, p.uid, p.uid)
-	}
-
-	merged, changed := library.MergeLibraryFolder(existing, LibraryMount)
-	if !changed {
-		p.Log("Steam already knows about the shared library")
-
-		return nil
-	}
-
-	if err := p.Client.PushFile(p.name(), path, merged, 0o644, p.uid, p.uid); err != nil {
-		return err
-	}
-
-	// Steam reads this at startup, so a client that is running right now keeps
-	// the old list until the session is restarted. Saying so beats leaving
-	// somebody to wonder why the games are not there yet.
-	p.Log("added the shared library to Steam's library list, " +
-		"a running Steam picks it up when the seat is restarted")
 
 	return nil
 }

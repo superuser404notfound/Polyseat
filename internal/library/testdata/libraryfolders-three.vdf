@@ -1,0 +1,43 @@
+"libraryfolders"
+{
+	"0"
+	{
+		"path"		"/home/player/.local/share/Steam"
+		"label"		""
+		"contentid"		"4713946985178202549"
+		"totalsize"		"0"
+		"update_clean_bytes_tally"		"2149126996"
+		"time_last_update_verified"		"1785212889"
+		"apps"
+		{
+			"1493710"		"0"
+			"1562430"		"0"
+			"4183110"		"0"
+		}
+	}
+	"1"
+	{
+		"path"		"/home/player/games"
+		"label"		"Polyseat"
+		"contentid"		"0"
+		"totalsize"		"0"
+		"update_clean_bytes_tally"		"0"
+		"time_last_update_verified"		"0"
+		"apps"
+		{
+		}
+	}
+	"2"
+	{
+		"path"		"/mnt/somebodys-own-disk"
+		"label"		""
+		"contentid"		"7712946985178202001"
+		"totalsize"		"2000398934016"
+		"update_clean_bytes_tally"		"0"
+		"time_last_update_verified"		"1785212889"
+		"apps"
+		{
+			"570"		"0"
+		}
+	}
+}

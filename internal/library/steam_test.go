@@ -255,70 +255,26 @@ func TestParseManifestRejectsNonsense(t *testing.T) {
 	}
 }
 
-func TestLibraryFolders(t *testing.T) {
-	got := string(LibraryFolders("/home/player/.local/share/Steam", "/home/player/games"))
-
-	for _, want := range []string{
-		`"libraryfolders"`,
-		`"path"		"/home/player/.local/share/Steam"`,
-		`"path"		"/home/player/games"`,
-		`"label"		"Polyseat"`,
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the rendered file is missing %s", want)
-		}
-	}
-
-	// Steam's own library has to stay first. Entry 0 is where it puts new
-	// downloads by default, and a seat whose default download target became the
-	// shared library would be writing into it constantly.
-	if strings.Index(got, "/home/player/.local/share/Steam") > strings.Index(got, "/home/player/games") {
-		t.Error("the shared library is listed before Steam's own")
-	}
-}
-
-func TestManifestName(t *testing.T) {
-	if got := ManifestName("228980"); got != "appmanifest_228980.acf" {
-		t.Errorf("ManifestName = %q", got)
-	}
-}
-
-// TestMergeLibraryFolder works against a real libraryfolders.vdf taken from a
-// seat that had already run Steam.
-//
-// That case is the whole reason this function exists. The first version of the
-// registration refused to touch an existing file, which meant every seat except
-// a brand new one needed somebody to open Steam's settings and add the folder
-// by hand. It was found by turning the feature on for a seat that had been in
-// use, not by reading the code.
-func TestMergeLibraryFolder(t *testing.T) {
-	original, err := os.ReadFile("testdata/libraryfolders.vdf")
+// Dropping is what upgrades a seat that was built when the shared library was a
+// second folder. The entry has to go, and everything else in the file has to
+// survive it.
+func TestDropLibraryFolder(t *testing.T) {
+	original, err := os.ReadFile("testdata/libraryfolders-two.vdf")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !strings.Contains(string(original), `"0"`) {
-		t.Fatal("the fixture has no entry 0, so this test no longer tests a merge")
-	}
-
-	merged, changed := MergeLibraryFolder(original, "/home/player/games")
+	dropped, changed := DropLibraryFolder(original, "/home/player/games")
 	if !changed {
-		t.Fatal("merging into a file without the folder reported no change")
+		t.Fatal("dropping a folder that is in the file reported no change")
 	}
 
-	got := string(merged)
+	got := string(dropped)
 
-	// The new entry is there, under the next free number.
-	if !strings.Contains(got, `"1"`) {
-		t.Error("the new entry was not numbered 1")
+	if strings.Contains(got, "/home/player/games") {
+		t.Errorf("the folder is still there:\n%s", got)
 	}
 
-	if !strings.Contains(got, `"path"		"/home/player/games"`) {
-		t.Errorf("the path is missing from the result:\n%s", got)
-	}
-
-	// Steam's own entry survives untouched, contents and all. Overwriting this
-	// file would unregister every library folder somebody had added.
 	for _, want := range []string{
 		`"path"		"/home/player/.local/share/Steam"`,
 		`"contentid"		"4713946985178202549"`,
@@ -326,54 +282,68 @@ func TestMergeLibraryFolder(t *testing.T) {
 		`"1562430"		"0"`,
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("the merge lost %s", want)
+			t.Errorf("dropping lost %s", want)
 		}
 	}
 
-	// Braces still balance, which is the cheapest check that the result is
-	// still a file Steam can read.
 	if open, close := strings.Count(got, "{"), strings.Count(got, "}"); open != close {
 		t.Errorf("%d opening braces against %d closing ones:\n%s", open, close, got)
 	}
 
-	// Idempotent: running it again finds the folder and changes nothing.
-	again, changed := MergeLibraryFolder(merged, "/home/player/games")
+	// Nothing to do the second time.
+	again, changed := DropLibraryFolder(dropped, "/home/player/games")
 	if changed {
-		t.Error("merging the same folder twice added it again")
+		t.Error("dropping a folder that is not there reported a change")
 	}
 
 	if string(again) != got {
-		t.Error("the second merge altered the file")
-	}
-
-	// A third folder lands at 2 rather than replacing either of the first two.
-	third, changed := MergeLibraryFolder(merged, "/mnt/games")
-	if !changed {
-		t.Fatal("a different folder was not added")
-	}
-
-	if !strings.Contains(string(third), `"2"`) {
-		t.Error("the third entry was not numbered 2")
-	}
-
-	if !strings.Contains(string(third), "/home/player/games") {
-		t.Error("adding a third folder dropped the second")
+		t.Error("the second drop altered the file")
 	}
 }
 
-func TestMergeLibraryFolderLeavesNonsenseAlone(t *testing.T) {
+// The survivors have to stay contiguous. Steam stops reading at the first
+// number it does not find, so a gap unregisters everything after it, and the
+// entry after the shared library is by definition one somebody added by hand.
+func TestDropLibraryFolderRenumbersWhatIsLeft(t *testing.T) {
+	with, err := os.ReadFile("testdata/libraryfolders-three.vdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dropped, changed := DropLibraryFolder(with, "/home/player/games")
+	if !changed {
+		t.Fatal("the middle entry was not dropped")
+	}
+
+	got := string(dropped)
+
+	if !strings.Contains(got, "/mnt/somebodys-own-disk") {
+		t.Fatalf("the hand added folder was lost:\n%s", got)
+	}
+
+	// It was entry 2 and has to have become entry 1, or Steam never reaches it.
+	if strings.Contains(got, `"2"`) {
+		t.Errorf("entry 2 survived, so there is a gap where entry 1 should be:\n%s", got)
+	}
+
+	if !strings.Contains(got, `"1"`) {
+		t.Errorf("the folder after the dropped one was not renumbered to 1:\n%s", got)
+	}
+}
+
+func TestDropLibraryFolderLeavesNonsenseAlone(t *testing.T) {
 	// This file belongs to Steam. Where it is not the shape this understands,
 	// writing a guess into it costs somebody their library list, so the only
 	// safe answer is to leave it exactly as it was.
 	for _, junk := range []string{"", "not a vdf at all\n", `"libraryfolders"`} {
-		got, changed := MergeLibraryFolder([]byte(junk), "/home/player/games")
+		got, changed := DropLibraryFolder([]byte(junk), "/home/player/games")
 
 		if changed {
-			t.Errorf("MergeLibraryFolder claimed to change %q", junk)
+			t.Errorf("DropLibraryFolder claimed to change %q", junk)
 		}
 
 		if string(got) != junk {
-			t.Errorf("MergeLibraryFolder altered %q into %q", junk, got)
+			t.Errorf("DropLibraryFolder altered %q into %q", junk, got)
 		}
 	}
 }

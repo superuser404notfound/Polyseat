@@ -288,138 +288,82 @@ func Rewrite(data []byte) []byte {
 	return out.Bytes()
 }
 
-// libraryFolders is the file that tells Steam where else to look for games.
+// DropLibraryFolder takes a library folder back out, reporting whether anything
+// changed.
 //
-// Written by the daemon rather than left to the user to add through Steam's
-// own dialog. A seat is meant to come up with its shared library already
-// present; making somebody open the settings in a streamed session and browse
-// to a path would be a poor first five minutes.
-const libraryFoldersTemplate = `"libraryfolders"
-{
-	"0"
-	{
-		"path"		"%s"
-		"label"		""
-		"contentid"		"0"
-		"totalsize"		"0"
-		"update_clean_bytes_tally"		"0"
-		"time_last_update_verified"		"0"
-		"apps"
-		{
-		}
-	}
-	"1"
-	{
-		"path"		"%s"
-		"label"		"Polyseat"
-		"contentid"		"0"
-		"totalsize"		"0"
-		"update_clean_bytes_tally"		"0"
-		"time_last_update_verified"		"0"
-		"apps"
-		{
-		}
-	}
-}
-`
-
-// LibraryFolders renders the file registering the shared library alongside
-// Steam's own.
-func LibraryFolders(steamRoot, shared string) []byte {
-	return []byte(fmt.Sprintf(libraryFoldersTemplate, steamRoot, shared))
-}
-
-// folderEntry is one library folder as Steam writes it. Deliberately sparse:
-// Steam fills in the sizes and the timestamps itself on the next start, and
-// inventing values for them would only be a lie it has to correct.
-const folderEntry = `	"%d"
-	{
-		"path"		"%s"
-		"label"		"Polyseat"
-		"contentid"		"0"
-		"totalsize"		"0"
-		"update_clean_bytes_tally"		"0"
-		"time_last_update_verified"		"0"
-		"apps"
-		{
-		}
-	}
-`
-
-// MergeLibraryFolder adds a library folder to a file Steam already wrote,
-// reporting whether anything changed.
+// The counterpart of MergeLibraryFolder, and it exists because the shared
+// library moved. It used to be registered as a second folder next to Steam's
+// own; it is now mounted as Steam's own, so the old entry points at the same
+// files through a second path. Left in place it would show every shared game
+// twice and offer two indistinguishable destinations in the install dialog,
+// which is the thing this was meant to get rid of.
 //
-// Merging rather than replacing, and this is the difference between the feature
-// working and the feature working provided somebody also opens Steam's settings
-// and browses to a path. A seat that has run Steam once already has this file,
-// and the first version of this code refused to touch it, which left every seat
-// but a brand new one needing that manual step.
-//
-// Replacing it outright is not an option either: the file is Steam's record of
-// every library folder it knows, including any the person added themselves, and
-// overwriting it would quietly unregister them.
-func MergeLibraryFolder(existing []byte, path string) ([]byte, bool) {
-	if bytes.Contains(existing, []byte(`"`+path+`"`)) {
+// The remaining folders are renumbered. Steam reads them as "0", "1", "2" and
+// stops at the first number that is missing, so removing the middle entry of
+// three without renumbering would silently unregister the last one, which may
+// well be a folder somebody added themselves.
+func DropLibraryFolder(existing []byte, path string) ([]byte, bool) {
+	if !bytes.Contains(existing, []byte(`"`+path+`"`)) {
 		return existing, false
 	}
 
 	lines := strings.Split(string(existing), "\n")
 
 	var (
-		depth  int
-		next   int
-		closer = -1
+		out     []string
+		blocks  int
+		dropped bool
+		i       int
 	)
 
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
+	for i < len(lines) {
+		trimmed := strings.TrimSpace(lines[i])
 
-		switch trimmed {
-		case "{":
-			depth++
+		// A numbered entry, which is the only thing this touches. Anything else,
+		// including the header and the outermost braces, passes through.
+		if _, err := strconv.Atoi(strings.Trim(trimmed, `"`)); err != nil ||
+			!strings.HasPrefix(trimmed, `"`) ||
+			i+1 >= len(lines) || strings.TrimSpace(lines[i+1]) != "{" {
+			out = append(out, lines[i])
+			i++
 
 			continue
+		}
 
-		case "}":
-			depth--
+		// The whole block, brace counted rather than assumed to be a fixed
+		// number of lines: Steam writes an apps list inside it whose length is
+		// the number of games installed there.
+		depth, j := 0, i+1
 
-			// The brace that ends the outermost block is where a new entry has
-			// to go in front of. Recorded rather than assumed to be the last
-			// line, because Steam leaves a trailing newline and an editor may
-			// have left more than one.
+		for j < len(lines) {
+			depth += strings.Count(lines[j], "{") - strings.Count(lines[j], "}")
+			j++
+
 			if depth == 0 {
-				closer = i
+				break
 			}
+		}
+
+		block := strings.Join(lines[i:j], "\n")
+
+		if strings.Contains(block, `"`+path+`"`) {
+			dropped = true
+			i = j
 
 			continue
 		}
 
-		// Entries are numbered, and the next one has to follow the highest in
-		// use. Reusing a number would replace a folder rather than add one.
-		if depth == 1 && strings.HasPrefix(trimmed, `"`) {
-			if key, _, ok := parsePair(trimmed); !ok {
-				if n, err := strconv.Atoi(strings.Trim(trimmed, `"`)); err == nil && n >= next {
-					next = n + 1
-				}
-			} else {
-				_ = key
-			}
-		}
+		// Renumbered as it is kept, so the survivors stay contiguous.
+		indent := lines[i][:len(lines[i])-len(strings.TrimLeft(lines[i], " \t"))]
+		out = append(out, indent+`"`+strconv.Itoa(blocks)+`"`)
+		out = append(out, lines[i+1:j]...)
+		blocks++
+		i = j
 	}
 
-	if closer < 0 {
-		// Not a shape this understands. Leaving it alone is the only safe
-		// answer: this file is Steam's, and a guess written into it costs
-		// somebody their library list.
+	if !dropped {
 		return existing, false
 	}
 
-	entry := strings.Split(strings.TrimRight(fmt.Sprintf(folderEntry, next, path), "\n"), "\n")
-
-	merged := make([]string, 0, len(lines)+len(entry))
-	merged = append(merged, lines[:closer]...)
-	merged = append(merged, entry...)
-	merged = append(merged, lines[closer:]...)
-
-	return []byte(strings.Join(merged, "\n")), true
+	return []byte(strings.Join(out, "\n")), true
 }

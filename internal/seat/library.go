@@ -200,13 +200,22 @@ func (m *Manager) members() []library.Member {
 // that is verifying or patching has the files open.
 //
 // Exits 0 when nothing is using it, which is the answer that permits an update.
+// Both paths, because the pool is mounted twice: once as Steam's own library
+// folder, which is where a running game has its files open, and once as the
+// launcher agnostic directory. A probe that only knew the second one would call
+// a seat idle while a Steam game was running out of it and replace the files
+// underneath it.
 const idleProbe = `
 for d in /proc/[0-9]*; do
-	grep -qF ` + LibraryMount + ` "$d/maps" 2>/dev/null && exit 1
+	grep -qE '` + LibraryMount + `|` + steamApps + `' "$d/maps" 2>/dev/null && exit 1
 	for f in "$d"/fd/*; do
-		case "$(readlink "$f" 2>/dev/null)" in ` + LibraryMount + `/*) exit 1 ;; esac
+		case "$(readlink "$f" 2>/dev/null)" in
+			` + LibraryMount + `/*|` + steamApps + `/*) exit 1 ;;
+		esac
 	done
-	case "$(readlink "$d/cwd" 2>/dev/null)" in ` + LibraryMount + `/*) exit 1 ;; esac
+	case "$(readlink "$d/cwd" 2>/dev/null)" in
+		` + LibraryMount + `/*|` + steamApps + `/*) exit 1 ;;
+	esac
 done
 exit 0
 `

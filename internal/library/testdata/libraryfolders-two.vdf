@@ -15,4 +15,16 @@
 			"4183110"		"0"
 		}
 	}
+	"1"
+	{
+		"path"		"/home/player/games"
+		"label"		"Polyseat"
+		"contentid"		"0"
+		"totalsize"		"0"
+		"update_clean_bytes_tally"		"0"
+		"time_last_update_verified"		"0"
+		"apps"
+		{
+		}
+	}
 }
