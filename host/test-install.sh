@@ -205,6 +205,14 @@ done
 check "root has an idmap range (subuid)" vm grep -qE '^root:1000000:1000000000$' /etc/subuid
 check "root has an idmap range (subgid)" vm grep -qE '^root:1000000:1000000000$' /etc/subgid
 check "incus.socket is enabled"          vm systemctl is-enabled incus.socket
+
+# The outcome and not only the unit's opinion of itself. "enable --now" does
+# nothing to a unit systemd already counts as active, and a socket unit whose
+# file changed while it was running is exactly that: active, holding no socket.
+# A reinstall of the incus package leaves it that way, and the installer then
+# walked into "dial unix /var/lib/incus/unix.socket: no such file or directory"
+# from the next command, which names a file rather than a reason.
+check "and the socket is really there"   vm test -S /var/lib/incus/unix.socket
 check "incus is initialised"             vm bash -c 'incus storage list --format csv | grep -q .'
 check "$TESTUSER is in the input group"  vm bash -c "id -nG $TESTUSER | tr ' ' '\n' | grep -qx input"
 

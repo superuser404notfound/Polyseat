@@ -375,8 +375,36 @@ done
 step "Incus"
 # The daemon talks to Incus over its socket and cannot bring it up itself, so
 # this is squarely the installer's job.
-systemctl enable --now incus.socket >/dev/null 2>&1
-ok "incus.socket enabled"
+#
+# Restarted and not only enabled, and then waited for. "enable --now" does
+# nothing to a unit systemd already counts as active, and a socket unit whose
+# file changed underneath it while it was running is exactly that: active,
+# holding no socket, and saying so only in its own status. That is what a
+# reinstall of the incus package leaves behind, and the next command then fails
+# with "dial unix /var/lib/incus/unix.socket: no such file or directory", which
+# names a file rather than the reason.
+systemctl enable incus.socket >/dev/null 2>&1 || true
+
+if ! systemctl restart incus.socket >/dev/null 2>&1; then
+    bad "incus.socket would not start"
+    systemctl status incus.socket --no-pager -n 10 || true
+    exit 1
+fi
+
+for _ in $(seq 1 30); do
+    [[ -S /var/lib/incus/unix.socket ]] && break
+    sleep 1
+done
+
+if [[ ! -S /var/lib/incus/unix.socket ]]; then
+    bad "incus.socket is up but /var/lib/incus/unix.socket never appeared"
+    echo "    Everything below talks to Incus over that socket, so there is no"
+    echo "    point going on. What systemd makes of it:"
+    systemctl status incus.socket --no-pager -n 10 || true
+    exit 1
+fi
+
+ok "incus.socket is listening"
 
 # `incus admin init --minimal` is safe to skip and not safe to repeat: run on an
 # already initialised machine it fails, and the useful signal that it has been
