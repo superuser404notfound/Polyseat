@@ -92,10 +92,12 @@ from what the kernel says created a device, rather than from the name the device
 claims to have.
 
 **A game installed once is playable in every seat**, without being downloaded
-again, and that includes the games that were already on the machine. Each seat
-keeps its own private, fully writable library; the daemon replicates game
-directories between them with reflinks, so the copies share their blocks on
-disk. Taking this machine's 69 GB library into the pool took 0.8 seconds and
+again, and that includes the games that were already on the machine. Nothing has
+to be chosen for this to happen: the shared library is the only library a seat's
+Steam has, so signing in and pressing install puts the game where the other
+seats can reach it. Each seat keeps its own private, fully writable copy; the
+daemon replicates game directories between them with reflinks, so the copies
+share their blocks on disk. Taking this machine's 69 GB library into the pool took 0.8 seconds and
 cost 432 KB. It keeps working after an update, because the host's library is
 watched rather than imported once, and a seat that is behind is brought forward
 as soon as nothing in it is using the shared files.

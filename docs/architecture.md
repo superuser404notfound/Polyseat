@@ -258,16 +258,23 @@ only when a seat updates a game, and then only by the changed blocks.
 **Taking part is per seat and off by default**, because this is the only place
 that mounts host storage into a seat. Ticking the box applies straight away:
 the disk device is hotplugged and the games are cloned in within seconds, no
-provisioning run needed. The entry in Steam's `libraryfolders.vdf` is merged
-into whatever is already there rather than replacing it, since a seat that has
-run Steam already owns that file and it lists every library folder Steam knows.
-A Steam that is running keeps its old list until the session restarts.
+provisioning run needed. Turning it off takes the mount away again, and since
+the shared directory is Steam's own library folder rather than a second one,
+that takes the shared games out of that seat's Steam with it. Nothing is
+deleted and turning it back on brings them back.
 
 **Layout.** Under `library_dir`, `pool/steamapps/` is the canonical copy and
-`seats/<name>/` is the one directory mounted into that seat, appearing as a
-second Steam library folder at `/home/player/games`. Steam's own directory stays
-where it is, so `compatdata/`, `shadercache/` and `downloading/` are per seat
-without anything having to be symlinked away.
+`seats/<name>/` is the one directory mounted into that seat. It arrives twice:
+`seats/<name>/steamapps` at `/home/player/.local/share/Steam/steamapps`, which
+is Steam's own library folder and the subject of the next section, and
+`seats/<name>` at `/home/player/games`, which carries `shared/` for the other
+launchers and is what the app list is generated from. Both are the same files by
+two paths, which is why the idle probe below looks for both. The rest of Steam's
+directory, the client itself and the per account data, stays inside the
+container. `compatdata/`, `shadercache/` and `downloading/` are Steam's to put
+in its library folder, so they land in `seats/<name>/` on the host, which is a
+directory per seat and is never taken into the pool: only game directories and
+their manifests are.
 
 **What the daemon does, every minute.** Anything fully installed in a seat and
 quiet for two minutes is taken into the pool; anything in the pool is offered to
@@ -290,9 +297,11 @@ after build 10.
 
 **Updates propagate rather than drift.** A seat whose copy is behind the pool is
 brought forward, but only when nothing in that seat is using the shared library.
-That is asked of the seat directly: a small `/proc` walk looks for the mount in
-any process's mappings, open descriptors or working directory, because `lsof` is
-not in a seat and a game that is running has its files open. A seat that is busy
+That is asked of the seat directly: a small `/proc` walk looks for either mount
+path in any process's mappings, open descriptors or working directory, because
+`lsof` is not in a seat and a game that is running has its files open. Either
+path, because a Steam game running out of the shared library has it open as
+Steam's own `steamapps` and never mentions `/home/player/games` at all. A seat that is busy
 keeps its copy and the waiting update is reported, so the interface shows
 something pending instead of nothing happening. Overwriting a game under a
 running client corrupts an install rather than improving one.
@@ -305,10 +314,12 @@ every one of them downloads that update for itself.
 
 ## Where a game installs by default
 
-A seat offers two Steam library folders, its own private one and the pooled one
-labelled Polyseat, and only the second reaches the other seats. Which one the
-install dialog preselects is therefore the difference between a game everybody
-can play and a game that stays where it was put, and it preselects the wrong one.
+A seat used to offer two Steam library folders, its own private one and the
+pooled one labelled Polyseat, and only the second reached the other seats. Which
+one the install dialog preselected was therefore the difference between a game
+everybody can play and a game that stays where it was put, and it preselected
+the wrong one. What follows is why the obvious repairs do not work, and what is
+done instead.
 
 What Steam keeps is `LastInstallFolderIndex`, directly under
 `UserLocalConfigStore` in `userdata/<account>/config/localconfig.vdf`, the index
@@ -330,14 +341,33 @@ Steam's own storage settings: with the key removed Steam does fall back to index
 0, and it also rewrites `libraryfolders.vdf` at every start and puts its own
 directory back at the front. A swap survives exactly until the next launch.
 
-What is left is to stop having two libraries. Steam's own `steamapps` in a seat
-holds `common`, `sourcemods`, `workshop` and nothing else: no appmanifests, no
-`compatdata`, no `downloading`, because everything installed goes to the pooled
-folder anyway. Mounting the seat's pooled directory at Steam's own `steamapps`
-would leave one library folder which is the shared one, with no default to set and
-nothing to choose. The cost is that taking part in the pool stops being a switch
-that can be turned off without moving data, which is a decision about what the
-library is for rather than a detail of this file.
+**What is done is to stop having two libraries.** The seat's pooled directory is
+mounted at Steam's own `steamapps`, so the one library folder Steam has is the
+shared one, from the moment the seat is created. There is no default to set and
+nothing to choose, and it holds for every account that ever signs in to that
+seat rather than for the one whose `localconfig.vdf` was written.
+
+Measured in a seat afterwards: `config/libraryfolders.vdf` lists exactly one
+folder, `/home/player/.local/share/Steam`, with all the pooled games under it,
+and Steam leaves it at one across restarts even though `/home/player/games`
+is still mounted and still full of the same files.
+
+Two things this has to carry. Steam's own `steamapps` is never quite empty, even
+before anybody installs anything: it holds the Steam Controller configurations,
+`sourcemods` and `workshop`, 1.3 MB on a seat that had just been built, and a
+seat somebody has been playing on can have whole games there. Mounting over it
+would hide all of that at once, so provisioning moves it into the pool first,
+by reflink, without overwriting anything the pool already has. And seats built
+before this have the pool registered a second time under `/home/player/games`;
+that entry now reaches the same files by a second path and would show every
+shared game twice, so it is taken back out of both files Steam keeps it in, with
+the remaining folders renumbered so that one somebody added themselves is not
+silently lost.
+
+The cost is that taking part in the pool stops being a switch that can be turned
+off without the games going with it. Turning it off leaves that seat's Steam
+empty until it is turned back on. Nothing is deleted, and it is the honest
+reading of what the switch now means.
 
 Lutris has no such problem. Its `game_path` in `~/.config/lutris/system.yml` is
 written when a seat is built, before anybody signs in to anything, and only when
