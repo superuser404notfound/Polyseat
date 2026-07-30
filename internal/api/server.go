@@ -50,6 +50,7 @@ func New(manager *seat.Manager, credentials *auth.Store, logger *slog.Logger) ht
 	guarded.HandleFunc("GET /api/events", s.events)
 	guarded.HandleFunc("POST /api/password", s.changePassword)
 	guarded.HandleFunc("POST /api/seats", s.createSeat)
+	guarded.HandleFunc("POST /api/provision-stale", s.provisionStale)
 	guarded.HandleFunc("PATCH /api/seats/{name}", s.updateSeat)
 	guarded.HandleFunc("DELETE /api/seats/{name}", s.deleteSeat)
 	guarded.HandleFunc("GET /api/seats/{name}/log", s.seatLog)
@@ -302,7 +303,13 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 // -------------------------------------------------------------------- state
 
 type stateResponse struct {
-	Seats    []seat.Status `json:"seats"`
+	Seats []seat.Status `json:"seats"`
+
+	// ProvisioningAll is set while every stale seat is being provisioned in
+	// turn, so that the button that started it can say so rather than looking
+	// like it did nothing for the minutes before the first seat changes state.
+	ProvisioningAll bool `json:"provisioning_all"`
+
 	Observer string        `json:"observer"`
 	Config   config.Config `json:"config"`
 	Uplinks  []string      `json:"uplinks"`
@@ -326,13 +333,14 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 	hostname, _ := os.Hostname()
 
 	resp := stateResponse{
-		Seats:    seats,
-		Observer: s.manager.ObserverState(),
-		Config:   s.manager.Config(),
-		Uplinks:  config.Uplinks(),
-		Host:     hostInfo{Hostname: hostname},
-		Warnings: s.warnings(),
-		Now:      time.Now(),
+		Seats:           seats,
+		ProvisioningAll: s.manager.ProvisioningAll(),
+		Observer:        s.manager.ObserverState(),
+		Config:          s.manager.Config(),
+		Uplinks:         config.Uplinks(),
+		Host:            hostInfo{Hostname: hostname},
+		Warnings:        s.warnings(),
+		Now:             time.Now(),
 	}
 
 	// Always send arrays, never null. A client that has to guard every list
@@ -438,6 +446,29 @@ type seatRequest struct {
 	Library    *bool   `json:"library"`
 
 	PointerSpeed *float64 `json:"pointer_speed"`
+}
+
+// provisionStale brings every seat an older generation built up to date.
+//
+// One request rather than one per seat, because the seats being behind is one
+// situation and dealing with it should be one action. Before this, an update
+// meant opening each card in turn and remembering which ones had been done.
+func (s *Server) provisionStale(w http.ResponseWriter, r *http.Request) {
+	names, err := s.manager.ProvisionStale()
+	if err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	// An empty list rather than null, which is this file's own rule elsewhere: a
+	// client that has to guard every list against absence gets it wrong exactly
+	// once, silently.
+	if names == nil {
+		names = []string{}
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]any{"seats": names})
 }
 
 func (s *Server) createSeat(w http.ResponseWriter, r *http.Request) {

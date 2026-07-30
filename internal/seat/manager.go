@@ -56,6 +56,11 @@ type Manager struct {
 	subsMu sync.Mutex
 	subs   map[int]chan struct{}
 	nextID int
+
+	// sweeping is set while every stale seat is being provisioned in turn, so
+	// that pressing the button twice does not start two sweeps over the same
+	// seats.
+	sweeping bool
 }
 
 // runtime is everything about a seat that is observed rather than stored.
@@ -86,6 +91,7 @@ type runtime struct {
 	encoder        string
 	codecs         []string
 	output         string
+	session        *Session
 	devices        []string
 	checked        time.Time
 
@@ -450,9 +456,13 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 	}
 
 	encoder, codecs, output := "", []string(nil), ""
+
+	var session *Session
+
 	if sunshine == "active" {
 		encoder, codecs = m.readEncoders(ctx, name)
 		output = m.readOutput(ctx, name)
+		session = m.readSession(ctx, name)
 	}
 
 	m.checkOrigins(ctx, name, addresses)
@@ -501,6 +511,7 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 	}
 
 	rt.output = output
+	rt.session = session
 
 	state := StateStarting
 	if up {
@@ -705,6 +716,34 @@ func parseEncoders(out string) (string, []string) {
 	return backend, codecs
 }
 
+// readSession reports who is streaming from a seat and what they asked for, or
+// nil when nobody is.
+//
+// Read out of a file the seat writes rather than asked of Sunshine, which has no
+// endpoint for it: see polyseat-session, which explains what was tried. Written
+// by Sunshine's own prep commands, so it exists for exactly as long as a stream
+// does.
+func (m *Manager) readSession(ctx context.Context, name string) *Session {
+	out, code, err := m.client.Try(ctx, name, m.asPlayer(name,
+		"cat", SessionPath)...)
+	if err != nil || code != 0 {
+		return nil
+	}
+
+	var session Session
+	if json.Unmarshal([]byte(strings.TrimSpace(out)), &session) != nil {
+		return nil
+	}
+
+	// An app name is the one field always written, so its absence means the file
+	// is something else entirely rather than a stream nobody named.
+	if session.App == "" {
+		return nil
+	}
+
+	return &session
+}
+
 // readOutput reports the size the seat's screen is actually running at.
 //
 // Which is not what the seat was configured with, and the difference is the
@@ -901,6 +940,163 @@ func (m *Manager) Cancel(name string) {
 }
 
 // Provision builds or converges a seat.
+// ProvisioningAll reports whether a sweep over the stale seats is running.
+func (m *Manager) ProvisioningAll() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.sweeping
+}
+
+// busyWith reports what a seat is in the middle of, or "" when it is idle.
+func (m *Manager) busyWith(name string) string {
+	rt := m.runtimeOf(name)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return rt.busy
+}
+
+// Stale lists the seats the daemon is newer than, in the order they are shown.
+func (m *Manager) Stale() ([]string, error) {
+	seats, err := m.store.List()
+	if err != nil {
+		return nil, err
+	}
+
+	return staleSeats(seats), nil
+}
+
+// staleSeats picks out the ones an older generation built.
+//
+// A function of the list rather than part of the method, so that what counts as
+// out of date can be checked without a daemon and a container behind it. A seat
+// from a newer generation counts too: that is a daemon somebody downgraded, and
+// leaving it alone would mean a seat carrying files this daemon does not know
+// about with nothing saying so.
+func staleSeats(seats []Seat) []string {
+	var out []string
+
+	for _, seat := range seats {
+		if seat.Provisioned != Generation {
+			out = append(out, seat.Name)
+		}
+	}
+
+	return out
+}
+
+// ProvisionStale provisions every seat that an older generation built, one after
+// another, and returns the names it is going to work through.
+//
+// One at a time on purpose. Each run installs packages inside its own container
+// and the first one on a fresh machine downloads an image, so running four at
+// once turns four slow operations into four slower ones and makes the log of
+// each impossible to follow.
+//
+// Started in the background and not waited for, because it takes minutes per
+// seat and the person who pressed the button is often on a phone that will lock
+// its screen. Losing the page must not stop the work.
+//
+// A seat that fails is left with its error on its own card and the sweep carries
+// on to the next. The alternative, stopping at the first failure, leaves the
+// remaining seats untouched with nothing saying why.
+func (m *Manager) ProvisionStale() ([]string, error) {
+	stale, err := m.Stale()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(stale) == 0 {
+		return nil, nil
+	}
+
+	m.mu.Lock()
+
+	if m.sweeping {
+		m.mu.Unlock()
+
+		return nil, ErrBusy
+	}
+
+	m.sweeping = true
+	m.mu.Unlock()
+
+	go func() {
+		defer func() {
+			m.mu.Lock()
+			m.sweeping = false
+			m.mu.Unlock()
+			m.notify()
+		}()
+
+		sweep(stale, m.busyWith, m.Provision,
+			func(name, note string) { m.logf(name, "%s", note) },
+			func() { time.Sleep(2 * time.Second) })
+	}()
+
+	m.notify()
+
+	return stale, nil
+}
+
+// sweepPatience is how long the sweep waits for a seat that is in the middle of
+// something else before giving up on it. Generous: the thing it is usually
+// waiting for is a seat that has just been started, which takes seconds, and the
+// worst case worth surviving is a stuck operation.
+const sweepPatience = 5 * time.Minute
+
+// sweep provisions each seat in turn, waiting for one to finish before starting
+// the next.
+//
+// Written as a function of its dependencies so that the waiting can be tested,
+// because the waiting is the whole of it and the first version did not have any.
+// It called Provision straight away, and a seat that was busy for a moment
+// answered "busy", which was logged as a note on that seat and skipped. Both
+// seats had been started five seconds earlier, so a request that reported it was
+// provisioning two seats provisioned neither and said nothing anybody would
+// read as failure.
+func sweep(names []string, busy func(string) string, provision func(string) error,
+	note func(name, text string), wait func()) {
+	for _, name := range names {
+		// Wait for whatever it is already doing. A seat coming up, a library
+		// pass, somebody's own click a second earlier.
+		waited := time.Duration(0)
+
+		for busy(name) != "" {
+			if waited >= sweepPatience {
+				note(name, fmt.Sprintf("! still busy with %q after %s, skipped in this pass",
+					busy(name), sweepPatience))
+
+				break
+			}
+
+			wait()
+
+			waited += 2 * time.Second
+		}
+
+		if busy(name) != "" {
+			continue
+		}
+
+		if err := provision(name); err != nil {
+			note(name, fmt.Sprintf("! it could not be provisioned in this pass: %v", err))
+
+			continue
+		}
+
+		// Waited for rather than fired off, which is the point of the sweep:
+		// four provisioning runs at once turn four slow operations into four
+		// slower ones. Polled because operate owns the goroutine and reports
+		// through the same busy flag the interface reads.
+		for busy(name) != "" {
+			wait()
+		}
+	}
+}
+
 func (m *Manager) Provision(name string) error {
 	seat, err := m.store.Get(name)
 	if err != nil {
@@ -1520,6 +1716,7 @@ func (m *Manager) Status(name string) (Status, error) {
 		Encoder:   rt.encoder,
 		Codecs:    rt.codecs,
 		Output:    rt.output,
+		Session:   rt.session,
 		Broker:    broker,
 		Devices:   rt.devices,
 		Busy:      rt.busy,

@@ -110,6 +110,83 @@ function showError(message) {
   box.prepend(div);
 }
 
+// staleBanner offers to bring every out of date seat up to date, as one action.
+//
+// The seats being behind is one situation, so dealing with it is one button. It
+// used to mean opening each card in turn and remembering which had been done,
+// which after an update to the daemon is every one of them.
+function staleBanner() {
+  const stale = (state.seats || []).filter((seat) => seat.stale).map((seat) => seat.name);
+
+  if (!stale.length && !state.provisioning_all) return [];
+
+  const div = document.createElement("div");
+  div.className = "warning";
+
+  if (state.provisioning_all) {
+    div.textContent =
+      "Provisioning the out of date seats, one after another. " +
+      "This takes a few minutes each and carries on if you close this page.";
+
+    return [div];
+  }
+
+  const text = document.createElement("span");
+  text.textContent =
+    stale.length === 1
+      ? `Seat ${stale[0]} was built by an older version of the daemon. `
+      : `${stale.length} seats were built by an older version of the daemon (${stale.join(", ")}). `;
+
+  const button = document.createElement("button");
+  button.textContent = stale.length === 1 ? "Provision it" : "Provision them";
+  button.onclick = () => {
+    button.disabled = true;
+    run(async () => {
+      await api("POST", "/api/provision-stale");
+      await refresh();
+    });
+  };
+
+  div.replaceChildren(text, button);
+
+  return [div];
+}
+
+// describeSession says who is streaming from a seat and what they asked for.
+//
+// The first question anybody asks about a machine several people share, and until
+// now the interface answered it only by implication: the resolution row showed
+// two values when somebody was connected and one when nobody was.
+//
+// An address rather than a name, because Sunshine does not offer one. Moonlight
+// gives its name while pairing and Sunshine keeps that against a certificate,
+// not against an address, and there is no endpoint for the session in progress.
+// The paired devices are listed a few rows below, which is as close as this gets.
+function describeSession(session) {
+  const parts = [session.app || "something"];
+
+  if (session.width && session.height) {
+    parts.push(
+      session.fps
+        ? `${session.width}x${session.height} at ${session.fps} Hz`
+        : `${session.width}x${session.height}`,
+    );
+  }
+
+  if (session.hdr === "1") parts.push("HDR");
+  if (session.peer) parts.push(`from ${session.peer}`);
+
+  const started = session.started && new Date(session.started);
+  if (started && !Number.isNaN(started.getTime())) {
+    const minutes = Math.floor((Date.now() - started.getTime()) / 60000);
+    const since = started.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+    parts.push(minutes < 1 ? `since ${since}` : `since ${since}, ${minutes} min`);
+  }
+
+  return parts.join(", ");
+}
+
 // -------------------------------------------------------------------- render
 
 function render() {
@@ -125,6 +202,7 @@ function render() {
   // The list is absent rather than empty when there is nothing to warn about,
   // and calling map on that is what silently broke the whole page once.
   el("warnings").replaceChildren(
+    ...staleBanner(),
     ...(state.warnings || []).map((text) => {
       const div = document.createElement("div");
       div.className = "warning";
@@ -1068,6 +1146,8 @@ function facts(seat) {
       ? `${seat.output} now, ${seat.resolution} when idle`
       : seat.resolution,
   );
+  if (seat.session) row("Streaming", describeSession(seat.session));
+
   row("Shared library", seat.library ? "yes" : "no");
 
   if (seat.stale) {

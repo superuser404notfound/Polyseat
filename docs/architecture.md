@@ -584,6 +584,50 @@ and opening the on-screen keyboard during a game killed the game. The session
 therefore shows the keyboard once at startup and puts it away again, before
 anybody has connected and while there is nobody to see it.
 
+## Bringing the seats up to date, and seeing who is on them
+
+Two things the interface owes somebody running a machine several people share.
+
+**One button for every seat an older generation built.** The generation mechanism
+above marks a seat as out of date; acting on that used to mean opening each card
+in turn and remembering which had been done, which after a change to the daemon
+is every one of them. A banner offers it as the single action it is, and the
+sweep works through the seats one at a time: four provisioning runs at once turn
+four slow operations into four slower ones and make each log impossible to
+follow. It runs in the daemon rather than in the browser, because it takes
+minutes per seat and the person who pressed the button is often on a phone that
+will lock its screen.
+
+The waiting is the part worth writing down, because the first version did not do
+any. It called Provision straight away, and a seat that is busy answers "busy",
+which was noted on that seat and skipped. Both seats had been started five
+seconds earlier, so a request that reported it was provisioning two seats
+provisioned neither and said nothing anybody would read as a failure. It now
+waits for a seat to be free first, gives up on one that never is after five
+minutes and says so on that seat, and carries on past a seat that fails rather
+than abandoning the rest.
+
+**Who is streaming, on the seat's own card.** Asked of Sunshine first, which does
+not answer it: `/api/session`, `/api/sessions`, `/api/status` and
+`/api/clients/active` are all 404 on the version in a seat, `/api/clients/list`
+gives the paired devices and not the one connected, and the log at its default
+level records the encoder and the bitrate and never the client. So it is written
+down where it is known instead. Sunshine's prep commands run when a stream starts
+and again when it ends, with the client's size, framerate and HDR in their
+environment and the name of the application it asked for, and `polyseat-session`
+puts that in a file for as long as the stream lasts.
+
+The address comes from the connection: Sunshine's control channel is a TCP
+connection that lives exactly as long as the stream, so the peer on port 47989 or
+48010 is the machine somebody is sitting at. Not a name, because Moonlight only
+gives its name while pairing and Sunshine keeps that against a certificate rather
+than against an address. The paired names are listed a few rows below on the same
+card, which is as close as this gets without Sunshine's help. Reading that peer
+cost one mistake worth recording: `ss` leaves out the state column when it has
+been asked for a single state, so the address is the fourth field there and the
+fifth without the filter, and counting from the left returned nothing and looked
+exactly like nobody being connected.
+
 ## Capacity
 
 Reference machine: RTX 4080 (16 GB), 24 cores, **31 GB RAM**, btrfs.
