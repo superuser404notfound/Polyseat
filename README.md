@@ -7,15 +7,73 @@ desktop keeps running undisturbed while they play.
 
 A **seat** is an Incus system container with its own headless Sway, its own
 Sunshine instance, its own PipeWire and its own Steam account. One GPU serves
-all of them through NVENC.
-
-Polyseat implements **neither a compositor, nor an encoder, nor a streaming
-protocol**. The heavy lifting is done by Incus, Sway/wlroots, Sunshine,
-PipeWire, udev and systemd. Polyseat is the orchestrator on top: it builds
-seats, wires them up collision-free, assigns input devices, shares the game
-library, and repairs what drifts.
+all of them through NVENC. Polyseat implements neither a compositor, nor an
+encoder, nor a streaming protocol: the heavy lifting is done by Incus,
+Sway/wlroots, Sunshine, PipeWire, udev and systemd, and Polyseat is the
+orchestrator on top. It builds seats, wires them up collision-free, assigns
+input devices, shares the game library, and repairs what drifts.
 
 ![Polyseat: one PC runs the daemon, the input broker and the shared game library; each seat is a container with headless sway and Sunshine, streaming to its own Moonlight client](docs/overview.svg)
+
+## Getting started
+
+**What the machine needs:**
+
+| | |
+|---|---|
+| **Host** | Arch-based. The installer queries `pacman` rather than pretending to be portable. |
+| **Packages** | `incus`, `nvidia-container-toolkit`, `bpftrace`, `python`, `go`. The installer installs whichever of them are missing. |
+| **GPU** | NVIDIA. The encoder is NVENC and the seats are given the NVIDIA userspace directly. |
+| **Filesystem** | btrfs, or XFS created with `reflink=1`, **and only for the shared game library**. `ext4` cannot share blocks, and neither can tmpfs or a network filesystem. Seats still work on those; the shared library simply stays off and every seat downloads its own games. The installer tests it and says which it found. |
+| **Network** | One wired interface the seats can take a macvlan from, so each seat is a host of its own on the LAN and can use the standard Sunshine ports. |
+
+**1. Install it, once per machine:**
+
+```
+git clone https://github.com/superuser404notfound/Polyseat.git
+cd Polyseat
+sudo host/install.sh
+sudo systemctl enable --now polyseatd
+```
+
+That installs any missing packages, gives root the idmap range every container
+start needs, brings up Incus and initialises it if nobody has, builds the
+daemon, places the input helpers under `/usr/local/lib/polyseat`, installs the
+udev rule that keeps seat devices off the host desktop, registers one systemd
+unit, and adds your account to the `input` group so the host-side tooling runs
+without root. It creates no seats, and it can be run again after an update
+without undoing anything.
+
+Two things it reports rather than changes, because they are yours to decide:
+whether the filesystem holding the game library can share blocks, which it asks
+the filesystem by cloning a file rather than trusting its name, and whether
+there is a wired interface for the seats to take a macvlan from.
+
+**2. Open `https://<this machine>:47800` and choose a password.** Nobody has
+claimed the machine yet, so the page asks you to set one rather than to type
+one, the way Sunshine's own interface does. Do it before anybody else does:
+until it is set, whoever reaches the page can set it.
+
+The interface answers on the whole network, so seats can be managed from the
+same phone that runs Moonlight. The certificate is self signed, so the browser
+asks once, exactly like Sunshine's own interface does. To keep it on this
+machine instead, set `listen` to `127.0.0.1:47800` in
+`/etc/polyseat/polyseatd.json`.
+
+**3. Add a seat and press provision.** The daemon downloads the image, installs
+the packages, repairs the NVIDIA userspace that the driver injection leaves
+incomplete, generates the Sunshine configuration and starts the session. It
+takes a few minutes and the card shows each step as it happens.
+
+**4. Pair a device.** Open *Devices and pairing* on the seat's card, point
+Moonlight at the address shown at the top of that card, and type the PIN
+Moonlight gives you into that field. The same panel lists what is already
+paired, can unpair it, and shows the seat's own Sunshine login for when you want
+to go there directly. Pairing happens here for every seat rather than in one
+Sunshine page per seat on a port of its own: the daemon owns each seat's
+Sunshine login and talks to it on your behalf.
+
+That is all. Repeat 3 and 4 for the second person.
 
 ## What it does
 
@@ -23,7 +81,8 @@ library, and repairs what drifts.
 from nothing to a running session: container, network, driver userspace, Steam,
 desktop, input broker. It supervises the brokers, follows the Incus event stream
 instead of polling, and converges seats that were built by an older recipe, so a
-change to the recipe reaches the seats that already exist.
+change to the recipe reaches the seats that already exist, with one button that
+brings every one of them up to date.
 
 **Input goes exactly where it belongs.** Each client's keyboard, mouse and
 gamepad reach that client's session and nothing else. No crossover between
@@ -70,67 +129,14 @@ turns itself on when the desktop is in front and hands the controller back to a
 fullscreen game, and how fast it moves is a slider on the seat's card that takes
 effect while somebody is holding the controller.
 
-Confirmed on real hardware, most recently on 2026-07-29. The logs of each step
+Confirmed on real hardware, most recently on 2026-07-30. The logs of each step
 live in [`spike/`](spike/) and record what works, what does not, and why.
 
-## Requirements
+## Day to day
 
-| | |
-|---|---|
-| **Host** | Arch-based. The installer queries `pacman` rather than pretending to be portable. |
-| **Packages** | `incus`, `nvidia-container-toolkit`, `bpftrace`, `python`, `go`. The installer installs whichever of them are missing. |
-| **GPU** | NVIDIA. The encoder is NVENC and the seats are given the NVIDIA userspace directly. |
-| **Filesystem** | btrfs, or XFS created with `reflink=1`, **and only for the shared game library**. `ext4` cannot share blocks, and neither can tmpfs or a network filesystem. Seats still work on those; the shared library simply stays off and every seat downloads its own games. The installer tests it and says which it found. |
-| **Network** | One interface the seats can take a macvlan from, so each seat is a host of its own on the LAN and can use the standard Sunshine ports. |
-
-## Running it
-
-**Once per machine:**
-
-```
-sudo host/install.sh
-sudo systemctl enable --now polyseatd
-```
-
-That installs any missing packages, gives root the idmap range every container
-start needs, brings up Incus and initialises it if nobody has, builds the
-daemon, places the input helpers under `/usr/local/lib/polyseat`, installs the
-udev rule that keeps seat devices off the host desktop, registers one systemd
-unit, and adds your account to the `input` group so the host-side tooling runs
-without root. It creates no seats, and it can be run again after an update
-without undoing anything.
-
-Two things it reports rather than changes, because they are yours to decide:
-
-* **Whether the game library can share blocks.** It asks the filesystem by
-  cloning a file rather than trusting its name, so an XFS made without
-  `reflink=1` is caught as well as an `ext4`. On a no it says so and carries on;
-  everything except the shared library works either way.
-* **Whether the seats have an uplink.** They each get a macvlan interface, which
-  needs a default route to take it from and does not work on wifi at all,
-  because 802.11 does not carry more than one MAC address per association.
-
-**Everything else happens at `https://<this machine>:47800`.** Nobody has
-claimed the machine yet, so the page asks you to choose a password rather than
-to type one, the way Sunshine's own interface does. Do it before anybody else
-does: until it is set, whoever reaches the page can set it. Then add a seat and
-press provision. The
-daemon downloads the image, installs the packages, repairs the NVIDIA userspace
-that the driver injection leaves incomplete, generates the Sunshine
-configuration and starts the session.
-
-**Pairing a device** happens under *Devices and pairing* on the seat's card.
-Point Moonlight at the seat, type the PIN it shows into that field, done. The
-same panel lists what is already paired and can unpair it, and shows the seat's
-own Sunshine login for when you want to go there directly. Pairing is done here
-for every seat rather than in one Sunshine page per seat on a port of its own:
-the daemon owns each seat's Sunshine login and talks to it on your behalf.
-
-The interface answers on the whole network, so seats can be managed from the
-same phone that runs Moonlight. The certificate is self signed, so the browser
-asks once, exactly like Sunshine's own interface does. To keep it on this
-machine instead, set `listen` to `127.0.0.1:47800` in
-`/etc/polyseat/polyseatd.json`.
+**Who is on which seat** is on the seat's own card while somebody is streaming:
+what they picked, at what size and framerate, from which address, and since
+when.
 
 **Reading what happened.** Each seat card carries its own log, and the useful
 lines in it come from the input broker. It says for every device whether its
@@ -153,6 +159,17 @@ For the host itself:
 host/check-hardening.sh     # console and device exposures
 journalctl -fu polyseatd
 ```
+
+**Updating.** Pull, run the installer again, and press the button the interface
+offers to bring every seat up to date:
+
+```
+git pull && sudo host/install.sh && sudo systemctl restart polyseatd
+```
+
+**Removing it** leaves your seats alone: `sudo host/install.sh --uninstall`
+takes out the daemon, its unit, the udev rule and the helpers, and touches
+neither the containers nor `/var/lib/polyseat`.
 
 ## What it does not do
 
