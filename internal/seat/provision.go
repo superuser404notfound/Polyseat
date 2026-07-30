@@ -412,6 +412,12 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		// already and fusermount3 is setuid, so this one package is the whole
 		// of what was missing.
 		"fuse2",
+		// Named rather than left to arrive as somebody else's dependency,
+		// because the box art depends on it now: an AppImage often carries its
+		// icon only as an SVG, Eden among them, and rsvg-convert is what turns
+		// that into the PNG a client will actually draw. It is in a seat either
+		// way, since the desktop pulls it in; this is so that it stays there.
+		"librsvg",
 		// The graphical way in, so that installing something is not a command
 		// somebody has to be told. gnome-software costs almost nothing here
 		// because a seat already has the toolkit underneath it, and with

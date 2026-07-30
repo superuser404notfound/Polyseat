@@ -191,6 +191,14 @@ apps = os.path.join(home, "Applications")
 inbox = os.path.join(home, "Downloads")
 cache = os.path.join(home, ".cache/polyseat/appimage")
 
+# What the cached metadata was read by. Bump it whenever reading changes, or
+# every seat keeps the answer the old version gave: the record is keyed on the
+# file, and the file has not changed, so nothing else would ever ask again. That
+# is not hypothetical, it is why this exists. Version 1 could not read an SVG
+# icon, so it cached "this one has no icon" for Eden, and adding the ability to
+# read one would have changed nothing anywhere it had already looked.
+META_VERSION = 2
+
 # The same rule as safeAppImageName in the daemon, and a test compares them.
 UNSAFE = re.compile(r"[^A-Za-z0-9._+-]")
 
@@ -253,9 +261,17 @@ def adopt():
 
 
 def extract(path, into):
-    """Pull the metadata files out of an AppImage, without running its payload."""
-    for pattern in ("*.desktop", ".DirIcon",
-                    "usr/share/icons/hicolor/*/apps/*.png"):
+    """Pull the metadata files out of an AppImage, without running its payload.
+
+    Every place an icon is known to live, because they disagree. Eden keeps a
+    512 by 512 SVG as .DirIcon and nothing else; appimagetool keeps a PNG there;
+    plenty of others keep the real thing in the theme directory and leave
+    .DirIcon as a symlink to it, which extracts as a symlink pointing at
+    something that was never unpacked unless the target is asked for too.
+    """
+    for pattern in ("*.desktop", ".DirIcon", "*.png", "*.svg",
+                    "usr/share/icons/hicolor/*/apps/*",
+                    "usr/share/pixmaps/*"):
         try:
             subprocess.run([path, "--appimage-extract", pattern], cwd=into,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -266,12 +282,85 @@ def extract(path, into):
     return os.path.isdir(os.path.join(into, "squashfs-root"))
 
 
-def png(path):
+def kind(path):
+    """png, svg, or nothing, from the contents rather than from the name.
+
+    .DirIcon has no extension at all, so the name cannot answer this.
+    """
     try:
         with open(path, "rb") as fh:
-            return fh.read(8) == b"\x89PNG\r\n\x1a\n"
+            head = fh.read(4096)
     except OSError:
-        return False
+        return ""
+
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+
+    if b"<svg" in head:
+        return "svg"
+
+    return ""
+
+
+def pick_icon(root, dest):
+    """Put the best picture in an extracted AppImage at dest, as a PNG.
+
+    Largest first, because this is scaled up into a card on a television rather
+    than drawn in a menu at sixteen pixels, and PNG before SVG only because a
+    PNG needs nothing to read it. An icon can be a dangling symlink into a part
+    of the image that was not unpacked, which isfile answers for.
+
+    Returns dest when it worked and nothing when there was no picture to be had,
+    which is not a failure: a card with only the name on it is what every game
+    without artwork already gets.
+    """
+    found = []
+
+    for pattern in ("usr/share/icons/hicolor/*/apps/*", "usr/share/pixmaps/*",
+                    "*.png", "*.svg", ".DirIcon"):
+        found += glob.glob(os.path.join(root, pattern))
+
+    def size(path):
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return 0
+
+    usable = [(p, kind(p)) for p in found if os.path.isfile(p)]
+    usable.sort(key=lambda pair: size(pair[0]), reverse=True)
+
+    for path, what in usable:
+        if what == "png":
+            try:
+                shutil.copyfile(path, dest)
+                return dest
+            except OSError:
+                continue
+
+    # Then the vector ones. rsvg-convert comes with librsvg, which a seat has
+    # because its desktop does; a seat without it keeps the behaviour this had
+    # before, which is no icon rather than a broken one.
+    rsvg = shutil.which("rsvg-convert")
+
+    if not rsvg:
+        return ""
+
+    for path, what in usable:
+        if what != "svg":
+            continue
+
+        try:
+            done = subprocess.run(
+                [rsvg, "-w", "512", "-a", "-o", dest, path],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=60, check=False)
+        except (OSError, subprocess.SubprocessError):
+            continue
+
+        if done.returncode == 0 and os.path.isfile(dest) and kind(dest) == "png":
+            return dest
+
+    return ""
 
 
 def read_meta(path, key):
@@ -296,29 +385,7 @@ def read_meta(path, key):
                 meta["name"] = m.group(1).strip()[:80]
                 break
 
-        # The largest picture wins: this is scaled up into a card on a
-        # television rather than drawn in a menu at sixteen pixels. .DirIcon is
-        # tried as well as the theme directories because an AppImage may carry
-        # only one of the two, and it can be a dangling symlink into a part of
-        # the image that was not extracted, which isfile answers for.
-        icons = sorted(
-            glob.glob(os.path.join(root, "usr/share/icons/hicolor/*/apps/*.png")),
-            key=lambda p: os.path.getsize(p) if os.path.isfile(p) else 0,
-            reverse=True,
-        )
-        icons.append(os.path.join(root, ".DirIcon"))
-
-        for icon in icons:
-            if not os.path.isfile(icon) or not png(icon):
-                continue
-
-            dest = os.path.join(cache, key + ".png")
-            try:
-                shutil.copyfile(icon, dest)
-                meta["icon"] = dest
-            except OSError:
-                meta["icon"] = ""
-            break
+        meta["icon"] = pick_icon(root, os.path.join(cache, key + ".png"))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -340,14 +407,15 @@ def meta_of(path, key, stat):
         with open(record, encoding="utf-8") as fh:
             got = json.load(fh)
 
-        if got.get("stamp") == stamp and (
-                not got.get("icon") or os.path.exists(got["icon"])):
+        if (got.get("version") == META_VERSION and got.get("stamp") == stamp
+                and (not got.get("icon") or os.path.exists(got["icon"]))):
             return got
     except (OSError, ValueError):
         pass
 
     got = read_meta(path, key)
     got["stamp"] = stamp
+    got["version"] = META_VERSION
 
     try:
         with open(record, "w", encoding="utf-8") as fh:

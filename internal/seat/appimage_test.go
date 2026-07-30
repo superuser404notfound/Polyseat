@@ -2,6 +2,10 @@ package seat
 
 import (
 	"encoding/json"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,6 +96,222 @@ print(json.dumps([scope["safe_name"](n) for n in json.loads(sys.argv[2])]))
 		if err := ValidateAppImageFile(theirs[i]); err != nil {
 			t.Errorf("the scan would produce %q, which the daemon then rejects: %v", theirs[i], err)
 		}
+	}
+}
+
+// callScan loads the embedded scan and calls one function of it, so that a piece
+// of it can be checked without a real AppImage to run.
+func callScan(t *testing.T, call string, args ...string) string {
+	t.Helper()
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("SKIPPED: no python3, so this part of the scan is unchecked here")
+	}
+
+	driver := `
+import json, sys
+
+source = open(sys.argv[1], encoding="utf-8").read()
+scope = {"__name__": "polyseat_scan_under_test"}
+exec(compile(source, "scan", "exec"), scope)
+
+print(scope[sys.argv[2]](*sys.argv[3:]))
+`
+
+	home := t.TempDir()
+
+	script := filepath.Join(home, "scan.py")
+	if err := os.WriteFile(script, []byte(appImageScan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(python, append([]string{"-c", driver, script, call}, args...)...)
+	cmd.Env = append(os.Environ(), "POLYSEAT_HOME="+home)
+
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("calling %s failed: %v\n%s", call, err, out)
+	}
+
+	return strings.TrimSpace(string(out))
+}
+
+// samplePNG writes a PNG of a given size, so that "the largest one wins" is
+// checked against real files rather than against names.
+func samplePNG(t *testing.T, path string, side int) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	img := image.NewRGBA(image.Rect(0, 0, side, side))
+
+	// Noise rather than one flat colour, or every size would compress to
+	// roughly the same number of bytes and "largest" would mean nothing.
+	for y := 0; y < side; y++ {
+		for x := 0; x < side; x++ {
+			img.Set(x, y, color.RGBA{uint8(x * 7), uint8(y * 13), uint8(x ^ y), 255})
+		}
+	}
+
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := png.Encode(file, img); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The bug this was written for: Eden, the emulator that prompted the whole
+// feature, keeps a 512 by 512 SVG as its .DirIcon and carries no PNG anywhere.
+// Every entry in Moonlight had a picture except that one, and nothing said why.
+func TestPickIconRasterisesAnSVGWhenThatIsAllThereIs(t *testing.T) {
+	if _, err := exec.LookPath("rsvg-convert"); err != nil {
+		t.Skip("SKIPPED: no rsvg-convert, which is what does this")
+	}
+
+	dir := t.TempDir()
+	root := filepath.Join(dir, "squashfs-root")
+
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	svg := `<?xml version="1.0" encoding="UTF-8"?>` +
+		`<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" ` +
+		`viewBox="0 0 512 512"><circle cx="256" cy="256" r="200" fill="#7fb2d8"/></svg>`
+
+	if err := os.WriteFile(filepath.Join(root, ".DirIcon"), []byte(svg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(dir, "card.png")
+
+	if got := callScan(t, "pick_icon", root, dest); got != dest {
+		t.Fatalf("pick_icon returned %q, want %q", got, dest)
+	}
+
+	body, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("nothing was written: %v", err)
+	}
+
+	// A PNG, because that is the only thing a client draws. Writing the SVG
+	// through under a .png name would pass a weaker check and produce exactly
+	// the blank card this is about.
+	if len(body) < 8 || string(body[:8]) != "\x89PNG\r\n\x1a\n" {
+		t.Errorf("what was written is not a PNG: %.16q", body)
+	}
+}
+
+// And when there are pictures, the big one. A card is drawn at 600 by 900 on a
+// television, so a 48 pixel menu icon blown up to that is a smear.
+func TestPickIconTakesTheLargestPicture(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "squashfs-root")
+
+	samplePNG(t, filepath.Join(root, "usr/share/icons/hicolor/48x48/apps/small.png"), 48)
+	samplePNG(t, filepath.Join(root, "usr/share/icons/hicolor/256x256/apps/big.png"), 256)
+
+	dest := filepath.Join(dir, "card.png")
+
+	if got := callScan(t, "pick_icon", root, dest); got != dest {
+		t.Fatalf("pick_icon returned %q, want %q", got, dest)
+	}
+
+	want, err := os.ReadFile(filepath.Join(root, "usr/share/icons/hicolor/256x256/apps/big.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(got) != string(want) {
+		t.Error("the smaller icon was taken, so the card is a blown up thumbnail")
+	}
+}
+
+// A seat that has already looked at an AppImage keeps the answer, and the
+// answer is keyed on the file, which does not change when the reading of it
+// improves. Without a version in the record, teaching the scan to read an SVG
+// icon would have changed nothing on any seat that had already decided that
+// AppImage has no icon, and the bug would have looked fixed here and not there.
+func TestScanRereadsWhatAnOlderVersionCached(t *testing.T) {
+	home := t.TempDir()
+
+	drop(t, filepath.Join(home, "Applications"), "Emu.AppImage", header, time.Hour)
+
+	cache := filepath.Join(home, ".cache/polyseat/appimage")
+
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stat, err := os.Stat(filepath.Join(home, "Applications", "Emu.AppImage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// What the first version of the scan wrote: the right stamp, no version,
+	// and the wrong answer.
+	stale := fmt.Sprintf(`{"name": "Stale", "icon": "", "stamp": "%d:%d"}`,
+		stat.Size(), stat.ModTime().Unix())
+
+	record := filepath.Join(cache, "Emu.AppImage.json")
+
+	if err := os.WriteFile(record, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	found := runAppImageScan(t, home)
+
+	if len(found) != 1 {
+		t.Fatalf("the scan found %d AppImages, want 1: %+v", len(found), found)
+	}
+
+	if found[0]["name"] == "Stale" {
+		t.Error("the record an older version wrote was believed, so a seat that " +
+			"has already looked at an AppImage never sees a better answer")
+	}
+
+	body, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), `"version"`) {
+		t.Errorf("the rewritten record carries no version: %s", body)
+	}
+}
+
+// An AppImage whose .DirIcon points at something that was not unpacked, which is
+// the ordinary case for the ones that keep the real file in the theme directory.
+func TestPickIconIgnoresADanglingLink(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "squashfs-root")
+
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Symlink("usr/share/icons/hicolor/512x512/apps/gone.png",
+		filepath.Join(root, ".DirIcon")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := callScan(t, "pick_icon", root, filepath.Join(dir, "card.png")); got != "" {
+		t.Errorf("pick_icon returned %q for a link to nothing", got)
 	}
 }
 
