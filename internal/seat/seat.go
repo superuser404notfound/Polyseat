@@ -107,6 +107,32 @@ const (
 	StateError State = "error"
 )
 
+// Session is who is streaming from a seat and what they asked for.
+//
+// Not part of the seat's definition: it is true for as long as somebody is
+// connected and no longer, so it belongs with the rest of what the daemon
+// observes rather than with what the seat was configured to be.
+type Session struct {
+	// App is the entry the client picked in Moonlight.
+	App string `json:"app"`
+
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
+	FPS    int `json:"fps,omitempty"`
+
+	// HDR is what Sunshine reported, "1" or "0" or absent.
+	HDR string `json:"hdr,omitempty"`
+
+	// Peer is the address the stream's control connection comes from, which is
+	// the machine somebody is sitting at. Not a name: Moonlight gives its name
+	// only while pairing and Sunshine keeps that against a certificate rather
+	// than against an address, so the interface shows the address next to the
+	// paired names and lets the reader put the two together.
+	Peer string `json:"peer,omitempty"`
+
+	Started time.Time `json:"started"`
+}
+
 // Status is a seat as the web interface sees it: the definition plus
 // everything observed about it.
 type Status struct {
@@ -132,6 +158,10 @@ type Status struct {
 	// them. Reporting only H.264, which this did, reads as though H.264 were
 	// all a seat could do, when Sunshine offers whichever the client asks for.
 	Codecs []string `json:"codecs,omitempty"`
+
+	// Session is the stream in progress, absent when nobody is connected. The
+	// first question anybody asks about a machine several people share.
+	Session *Session `json:"session,omitempty"`
 
 	// Output is the size the seat's screen is running at now, which is not the
 	// Resolution above. That one is what the session comes up with; this one is

@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 13
+const Generation = 14
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -1118,6 +1118,7 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		{"/usr/local/bin/polyseat-sunshine-run", asset("assets/sunshine-run.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-resize", asset("assets/resize.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-fps", asset("assets/fps.sh"), 0o755, 0},
+		{"/usr/local/bin/polyseat-session", asset("assets/session.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-welcome", asset("assets/welcome.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-keyboard", asset("assets/keyboard.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-launcher", asset("assets/launcher.sh"), 0o755, 0},
@@ -1356,6 +1357,9 @@ const (
 	MinPointerSpeed     = 0.10
 	MaxPointerSpeed     = 1.50
 )
+
+// SessionPath is where a seat records the stream in progress.
+const SessionPath = "/home/" + Player + "/.local/share/polyseat/session.json"
 
 // PointerConfigPath is where the gamepad pointer helper looks for its speed.
 const PointerConfigPath = "/home/" + Player + "/.config/polyseat/pointer.conf"
