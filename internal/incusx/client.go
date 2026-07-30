@@ -84,17 +84,75 @@ func (c *Client) stalled(err error) error {
 		return err
 	}
 
+	c.reconnect()
+
+	return err
+}
+
+// reconnect replaces the connection, and says nothing if it cannot.
+//
+// A failure here leaves the old connection in place, which is no worse than
+// before: the caller is already returning an error and the next attempt will try
+// again.
+func (c *Client) reconnect() {
 	if c.dial == nil {
-		return err
+		return
 	}
 
-	if srv, dialErr := c.dial(); dialErr == nil {
+	if srv, err := c.dial(); err == nil {
 		c.mu.Lock()
 		c.srv = srv
 		c.mu.Unlock()
 	}
+}
 
-	return err
+// pollInterval is how often an operation is asked about directly while waiting
+// for it to announce itself.
+const pollInterval = 5 * time.Second
+
+// await waits for an operation, and asks the operation itself as well.
+//
+// Waiting alone is not enough. The result of an operation reaches the client over
+// the event stream, and that stream has been seen to stop delivering while
+// staying open. Both halves of building a seat were lost that way on the same
+// afternoon: a container created, sitting there stopped with its image fully
+// downloaded, and a container started and running, while the daemon waited on
+// each for minutes. No deadline fixes that on its own, because it cannot tell a
+// stalled wait from an image that is genuinely still downloading.
+//
+// Refresh is a plain GET against the operation's own URL. It involves no events
+// at all, which is exactly why it still answers when the stream does not.
+func (c *Client) await(ctx context.Context, op incus.Operation) error {
+	done := make(chan error, 1)
+	go func() { done <- op.WaitContext(ctx) }()
+
+	poll := time.NewTicker(pollInterval)
+	defer poll.Stop()
+
+	for {
+		select {
+		case err := <-done:
+			return c.stalled(err)
+
+		case <-poll.C:
+			if op.Refresh() != nil {
+				continue
+			}
+
+			switch state := op.Get(); state.StatusCode {
+			case api.Success:
+				// Done, and this was never told, so the connection is the
+				// problem rather than the operation. Replaced before anything
+				// else uses it.
+				c.reconnect()
+
+				return nil
+
+			case api.Failure, api.Cancelled:
+				return fmt.Errorf("%s", state.Err)
+			}
+		}
+	}
 }
 
 // server is the connection as it stands now.
@@ -195,13 +253,55 @@ func (c *Client) Create(ctx context.Context, name, image string) error {
 	done := make(chan error, 1)
 	go func() { done <- op.Wait() }()
 
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		_ = op.CancelTarget()
+	// And so has noticing that it has already finished.
+	//
+	// The result of an operation reaches the client over the event stream, and
+	// that stream has been seen to stop delivering while staying open. A seat was
+	// left in "creating the container" for minutes with the container sitting
+	// there, made and stopped, and the image fully downloaded: the work was done
+	// and only the news of it was lost. There is no deadline that helps, because
+	// a real image download legitimately takes minutes.
+	//
+	// So the operation is asked about directly as well. That is a plain GET
+	// against its own URL and involves no events at all, which is exactly why it
+	// still works when the stream does not.
+	poll := time.NewTicker(5 * time.Second)
+	defer poll.Stop()
 
-		return ctx.Err()
+	for {
+		select {
+		case err := <-done:
+			return err
+
+		case <-ctx.Done():
+			_ = op.CancelTarget()
+
+			return ctx.Err()
+
+		case <-poll.C:
+			target, err := op.GetTarget()
+			if err != nil || target == nil {
+				continue
+			}
+
+			live, _, err := c.server().GetOperation(target.ID)
+			if err != nil {
+				continue
+			}
+
+			switch live.StatusCode {
+			case api.Success:
+				// Finished, and this was never told. The operation is not the
+				// problem, the connection is, so it is replaced before anything
+				// else uses it.
+				c.reconnect()
+
+				return nil
+
+			case api.Failure, api.Cancelled:
+				return fmt.Errorf("create %s: %s", name, live.Err)
+			}
+		}
 	}
 }
 
@@ -215,7 +315,7 @@ func (c *Client) Delete(ctx context.Context, name string) error {
 		return err
 	}
 
-	return c.stalled(op.WaitContext(ctx))
+	return c.await(ctx, op)
 }
 
 func (c *Client) changeState(ctx context.Context, name, action string, timeout int, force bool) error {
@@ -231,7 +331,7 @@ func (c *Client) changeState(ctx context.Context, name, action string, timeout i
 		return err
 	}
 
-	return c.stalled(op.WaitContext(ctx))
+	return c.await(ctx, op)
 }
 
 // Start boots the instance.
@@ -384,7 +484,7 @@ func (c *Client) Configure(ctx context.Context, name string, config map[string]s
 		return false, err
 	}
 
-	return true, c.stalled(op.WaitContext(ctx))
+	return true, c.await(ctx, op)
 }
 
 // UnsetConfig removes configuration keys. Separate from Configure because a
@@ -419,7 +519,7 @@ func (c *Client) UnsetConfig(ctx context.Context, name string, keys ...string) e
 		return err
 	}
 
-	return c.stalled(op.WaitContext(ctx))
+	return c.await(ctx, op)
 }
 
 func sameDevice(a, b map[string]string) bool {
@@ -530,7 +630,7 @@ func (c *Client) Exec(ctx context.Context, name string, argv []string, stdin io.
 		return -1, err
 	}
 
-	if err := c.stalled(op.WaitContext(ctx)); err != nil {
+	if err := c.await(ctx, op); err != nil {
 		return -1, err
 	}
 

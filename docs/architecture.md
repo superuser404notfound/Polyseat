@@ -653,7 +653,17 @@ for the ones that are neither a download nor somebody's package manager, and a
 caller that set its own deadline keeps it, because provisioning installs packages
 for minutes at a time and passes a context of its own.
 
-And a wait that times out now replaces the connection before returning, so the
+Waiting is not enough on its own, though, and a deadline is a poor answer to it:
+it cannot tell a stalled wait from an image that is genuinely still downloading.
+Both halves of building a seat were lost this way on the same afternoon, a
+container created and sitting there stopped with its image fully downloaded, and
+a container started and running, while the daemon waited on each for minutes. So
+every operation is now asked about directly as well, once every five seconds,
+with `Refresh` on its own URL. That is a plain GET and involves no events at all,
+which is exactly why it answers when the stream does not, and it turns a lost
+notification into a normal completion instead of a failure.
+
+And a wait that times out replaces the connection before returning, so the
 next call works and nobody has to restart the daemon. Only that failure: a
 container that genuinely refuses to start must not cost the connection every
 time. The old connection is left to be collected rather than disconnected,
