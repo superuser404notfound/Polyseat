@@ -308,41 +308,40 @@ every one of them downloads that update for itself.
 A seat offers two Steam library folders, its own private one and the pooled one
 labelled Polyseat, and only the second reaches the other seats. Which one the
 install dialog preselects is therefore the difference between a game everybody
-can play and a game that stays where it was put, and it was preselecting the
-wrong one.
+can play and a game that stays where it was put, and it preselects the wrong one.
 
-Steam keeps this as `LastInstallFolderIndex` directly under
-`UserLocalConfigStore` in `userdata/<account>/config/localconfig.vdf`, where the
-index is the folder's position in `libraryfolders.vdf`. That was established by
+What Steam keeps is `LastInstallFolderIndex`, directly under
+`UserLocalConfigStore` in `userdata/<account>/config/localconfig.vdf`, the index
+being the folder's position in `libraryfolders.vdf`. That was established by
 setting it once by hand and seeing which file changed, because it is in none of
 the places worth guessing: not `libraryfolders.vdf`, not `config.vdf`, not
 `registry.vdf`, and the string appears in none of Steam's binaries in a seat.
 
-It follows that there is nothing to write while a seat is being built: the file
-belongs to an account and nobody has signed in yet. So it is also written when a
-session starts, and once a minute after that, with the script standing down while
-Steam is running. Steam holds that file in memory and writes it out when it
-exits, so an edit underneath a running client is ignored and then overwritten by
-the very state it was meant to change.
+**Writing it is not a solution**, which is why nothing here does. The file belongs
+to an account that does not exist until somebody signs in, and by then Steam is
+running and holds it in memory, writing it out only when it exits. So the earliest
+a written value can take effect is the second time Steam starts, and somebody who
+signs in and installs straight away, which is what people do, gets the wrong
+library anyway.
 
-That means signing in for the first time and installing straight away still lands
-in the private library, and nothing can prevent it. The obvious way around it,
-listing the shared folder first in `libraryfolders.vdf` so that the fallback of
-index 0 points at it, was tried and does not work: with the key removed Steam
-does fall back to index 0, but it also rewrites the file at every start and puts
-its own directory back at the front. Both halves of that were measured in a seat,
-by removing the key and by swapping the entries and looking at which folder
-carries the star in Steam's own storage settings.
+Listing the shared folder first, so that the fallback of index 0 points at it,
+does not work either. Both halves were measured in a seat by reading the star in
+Steam's own storage settings: with the key removed Steam does fall back to index
+0, and it also rewrites `libraryfolders.vdf` at every start and puts its own
+directory back at the front. A swap survives exactly until the next launch.
 
-What is left is the next best thing, and it is a minute rather than a restart:
-close Steam once and the setting is there.
+What is left is to stop having two libraries. Steam's own `steamapps` in a seat
+holds `common`, `sourcemods`, `workshop` and nothing else: no appmanifests, no
+`compatdata`, no `downloading`, because everything installed goes to the pooled
+folder anyway. Mounting the seat's pooled directory at Steam's own `steamapps`
+would leave one library folder which is the shared one, with no default to set and
+nothing to choose. The cost is that taking part in the pool stops being a switch
+that can be turned off without moving data, which is a decision about what the
+library is for rather than a detail of this file.
 
-A value that is already there is never touched. It is either somebody's own
-choice or the last folder they installed into, and neither is this program's to
-overrule. The same rule covers Lutris, whose `game_path` in
-`~/.config/lutris/system.yml` is written only when that file does not exist; the
-option name, the file and its shape were read out of Lutris's own source rather
-than assumed.
+Lutris has no such problem. Its `game_path` in `~/.config/lutris/system.yml` is
+written when a seat is built, before anybody signs in to anything, and only when
+that file does not exist yet.
 
 ## Launchers other than Steam
 
