@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 15
+const Generation = 18
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -1261,6 +1261,21 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 	}
 
 	if err := p.tidyLauncher(); err != nil {
+		return err
+	}
+
+	// Forget which covers could not be found last time.
+	//
+	// polyseat-boxart remembers a title it could not find a picture for and
+	// leaves it alone for a week, so that a game with no artwork anywhere is
+	// not looked up every minute for the life of the seat. That is right while
+	// the helper stays the same and wrong the moment it learns somewhere new to
+	// look, which is exactly what a provisioning run is: a seat that had
+	// recorded a miss would keep the blank card for another six days after the
+	// fix arrived. Measured, not imagined: both seats here had the miss on file
+	// for the one title this was fixed for.
+	if _, _, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "sh", "-c",
+		"rm -f /home/"+Player+"/.local/share/polyseat/art/*.none"); err != nil {
 		return err
 	}
 

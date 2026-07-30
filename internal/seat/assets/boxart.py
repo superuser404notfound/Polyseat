@@ -31,6 +31,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from PIL import Image, ImageDraw, ImageFont
@@ -53,6 +54,26 @@ OUT = os.path.expanduser("~/.local/share/polyseat/art")
 # the life of the seat.
 COVER_URL = ("https://shared.cloudflare.steamstatic.com/store_item_assets"
              "/steam/apps/%s/library_600x900.jpg")
+
+# Where the same picture lives for a title that does not publish it under that
+# name.
+#
+# Which is not rare, and a game with no card at all is what made this necessary:
+# Assassin's Creed Black Flag Resynced answers 404 for every filename under
+# .../apps/3751950/, because its assets sit one level down in a directory named
+# after a hash that nothing in a manifest or on the store page contains.
+#
+# This service does contain it. It is public, it needs no key, and it answers
+# with an asset_url_format like "steam/apps/3751950/${FILENAME}?t=..." plus the
+# filename of each asset, library_capsule being the portrait cover: the 2x
+# variant is exactly the 600x900 wanted here and the plain one is half that.
+# The hash it gives back is the same one Steam itself had cached in a seat where
+# the picture did show, which is how it was confirmed to be the right asset
+# rather than merely an asset.
+ITEMS_URL = ("https://api.steampowered.com/IStoreBrowseService/GetItems/v1/"
+             "?input_json=%s")
+
+ASSET_BASE = "https://shared.cloudflare.steamstatic.com/store_item_assets/"
 
 FETCH_TIMEOUT = 8
 
@@ -147,6 +168,51 @@ def compose(source, label):
     return card
 
 
+def get(url):
+    """One request, or None. Never raises, for the reason below."""
+    try:
+        with urllib.request.urlopen(url, timeout=FETCH_TIMEOUT) as response:
+            return response.read()
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def hashed_cover(appid):
+    """The portrait cover of a title that publishes it under a hash.
+
+    Returns the bytes, or None. Two requests at worst, and only reached for a
+    title the plain address does not have, which is the minority.
+    """
+    query = json.dumps({
+        "ids": [{"appid": int(appid)}],
+        "context": {"language": "english", "country_code": "US"},
+        "data_request": {"include_assets": True},
+    }, separators=(",", ":"))
+
+    answer = get(ITEMS_URL % urllib.parse.quote(query))
+    if not answer:
+        return None
+
+    try:
+        items = json.loads(answer)["response"]["store_items"]
+        assets = items[0]["assets"]
+        template = assets["asset_url_format"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        return None
+
+    # The 2x variant is the 600x900 this composes at; the plain one is 300x450
+    # and is still a great deal better than a name on a dark background.
+    for name in ("library_capsule_2x", "library_capsule"):
+        if name not in assets:
+            continue
+
+        data = get(ASSET_BASE + template.replace("${FILENAME}", assets[name]))
+        if data:
+            return data
+
+    return None
+
+
 def fetched_cover(appid, budget):
     """The cover for a Steam title, downloaded once and kept.
 
@@ -175,11 +241,7 @@ def fetched_cover(appid, budget):
 
     os.makedirs(OUT, exist_ok=True)
 
-    try:
-        with urllib.request.urlopen(COVER_URL % appid, timeout=FETCH_TIMEOUT) as response:
-            data = response.read()
-    except (urllib.error.URLError, OSError, ValueError):
-        data = None
+    data = get(COVER_URL % appid) or hashed_cover(appid)
 
     if not data:
         try:
@@ -210,6 +272,35 @@ def fetched_cover(appid, budget):
     return target
 
 
+def card_name(key, source):
+    """What a card is called, which has to change when the picture does.
+
+    The name used to be the title alone, and that is how a game ended up
+    wearing the Steam logo on a client while the right cover sat on disk next
+    to it. Artwork arrives late: a game delivered by the shared library has
+    none until Steam is opened and caches it, or until the fetch below finds
+    it, and until then the card is the launcher's icon with a name under it.
+    When the real cover then replaced it, the card was rewritten under the same
+    name, so the app list Sunshine serves was unchanged, so nothing told it to
+    reload, so Moonlight went on showing the picture it had cached. The file on
+    disk was right and the client was wrong, which is the hardest kind of wrong
+    to see.
+
+    So the source goes into the name, identified the way a cache does it, by
+    what it is and when it changed. A new picture is a new card is a new app
+    list, and the client fetches it because it has never seen that path before.
+    """
+    parts = [key, source]
+
+    try:
+        info = os.stat(source)
+        parts += [str(int(info.st_mtime)), str(info.st_size)]
+    except OSError:
+        pass
+
+    return hashlib.sha1("\0".join(parts).encode()).hexdigest() + ".png"
+
+
 def build(item, budget):
     key = item.get("key") or ""
     label = item.get("label") or key
@@ -229,16 +320,12 @@ def build(item, budget):
     if not source:
         source = item.get("fallback") or ""
 
-    target = os.path.join(OUT, hashlib.sha1(key.encode()).hexdigest() + ".png")
+    target = os.path.join(OUT, card_name(key, source))
 
-    # Rebuilt only when the source is newer, because this runs on a timer and
-    # redrawing every card every minute would be work for nothing.
-    try:
-        if os.path.exists(target):
-            if not source or os.path.getmtime(target) >= os.path.getmtime(source):
-                return target
-    except OSError:
-        pass
+    # Already drawn from exactly this source, which on a timer is almost every
+    # time. The name carries the source with it, so there is nothing to compare.
+    if os.path.exists(target):
+        return target
 
     image = None
 
@@ -266,6 +353,39 @@ def build(item, budget):
     return target
 
 
+def sweep(keep):
+    """Remove cards nothing points at any more.
+
+    Now that a card is named after the picture it was drawn from, every time a
+    cover improves it leaves the previous card behind, and a seat that never
+    tidied up would accumulate one per title per change for as long as it
+    exists. Only the cards go: the downloaded covers next to them are the
+    sources, and a "*.none" is a title known to have none.
+
+    The list passed in is always the whole app list, so anything not in it is
+    genuinely unreferenced, and anything wrongly removed is drawn again on the
+    next pass.
+    """
+    try:
+        names = os.listdir(OUT)
+    except OSError:
+        return
+
+    for name in names:
+        if not name.endswith(".png"):
+            continue
+
+        path = os.path.join(OUT, name)
+
+        if path in keep:
+            continue
+
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 def main():
     if len(sys.argv) < 2:
         print("{}")
@@ -283,6 +403,8 @@ def main():
 
         if path:
             out[item.get("key")] = path
+
+    sweep(set(out.values()))
 
     print(json.dumps(out))
 
