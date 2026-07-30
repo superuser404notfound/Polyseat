@@ -630,7 +630,28 @@ func sameStrings(a, b []string) bool {
 	return true
 }
 
+// quickTimeout bounds a call into a seat that is only ever a read and should
+// answer at once.
+//
+// Bounded because one of them did not, and nothing above it noticed. An `incus
+// exec` goes through the daemon's long lived connection to Incus, and when that
+// connection stops delivering operation results the call waits for ever: two of
+// them were found parked in WaitContext for twelve minutes while the same
+// command from a shell answered instantly. The seat sat in "provisioning" with
+// nothing in its log and nothing to press, which is the worst shape a failure
+// can take. A deadline turns that into an error on the card.
+const quickTimeout = 30 * time.Second
+
+// quick derives a context for those calls. The caller's own cancellation still
+// applies, so an operation somebody cancelled stops as it did before.
+func quick(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, quickTimeout)
+}
+
 func (m *Manager) unitState(ctx context.Context, name, unit string) string {
+	ctx, cancel := quick(ctx)
+	defer cancel()
+
 	out, _, err := m.client.Try(ctx, name, m.asPlayer(name, "systemctl", "--user", "is-active", unit)...)
 	if err != nil {
 		return "unknown"
@@ -654,6 +675,9 @@ func (m *Manager) unitState(ctx context.Context, name, unit string) string {
 // probes for three and offers whichever the client asks for, so the answer is
 // a list.
 func (m *Manager) readEncoders(ctx context.Context, name string) (string, []string) {
+	ctx, cancel := quick(ctx)
+	defer cancel()
+
 	argv := m.asPlayer(name, "sh", "-c",
 		"journalctl --user -u polyseat-sunshine.service --no-pager 2>/dev/null | "+
 			"grep -oE 'Found (H\\.264|HEVC|AV1) encoder: [a-z0-9_]+'")
@@ -736,6 +760,9 @@ func parseEncoders(out string) (string, []string) {
 // The stale file is cleared out on the way past, so this corrects itself instead
 // of reporting the same absence every ten seconds.
 func (m *Manager) readSession(ctx context.Context, name string) *Session {
+	ctx, cancel := quick(ctx)
+	defer cancel()
+
 	// One command for both, so that the answer cannot come from two different
 	// moments. The control channel is a TCP connection that lives as long as
 	// the stream does.
@@ -770,6 +797,9 @@ func (m *Manager) readSession(ctx context.Context, name string) *Session {
 // value and calling it the resolution, so a seat streaming at 2560x1600 still
 // claimed 1920x1080.
 func (m *Manager) readOutput(ctx context.Context, name string) string {
+	ctx, cancel := quick(ctx)
+	defer cancel()
+
 	rt := m.runtimeOf(name)
 
 	m.mu.Lock()
@@ -933,7 +963,14 @@ func (m *Manager) operate(name, label string, fn func(ctx context.Context) error
 		}
 
 		cancel()
-		m.reconcile(context.Background(), name)
+
+		// A bound of its own, because this one has no caller to cancel it: an
+		// exec that never returns here leaks a goroutine for the life of the
+		// daemon, which is exactly what was found in a stack dump.
+		after, stop := context.WithTimeout(context.Background(), 2*time.Minute)
+		m.reconcile(after, name)
+		stop()
+
 		m.notify()
 	}()
 

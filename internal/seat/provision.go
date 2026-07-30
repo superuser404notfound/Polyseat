@@ -173,7 +173,13 @@ func (p *Provisioner) waitSystemd(ctx context.Context) error {
 	deadline := time.Now().Add(90 * time.Second)
 
 	for time.Now().Before(deadline) {
-		out, _, err := p.Client.Try(ctx, p.name(), "systemctl", "is-system-running")
+		// Each attempt is bounded, or the deadline above is decoration: this
+		// call is a read that answers in milliseconds, and when it hung instead
+		// the loop never came round to notice that ninety seconds had passed.
+		attempt, cancel := context.WithTimeout(ctx, 20*time.Second)
+		out, _, err := p.Client.Try(attempt, p.name(), "systemctl", "is-system-running")
+		cancel()
+
 		if err != nil {
 			return err
 		}
@@ -712,6 +718,12 @@ func platformBranches(list string) []string {
 }
 
 func (p *Provisioner) readUID(ctx context.Context) error {
+	// A read, so it is bounded like the others. This is the call that answered
+	// "no such user" while the rest of provisioning had not run yet, and it is
+	// also one that would hang for ever on a stalled connection.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	out, err := p.run(ctx, "id", "-u", Player)
 	if err != nil {
 		return err

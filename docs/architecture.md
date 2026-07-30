@@ -628,6 +628,29 @@ been asked for a single state, so the address is the fourth field there and the
 fifth without the filter, and counting from the left returned nothing and looked
 exactly like nobody being connected.
 
+## When Incus stops answering
+
+The manager talks to Incus over one long lived connection, and every look inside
+a seat is an `incus exec` over it. That connection can stop delivering the
+results of its operations while staying open, and when it does, `WaitContext`
+never returns: two calls were found parked in it for twelve minutes, one from
+provisioning and one from the sweep that runs after every operation, while the
+same command typed into a shell answered instantly. The seat sat in
+"provisioning" with nothing in its log and nothing to press.
+
+That shape of failure is worse than a crash, so the calls that are only ever a
+read now carry a deadline: the unit states, the encoder, the output size, the
+session, the uid, and the wait for systemd inside a new container. Thirty seconds
+for the reads, twenty per attempt for the systemd wait, whose own ninety second
+deadline was decoration while a single attempt could hang for ever. The reconcile
+that runs after an operation finishes gets two minutes, having had no caller to
+cancel it at all: it used `context.Background()`, so one stuck exec leaked a
+goroutine for the life of the daemon.
+
+What this does not yet do is reconnect. A daemon whose connection has gone bad
+now reports errors on the cards instead of hanging, and a restart fixes it, which
+is a great deal better than silence but still a restart.
+
 ## Capacity
 
 Reference machine: RTX 4080 (16 GB), 24 cores, **31 GB RAM**, btrfs.
