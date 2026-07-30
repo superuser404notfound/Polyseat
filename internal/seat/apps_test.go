@@ -497,3 +497,48 @@ func TestDesktopEntryChangesWithWhatItSays(t *testing.T) {
 		t.Fatal("the entry did not change when the artwork did, so the file name would not either")
 	}
 }
+
+// Somebody who asked Steam or Lutris for a shortcut has an entry of their own,
+// and the seat's launcher lists every desktop entry it finds. Two files means
+// two rows, so the generated one stands down.
+func TestAGeneratedEntryStandsDownForOneSomebodyMade(t *testing.T) {
+	// What Steam writes for a shortcut: its own name for the title, its own
+	// path to the binary, and the same game underneath.
+	theirs := "Exec=/usr/bin/steam steam://rungameid/1562430\n" +
+		"Exec=lutris\n" +
+		"Exec=firefox %u\n"
+
+	if !alreadyListed(theirs, "steam steam://rungameid/1562430") {
+		t.Error("the game would be listed twice, once by Steam and once by Polyseat")
+	}
+
+	// A different game is a different row and has to stay.
+	if alreadyListed(theirs, "steam steam://rungameid/3751950") {
+		t.Error("a game nothing else lists was skipped, so it would be in no menu at all")
+	}
+
+	// And a launcher's own entry must not swallow a game: they are different
+	// things and the plain command names no game.
+	if alreadyListed(theirs, "lutris lutris:rungameid/7") {
+		t.Error("a Lutris game was mistaken for the Lutris entry itself")
+	}
+}
+
+// The comparison is on what identifies the game. Anything short or wordlike
+// would match by accident, and a game that matches by accident is a game that
+// appears in no menu.
+func TestLaunchTargetIsSomethingSpecificOrNothing(t *testing.T) {
+	for launch, want := range map[string]string{
+		"steam steam://rungameid/1562430": "steam://rungameid/1562430",
+		"lutris lutris:rungameid/7":       "lutris:rungameid/7",
+		"/opt/games/some-game/run.sh":     "/opt/games/some-game/run.sh",
+		"lutris":                          "",
+		"steam":                           "",
+		"":                                "",
+		"run":                             "",
+	} {
+		if got := launchTarget(launch); got != want {
+			t.Errorf("launchTarget(%q) = %q, want %q", launch, got, want)
+		}
+	}
+}

@@ -706,8 +706,20 @@ const entryPrefix = "polyseat-game-"
 func (p *Provisioner) writeGameEntries(ctx context.Context, games []Game) error {
 	want := map[string][]byte{}
 
+	// What the seat can already start without any help from here. Steam and
+	// Lutris both offer to make a shortcut for a game, and somebody who took
+	// them up on it should get one entry rather than two: this launcher lists
+	// every desktop entry it finds, and ours is a different file, so nothing
+	// downstream would have merged them. Ours is the one that stands down,
+	// because theirs is the one they asked for.
+	execs := p.foreignEntries(ctx)
+
 	for _, g := range games {
 		if strings.TrimSpace(g.Name) == "" || strings.TrimSpace(g.Launch) == "" {
+			continue
+		}
+
+		if alreadyListed(execs, g.Launch) {
 			continue
 		}
 
@@ -752,6 +764,61 @@ func (p *Provisioner) writeGameEntries(ctx context.Context, games []Game) error 
 	}
 
 	return nil
+}
+
+// foreignEntries collects the commands of every desktop entry in the seat that
+// this did not write.
+//
+// Best effort: when it cannot be read the answer is that there are none, which
+// means an entry is written that may duplicate one. A missing entry is worse
+// than a repeated one, because a repeated one is visible and a missing one is
+// somebody concluding the game is not installed.
+func (p *Provisioner) foreignEntries(ctx context.Context) string {
+	dirs := []string{
+		"/usr/share/applications",
+		entryDir,
+		"/home/" + Player + "/.local/share/flatpak/exports/share/applications",
+		"/var/lib/flatpak/exports/share/applications",
+	}
+
+	out, code, err := p.Client.Try(ctx, p.name(), "sh", "-c",
+		"find "+strings.Join(dirs, " ")+" -maxdepth 1 -name '*.desktop' "+
+			"! -name '"+entryPrefix+"*' -exec grep -h '^Exec=' {} + 2>/dev/null")
+	if err != nil || code > 1 {
+		return ""
+	}
+
+	return out
+}
+
+// alreadyListed reports whether one of those commands starts the same game.
+//
+// Compared on what identifies the game rather than on its name, because the two
+// entries are written by different hands: Steam's shortcut is called whatever
+// Steam calls the title and ours is called whatever the manifest says, and
+// those differ often enough. What cannot differ is the thing being started.
+func alreadyListed(execs, launch string) bool {
+	target := launchTarget(launch)
+
+	return target != "" && strings.Contains(execs, target)
+}
+
+// launchTarget is the part of a launch command that names the game: the URI for
+// Steam and Lutris, or the path for anything that turns out to be started
+// directly. Nothing short or wordlike, which would match by accident.
+func launchTarget(launch string) string {
+	fields := strings.Fields(launch)
+	if len(fields) == 0 {
+		return ""
+	}
+
+	last := fields[len(fields)-1]
+
+	if len(last) < 6 || !strings.ContainsAny(last, ":/") {
+		return ""
+	}
+
+	return last
 }
 
 // desktopEntry renders one game as a launcher entry.

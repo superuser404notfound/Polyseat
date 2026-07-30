@@ -450,8 +450,29 @@ knowable from outside Steam, and it removes the case that is certainly wrong.
 
 Artwork is fetched for a title the seat has no cover for, since a seat only
 caches what it has displayed in Steam and the library delivers games nobody
-has opened there. Not every title has one published: what is missing is
-remembered for a week rather than asked for every minute.
+has opened there. The plain address answers 404 for a good many titles, whose
+covers are published under a directory named after a hash instead, and the hash
+is in nothing a seat has; Steam's own store service will hand it over, without a
+key. What is missing after all that is remembered for a week rather than asked
+for every minute, and a provisioning run forgets those, because a helper that
+has learned a new place to look must not sit out the week on last week's answer.
+
+Each card is named after the artwork it was drawn from rather than after the
+title. Covers arrive late by nature, and while a card kept its name a better
+picture left the app list looking unchanged: nothing told Sunshine to reload, so
+the client kept the picture it had cached, and the file on disk was right while
+the screen was wrong.
+
+**The desktop's own launcher gets the same games**, from the same scan and with
+the same cards as icons. That is a second menu, for whoever is already streaming
+the desktop, and it was showing Steam, Firefox and a file manager while the
+installed games were nowhere: a desktop entry for a game exists only when
+somebody asks Steam or Lutris for a shortcut. Where somebody has, theirs is left
+alone and Polyseat writes nothing, because that launcher lists every entry it
+finds and two files would be two rows. Matched on what the entry starts rather
+than on what it is called: the two are written by different hands and only the
+game underneath is the same. Remove their shortcut and the generated one is back
+within the minute.
 
 **Sunshine reads that file once**, when it starts, for the list it serves to
 clients. Its web interface rereads it on every request, and asking that one
