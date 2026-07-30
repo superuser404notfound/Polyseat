@@ -67,10 +67,17 @@ DEADZONE = 0.18
 # pointer across the screen and on a 4K television crawled. Now it takes the same
 # time to cross the screen on all of them.
 #
-# The number itself came from the first person to use it saying it was too fast.
-# 0.6 crosses a 1080p screen top to bottom in a second and two thirds.
-SPEED = 0.6
-CURVE = 2.0
+# Two numbers, and they do different things, which is worth saying because the
+# feedback that shaped them was "too fast" and then "still too sensitive".
+#
+# SPEED is the top: how much of the screen a second of full deflection covers.
+# CURVE is how much of the range is given to slow movement. Raising it makes
+# small pushes finer without changing the top speed at all, and that is the one
+# that answers "too sensitive": a 1440p stream on a phone shows targets a few
+# millimetres across, and hitting one needs resolution near the centre rather
+# than a lower ceiling.
+SPEED = 0.45
+CURVE = 2.5
 
 # What to assume when the compositor cannot be asked. 1080p is the resolution a
 # seat's session comes up at before anybody connects.
