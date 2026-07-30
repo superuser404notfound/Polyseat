@@ -11,8 +11,11 @@ Almost everything else follows from these:
 - **Everyone plays on a Moonlight client**, nobody sits at the host's console.
   There are therefore no physical controllers on the host that would need
   assigning - only the virtual pads Sunshine creates inside each seat.
-- **The host desktop (KDE/Wayland) keeps running normally** and must not be
-  disturbed by any seat.
+- **The host desktop keeps running normally** and must not be disturbed by any
+  seat. Which desktop it is does not matter: a seat brings its own compositor
+  and its own `/dev/input`, so the only thing the host desktop is asked for is
+  to not pick up the devices a seat creates, and that is decided one layer below
+  it, in udev and logind, which every desktop shares. Developed on KDE/Wayland.
 - **Fixed seats per person.** No dynamic pool: Anna has her seat, it always has
   the same address, she sets up Moonlight once.
 - **Seats run permanently** (idle ≈ 400 MB). On-demand start is a later feature,

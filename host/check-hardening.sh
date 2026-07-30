@@ -121,14 +121,31 @@ step "Is the window open right now?"
 # The exposure only materialises while a text console is the active VT and a
 # seat holds input devices. That combination is worth calling out when it
 # actually happens, rather than only describing it.
-graphical_vt=$(loginctl list-sessions --no-legend 2>/dev/null \
+#
+# Which VTs a graphical login holds. "Not a text session" was too loose a test
+# for that, and it picked the wrong session on two counts. The class rules out
+# a display manager's greeter, which under GDM keeps a session of its own on
+# another VT for as long as the machine runs, so the check compared the active
+# VT against the login screen's and called a perfectly normal desktop exposed.
+# SDDM hides that by ending its greeter at login, which is why it never showed
+# up here. A VT number of zero rules out sessions that have no console at all,
+# such as the "manager" session systemd opens for the user; that one is on this
+# very machine and stayed out of the way only by sorting last.
+#
+# Every match is kept rather than the first, because fast user switching gives
+# two graphical sessions on two VTs and either one holding the active VT means
+# no console is reachable.
+graphical_vts=$(loginctl list-sessions --no-legend 2>/dev/null \
     | awk '{print $1}' \
     | while read -r sid; do
           [ -n "$sid" ] || continue
-          if [ "$(loginctl show-session "$sid" -p Type --value 2>/dev/null)" != tty ]; then
-              loginctl show-session "$sid" -p VTNr --value 2>/dev/null
-          fi
-      done | head -1)
+          sclass=$(loginctl show-session "$sid" -p Class --value 2>/dev/null)
+          stype=$(loginctl show-session "$sid" -p Type --value 2>/dev/null)
+          svt=$(loginctl show-session "$sid" -p VTNr --value 2>/dev/null)
+          [ "$sclass" = user ] || continue
+          case "$stype" in wayland|x11|mir) ;; *) continue ;; esac
+          [ -n "$svt" ] && [ "$svt" != 0 ] && echo "$svt"
+      done)
 attached=0
 for d in /sys/class/input/event*; do
     [ -r "$d/device/name" ] || continue
@@ -138,8 +155,10 @@ for d in /sys/class/input/event*; do
 done
 if [[ "$attached" == 0 ]]; then
     ok "no seat devices exist at the moment, nothing to expose"
-elif [[ -n "$graphical_vt" && "$active" == "$graphical_vt" ]]; then
-    ok "the graphical session holds the active VT (tty$active), console is not reachable"
+elif [[ -n "$graphical_vts" ]] && grep -qxF "$active" <<<"$graphical_vts"; then
+    ok "a graphical session holds the active VT (tty$active), console is not reachable"
+elif [[ -z "$graphical_vts" ]]; then
+    bad "nobody is logged in graphically while seat devices exist: tty$active is a console a client types along on"
 else
     bad "active VT is tty$active while seat devices exist: a client types along here"
 fi
