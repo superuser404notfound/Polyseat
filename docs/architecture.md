@@ -303,6 +303,34 @@ from it and never writes into it, and a game uninstalled there stays in the pool
 Without that, a game the host updates afterwards never reaches the seats and
 every one of them downloads that update for itself.
 
+## Where a game installs by default
+
+A seat offers two Steam library folders, its own private one and the pooled one
+labelled Polyseat, and only the second reaches the other seats. Which one the
+install dialog preselects is therefore the difference between a game everybody
+can play and a game that stays where it was put, and it was preselecting the
+wrong one.
+
+Steam keeps this as `LastInstallFolderIndex` directly under
+`UserLocalConfigStore` in `userdata/<account>/config/localconfig.vdf`, where the
+index is the folder's position in `libraryfolders.vdf`. That was established by
+setting it once by hand and seeing which file changed, because it is in none of
+the places worth guessing: not `libraryfolders.vdf`, not `config.vdf`, not
+`registry.vdf`, and the string appears in none of Steam's binaries in a seat.
+
+It follows that there is nothing to write while a seat is being built: the file
+belongs to an account and nobody has signed in yet. So it is written when a
+session starts as well, the other moment Steam is certainly not running. Steam
+holds that file in memory and writes it out when it exits, so an edit underneath
+a running client is ignored and then overwritten.
+
+A value that is already there is never touched. It is either somebody's own
+choice or the last folder they installed into, and neither is this program's to
+overrule. The same rule covers Lutris, whose `game_path` in
+`~/.config/lutris/system.yml` is written only when that file does not exist; the
+option name, the file and its shape were read out of Lutris's own source rather
+than assumed.
+
 ## Launchers other than Steam
 
 Steam hands the pool a completion signal and a version number. No other launcher
