@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // What the banner in the interface offers to fix, and the list the sweep works
@@ -175,5 +176,69 @@ func TestSweepGivesUpOnASeatThatNeverFreesUp(t *testing.T) {
 
 	if len(noted) != 1 || !strings.Contains(noted[0], "still busy") {
 		t.Errorf("noted %v, want one note saying it was still busy", noted)
+	}
+}
+
+// The sequence that ended somebody's stream, replayed against the decision that
+// used to make it. An iPhone dropped for twelve seconds and came back; Sunshine
+// kept the application running and so never rewrote the marker file; the daemon
+// concluded the seat was idle and rebuilt the app list under a live session.
+func TestAStreamSurvivesTheClientDroppingAndComingBack(t *testing.T) {
+	rt := &runtime{}
+	start := time.Date(2026, 7, 30, 17, 47, 11, 0, time.UTC)
+
+	playing := &Session{App: "Desktop", Width: 1920, Height: 1080}
+
+	if ended := rt.observeStream(true, playing, start); ended {
+		t.Fatal("the start of a stream was reported as its end")
+	}
+
+	// The dropout. Twelve seconds is what was measured, and the reconnect
+	// carries no marker with it because no prep command ran.
+	for _, at := range []time.Duration{10 * time.Second, 20 * time.Second} {
+		if ended := rt.observeStream(false, nil, start.Add(at)); ended {
+			t.Fatalf("a dropout of %s ended the stream", at)
+		}
+	}
+
+	if ended := rt.observeStream(true, nil, start.Add(25*time.Second)); ended {
+		t.Error("the reconnect was reported as an end")
+	}
+
+	if !rt.streaming {
+		t.Error("the seat is not streaming after the client came back, which is what let the app list be rebuilt under it")
+	}
+
+	if rt.session == nil || rt.session.App != "Desktop" {
+		t.Errorf("the description was lost across the reconnect: %+v, and the card would say nobody is playing", rt.session)
+	}
+}
+
+// And a stream that really ends still has to end, or the resolution is never put
+// back and the card claims somebody is playing long after they closed Moonlight.
+func TestAStreamThatStaysGoneEndsAfterTheGrace(t *testing.T) {
+	rt := &runtime{}
+	start := time.Date(2026, 7, 30, 17, 47, 11, 0, time.UTC)
+
+	rt.observeStream(true, &Session{App: "DREDGE"}, start)
+
+	if ended := rt.observeStream(false, nil, start.Add(time.Second)); ended {
+		t.Fatal("the first missing reading ended it, which is the bug this is about")
+	}
+
+	// The grace runs from the first reading that missed it, not from the start
+	// of the stream.
+	if ended := rt.observeStream(false, nil, start.Add(time.Second+sessionGrace)); !ended {
+		t.Fatal("a stream gone for the whole grace period never ended")
+	}
+
+	if rt.streaming || rt.session != nil {
+		t.Errorf("the seat still looks busy after the end: streaming=%v session=%+v", rt.streaming, rt.session)
+	}
+
+	// Once only. A second reading of the same absence would run the undo
+	// commands and the pending app list rebuild again.
+	if ended := rt.observeStream(false, nil, start.Add(2*sessionGrace)); ended {
+		t.Error("the same end was reported twice")
 	}
 }

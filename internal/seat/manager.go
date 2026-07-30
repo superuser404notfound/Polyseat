@@ -107,6 +107,17 @@ type runtime struct {
 	// streaming, so it has to wait for them to finish.
 	appsPending bool
 
+	// streaming is whether somebody is connected to this seat right now, which
+	// is a different question from whether session below describes them. The
+	// connection is the authority: it is what survives a client dropping for a
+	// few seconds and coming back.
+	streaming bool
+
+	// quiet is when the seat's control connection was first found gone, or the
+	// zero time while it is there. A stream is only treated as over once it has
+	// stayed gone, see sessionGrace.
+	quiet time.Time
+
 	// progress is how far a long operation has got, 0 to 100, or -1 when
 	// there is nothing to say. Only installing software reports it: that is
 	// the operation whose length depends on somebody else's server rather than
@@ -474,17 +485,26 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 
 	encoder, codecs, output := "", []string(nil), ""
 
-	var session *Session
+	var (
+		session   *Session
+		connected bool
+	)
 
 	if sunshine == "active" {
 		encoder, codecs = m.readEncoders(ctx, name)
 		output = m.readOutput(ctx, name)
-		session = m.readSession(ctx, name)
+		session, connected = m.readSession(ctx, name)
 	}
 
 	m.checkOrigins(ctx, name, addresses)
 
 	up := sway == "active" && sunshine == "active"
+
+	// What the stream is doing, settled before anything acts on it.
+	m.mu.Lock()
+	ended := rt.observeStream(connected, session, time.Now())
+	streaming := rt.streaming
+	m.mu.Unlock()
 
 	// The broker is the daemon's own child process, so bringing it back is
 	// supervision rather than a decision about somebody's session. This is also
@@ -512,7 +532,6 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		//
 		// So it waits, and the moment the stream ends it happens.
 		m.mu.Lock()
-		streaming := session != nil
 		due := time.Since(rt.appsChecked) >= appsInterval
 
 		// Remembered only when it was actually due, so that the end of a stream
@@ -545,18 +564,15 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 
 	rt.output = output
 
-	// The end of a stream, seen by the daemon rather than reported by Sunshine.
-	// Sunshine's own undo commands put the resolution and the framerate cap back,
-	// and they do not run when a session ends abnormally, which the app list
-	// reload above used to cause.
-	ended := rt.session != nil && session == nil
-	rt.session = session
-
 	state := StateStarting
 	if up {
 		state = StateRunning
 	}
 
+	// The end of a stream, seen by the daemon rather than reported by Sunshine.
+	// Sunshine's own undo commands put the resolution and the framerate cap
+	// back, and they do not run when a session ends abnormally, which the app
+	// list reload above used to cause.
 	if ended {
 		defer m.sessionEnded(ctx, name)
 	}
@@ -684,6 +700,20 @@ func sameStrings(a, b []string) bool {
 // nothing in its log and nothing to press, which is the worst shape a failure
 // can take. A deadline turns that into an error on the card.
 const quickTimeout = 30 * time.Second
+
+// sessionGrace is how long a stream's control connection may be missing before
+// the stream counts as over.
+//
+// Moonlight reconnects on its own after a network hiccup, and it keeps the
+// application running while it does. Measured on an iPhone over wifi: the
+// client dropped at 17:48:21 and was back at 17:48:33, twice within two
+// minutes. Anything shorter than that turns a hiccup into an ended session, and
+// an ended session puts the resolution back and lets the app list be rewritten,
+// which is what actually threw somebody out of their stream.
+//
+// Long enough to cover that, short enough that a card does not claim somebody
+// is playing a minute after they closed Moonlight.
+const sessionGrace = 45 * time.Second
 
 // quick derives a context for those calls. The caller's own cancellation still
 // applies, so an operation somebody cancelled stops as it did before.
@@ -813,6 +843,17 @@ func (m *Manager) sessionEnded(ctx context.Context, name string) {
 		m.logf(name, "! the framerate cap could not be taken off: %v", err)
 	}
 
+	// The marker, which Sunshine removes itself when a stream ends normally and
+	// leaves behind when it does not: a Sunshine restarted mid stream, a seat
+	// rebooted under somebody. Cleared here, at the one moment the daemon is
+	// sure the stream is over, rather than on every read. Doing it on every read
+	// is what deleted a live session's description during a client's twelve
+	// second dropout.
+	if _, _, err := m.client.Try(quick, name, m.asPlayer(name,
+		"rm", "-f", SessionPath)...); err != nil {
+		m.logf(name, "! the session marker could not be cleared: %v", err)
+	}
+
 	rt := m.runtimeOf(name)
 
 	m.mu.Lock()
@@ -831,53 +872,108 @@ func (m *Manager) sessionEnded(ctx context.Context, name string) {
 	}
 }
 
-// readSession reports who is streaming from a seat and what they asked for, or
-// nil when nobody is.
+// observeStream folds one reading of a seat into what the daemon believes about
+// the stream, and reports whether that reading ended one.
 //
-// Read out of a file the seat writes rather than asked of Sunshine, which has no
-// endpoint for it: see polyseat-session, which explains what was tried. Written
-// by Sunshine's own prep commands, so it should exist for exactly as long as a
-// stream does.
+// The connection decides and the file only describes, which are not the same
+// question, and treating them as one cost somebody their stream. Sunshine runs
+// its prep commands once per application launch, so a client that drops and
+// reconnects leaves the application running and nothing rewriting the file. The
+// old code read the file, found the connection gone for one poll, deleted the
+// file and concluded the seat was idle. Twelve seconds later the client was
+// back, the file was never written again, and a minute after that the app list
+// was rebuilt under a live session and ended it.
 //
-// "Should", which is why the connection is checked as well and the file is only
-// believed when there is one. The file is written when a stream starts and
-// removed when it ends, and the removal is a command Sunshine runs: it does not
-// happen if Sunshine is restarted mid stream, if the seat is rebooted, or if
-// anything writes that file by hand. The card then reports somebody streaming
-// for the last twenty-eight minutes when the seat has been idle all along, which
-// is worse than reporting nothing, because it is the answer somebody would act
-// on. Seen exactly that way while testing.
+// So a missing connection has to stay missing for sessionGrace, and the
+// description is kept rather than replaced when a reading brings none.
 //
-// The stale file is cleared out on the way past, so this corrects itself instead
-// of reporting the same absence every ten seconds.
-func (m *Manager) readSession(ctx context.Context, name string) *Session {
+// Called with the lock held.
+func (rt *runtime) observeStream(connected bool, session *Session, now time.Time) bool {
+	if connected {
+		rt.quiet = time.Time{}
+		rt.streaming = true
+
+		if session != nil {
+			rt.session = session
+		}
+
+		return false
+	}
+
+	if !rt.streaming {
+		return false
+	}
+
+	if rt.quiet.IsZero() {
+		rt.quiet = now
+
+		return false
+	}
+
+	if now.Sub(rt.quiet) < sessionGrace {
+		return false
+	}
+
+	rt.streaming = false
+	rt.session = nil
+	rt.quiet = time.Time{}
+
+	return true
+}
+
+// readSession reports whether somebody is connected to a seat, and what they
+// asked for if the seat says.
+//
+// Two answers rather than one, and they come from two different things. Whether
+// somebody is connected is the established control connection, which exists for
+// as long as the stream does and comes back by itself when a client reconnects.
+// What they are playing is a file the seat writes, because Sunshine has no
+// endpoint for it: see polyseat-session, which explains what was tried.
+//
+// The file alone is not enough for either question. It is written by Sunshine's
+// prep commands, which run once per application launch, so it is absent through
+// a stream that survived a reconnect, and it is left behind by a Sunshine
+// restarted mid stream or a seat rebooted under somebody. A card reporting
+// somebody streaming for the last twenty-eight minutes when the seat has been
+// idle all along is worse than reporting nothing, because it is the answer
+// somebody would act on. Seen both ways while testing.
+//
+// So the connection decides and the file only describes. Clearing a stale file
+// belongs to the caller, which is the only place that knows the stream is over
+// rather than briefly interrupted.
+func (m *Manager) readSession(ctx context.Context, name string) (*Session, bool) {
 	ctx, cancel := quick(ctx)
 	defer cancel()
 
 	// One command for both, so that the answer cannot come from two different
 	// moments. The control channel is a TCP connection that lives as long as
-	// the stream does.
-	check := `if [ -z "$(ss -Htn state established ` +
-		`'( sport = :47989 or sport = :48010 )')" ]; then rm -f ` + SessionPath +
-		`; exit 1; fi; cat ` + SessionPath
+	// the stream does, and the file describes what the stream is.
+	check := `if [ -n "$(ss -Htn state established ` +
+		`'( sport = :47989 or sport = :48010 )')" ]; then echo streaming; fi; cat ` +
+		SessionPath + ` 2>/dev/null`
 
 	out, code, err := m.client.Try(ctx, name, m.asPlayer(name, "sh", "-c", check)...)
 	if err != nil || code != 0 {
-		return nil
+		return nil, false
+	}
+
+	connected, rest, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	if strings.TrimSpace(connected) != "streaming" {
+		return nil, false
 	}
 
 	var session Session
-	if json.Unmarshal([]byte(strings.TrimSpace(out)), &session) != nil {
-		return nil
+	if json.Unmarshal([]byte(strings.TrimSpace(rest)), &session) != nil {
+		return nil, true
 	}
 
 	// An app name is the one field always written, so its absence means the file
 	// is something else entirely rather than a stream nobody named.
 	if session.App == "" {
-		return nil
+		return nil, true
 	}
 
-	return &session
+	return &session, true
 }
 
 // readOutput reports the size the seat's screen is actually running at.

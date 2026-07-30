@@ -385,7 +385,7 @@ func (m *Manager) refreshAppsWhenNobodyIsStreaming(ctx context.Context, name str
 	rt := m.runtimeOf(name)
 
 	m.mu.Lock()
-	streaming := rt.session != nil
+	streaming := rt.streaming
 
 	if streaming {
 		rt.appsPending = true

@@ -678,6 +678,24 @@ trusting Sunshine's undo to have run. That is the same signal the card uses, an
 established connection on the control ports, and it covers every abnormal end and
 not only this one.
 
+**A guard is only as good as the thing it asks.** The first version of this asked
+the marker file that describes the stream, and got thrown out of a stream anyway.
+Sunshine runs its prep commands once per application launch, not once per
+connection: a client that drops and reconnects keeps the application running, so
+nothing rewrites that file. The old read deleted it whenever the connection was
+missing for a single poll, so a twelve second wifi hiccup on an iPhone left a
+live session with no marker and a daemon certain the seat was idle. A minute
+later the list was rebuilt under it. Both halves are in the logs: the seat's
+`CLIENT DISCONNECTED` at 17:48:21 and `CLIENT CONNECTED` at 17:48:33 with no
+`Do Cmd` between them, and the daemon's rebuild at 17:49:12.
+
+So the two questions are kept apart. The connection decides whether somebody is
+streaming, because it comes back by itself; the file only describes what they
+are playing, and is kept rather than replaced when a reading brings none. A
+missing connection has to stay missing for 45 seconds before the stream counts
+as over, which is what a reconnect fits into, and the stale file is cleared only
+then.
+
 ## Bringing the seats up to date, and seeing who is on them
 
 Two things the interface owes somebody running a machine several people share.
