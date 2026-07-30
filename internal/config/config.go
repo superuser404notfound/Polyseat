@@ -54,6 +54,18 @@ type Config struct {
 	// with a second disk for games needs to be able to say so without moving
 	// the seat definitions along with it.
 	LibraryDir string `json:"library_dir"`
+
+	// GPURenderNode picks the card the seats render and encode on, for example
+	// /dev/dri/renderD129. Empty means the daemon finds it itself, which is the
+	// right answer on a machine with one card.
+	//
+	// A device rather than a vendor name, because a device is the unambiguous
+	// thing: on a machine with two AMD cards "amd" still does not say which,
+	// and the vendor follows from the node anyway. It is here rather than in
+	// the seat record because it is a fact about the machine, and because a
+	// wrong guess produces a seat that streams in software, which is the one
+	// failure this project keeps having to explain.
+	GPURenderNode string `json:"gpu_render_node"`
 }
 
 // Default returns the configuration used when no file exists.
@@ -66,6 +78,9 @@ func Default() Config {
 		Image:      "archlinux/current",
 		Python:     "/usr/bin/python3",
 		LibraryDir: "/srv/polyseat/library",
+
+		// Empty on purpose: the daemon looks at the machine. See GPURenderNode.
+		GPURenderNode: "",
 	}
 }
 

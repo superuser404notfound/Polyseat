@@ -199,6 +199,14 @@ function render() {
   observer.textContent = "uhid observer: " + state.observer;
   observer.className = "pill " + state.observer;
 
+  // Always shown, including when there is nothing to show. A machine where no
+  // card was found builds seats that come up and encode in software, and the
+  // absence of a pill is not something anybody notices.
+  const gpu = el("gpu");
+  gpu.hidden = false;
+  gpu.textContent = state.host.gpu || "no GPU detected";
+  gpu.className = "pill " + (state.host.gpu_vendor ? "online" : "offline");
+
   // The list is absent rather than empty when there is nothing to warn about,
   // and calling map on that is what silently broke the whole page once.
   el("warnings").replaceChildren(
@@ -1309,6 +1317,7 @@ function showLogin(setup) {
   el("login").hidden = false;
   el("hostname").textContent = "";
   el("observer").hidden = true;
+  el("gpu").hidden = true;
   el("link").textContent = setup ? "not set up yet" : "signed out";
   el("link").className = "pill offline";
 

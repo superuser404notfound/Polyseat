@@ -24,8 +24,9 @@ Environment=DISPLAY=:0
 # quiet and looks like a broken install: `flatpak install` succeeds, the
 # application runs from a terminal, and it is missing from the launcher.
 Environment=XDG_DATA_DIRS=/home/player/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share
-Environment=GBM_BACKEND=nvidia-drm
-Environment=__GLX_VENDOR_LIBRARY_NAME=nvidia
+# The graphics vendor's own variables are not here. They differ per machine and
+# arrive as the 20-gpu.conf drop-in beside this file, because setting NVIDIA's
+# GBM_BACKEND on a Mesa system points GBM at a backend that does not exist.
 # Finding from M0: without this variable SDL does not notice a pad that only
 # arrives in the container at runtime.
 Environment=SDL_JOYSTICK_DISABLE_UDEV=1

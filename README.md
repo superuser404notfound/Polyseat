@@ -7,7 +7,8 @@ desktop keeps running undisturbed while they play.
 
 A **seat** is an Incus system container with its own headless Sway, its own
 Sunshine instance, its own PipeWire and its own Steam account. One GPU serves
-all of them through NVENC. Polyseat implements neither a compositor, nor an
+all of them, through NVENC on NVIDIA and VA-API on AMD. Polyseat implements
+neither a compositor, nor an
 encoder, nor a streaming protocol: the heavy lifting is done by Incus,
 Sway/wlroots, Sunshine, PipeWire, udev and systemd, and Polyseat is the
 orchestrator on top. It builds seats, wires them up collision-free, assigns
@@ -22,8 +23,8 @@ input devices, shares the game library, and repairs what drifts.
 | | |
 |---|---|
 | **Host** | Arch-based. The installer queries `pacman` rather than pretending to be portable. |
-| **Packages** | `incus`, `nvidia-container-toolkit`, `bpftrace`, `python`, `go`. The installer installs whichever of them are missing. |
-| **GPU** | NVIDIA, with the driver installed and answering. `nvidia-utils` carries the two libraries NVENC needs, `libcuda.so.1` and `libnvidia-encode.so.1`, and the container toolkit injects them into every seat. `lib32-nvidia-utils` as well, or 32 bit games will not find the GPU. The `cuda` package is the toolkit and is **not** needed. The installer refuses rather than warns if the driver is missing, because a seat without it comes up, streams in software and looks perfectly healthy. |
+| **Packages** | `incus`, `bpftrace`, `python`, `go`, plus `nvidia-container-toolkit` on NVIDIA. The installer works out which card is in the machine first and installs whichever of them are missing. |
+| **GPU** | **NVIDIA**, with the driver installed and answering. `nvidia-utils` carries the two libraries NVENC needs, `libcuda.so.1` and `libnvidia-encode.so.1`, and the container toolkit injects them into every seat. `lib32-nvidia-utils` as well, or 32 bit games will not find the GPU. The `cuda` package is the toolkit and is **not** needed.<br><br>**AMD** works differently and is simpler: `amdgpu` on the host is the whole requirement, and Mesa goes into each seat as an ordinary package, so no host driver update can leave a seat behind. Encoding is VA-API, the only hardware path AMD has on Linux. **This path has never been run on real hardware**, see [docs/amd.md](docs/amd.md) for what was verified and what was not.<br><br>Either way the installer refuses rather than warns if the driver is missing, because a seat without it comes up, streams in software and looks perfectly healthy. |
 | **Filesystem** | btrfs, or XFS created with `reflink=1`, **and only for the shared game library**. `ext4` cannot share blocks, and neither can tmpfs or a network filesystem. Seats still work on those; the shared library simply stays off and every seat downloads its own games. The installer tests it and says which it found. |
 | **Network** | One wired interface the seats can take a macvlan from, so each seat is a host of its own on the LAN and can use the standard Sunshine ports. |
 
@@ -62,8 +63,9 @@ machine instead, set `listen` to `127.0.0.1:47800` in
 
 **3. Add a seat and press provision.** The daemon downloads the image, installs
 the packages, repairs the NVIDIA userspace that the driver injection leaves
-incomplete, generates the Sunshine configuration and starts the session. It
-takes a few minutes and the card shows each step as it happens.
+incomplete (nothing to repair on AMD, where Mesa arrives as a package),
+generates the Sunshine configuration and starts the session. It takes a few
+minutes and the card shows each step as it happens.
 
 **4. Pair a device.** Open *Devices and pairing* on the seat's card, point
 Moonlight at the address shown at the top of that card, and type the PIN
@@ -152,10 +154,11 @@ owner was verified structurally, correlated, or merely claimed by name:
 ! event260   refused: name claims (seat1) but the kernel says 'seat2' created it
 ```
 
-The other line worth watching is the encoder. A seat whose EGL landed on Mesa
-still starts, still streams and still looks healthy; it just encodes in
-software. The card shows `nvenc` and the codecs it can offer when it is right,
-and says so plainly when it is not.
+The other line worth watching is the encoder. A seat whose EGL landed on
+software rendering still starts, still streams and still looks healthy; it just
+encodes on the CPU. The card shows `nvenc` or `vaapi` and the codecs it can
+offer when it is right, and says so plainly when it is not. Which card the
+whole machine was built for is in the header, beside the host name.
 
 For the host itself:
 

@@ -208,9 +208,94 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     exit 0
 fi
 
+step "Graphics"
+# Which card is in this machine decides everything downstream: which package
+# this installer needs, which driver check has to pass, and what the daemon
+# builds seats from. So it is worked out first. An AMD machine has no use for
+# nvidia-container-toolkit, which is a shim for a driver that is not there.
+#
+# Two passes, and the second one is the reason this is not four lines. Render
+# nodes are the better source, because a node exists only where a driver is
+# bound and it names that driver, which is exactly what the daemon looks at
+# (internal/seat/gpu.go). But a machine whose driver is missing has no render
+# node at all, and that machine is precisely the one this script exists to
+# help. So when the nodes say nothing, the PCI devices are asked instead: they
+# are there whether a driver is or not.
+#
+# SYSFS is a variable for one reason: this machine has one card and cannot grow
+# a second one, so the only way to find out whether this picks the right card
+# out of two is to build the tree by hand and point it at that. See
+# host/test-gpu-detect.sh.
+SYSFS="${POLYSEAT_SYSFS:-/sys}"
+
+gpu_vendor=""
+gpu_node=""
+gpu_driver=""
+
+vendor_name() {
+    case "$1" in
+        0x10de) echo nvidia ;;
+        0x1002) echo amd ;;
+    esac
+}
+
+for node in "$SYSFS"/class/drm/renderD*; do
+    [[ -r $node/device/vendor ]] || continue
+
+    v=$(vendor_name "$(<"$node/device/vendor")")
+    [[ -n $v ]] || continue
+
+    # NVIDIA wins when both are in one machine, the same way the daemon
+    # decides it. Anything else and the two would disagree about a machine
+    # somebody built for exactly this test.
+    if [[ -z $gpu_vendor ]] || [[ $v == nvidia && $gpu_vendor != nvidia ]]; then
+        gpu_vendor=$v
+        gpu_node=/dev/dri/$(basename "$node")
+        gpu_driver=""
+        [[ -e $node/device/driver ]] &&
+            gpu_driver=$(basename "$(readlink -f "$node/device/driver")")
+    fi
+done
+
+if [[ -z $gpu_vendor ]]; then
+    for dev in "$SYSFS"/bus/pci/devices/*; do
+        # Class 0x03 is a display controller. Without the class test an AMD
+        # machine could match on something that is not a graphics card at all.
+        [[ -r $dev/class && -r $dev/vendor ]] || continue
+        [[ "$(<"$dev/class")" == 0x03* ]] || continue
+
+        v=$(vendor_name "$(<"$dev/vendor")")
+        [[ -n $v ]] || continue
+
+        if [[ -z $gpu_vendor ]] || [[ $v == nvidia && $gpu_vendor != nvidia ]]; then
+            gpu_vendor=$v
+        fi
+    done
+
+    [[ -n $gpu_vendor ]] &&
+        warn "an ${gpu_vendor^^} card is on the bus but no driver is bound to it"
+fi
+
+case "$gpu_vendor" in
+    nvidia) ok "NVIDIA${gpu_driver:+, driver $gpu_driver}${gpu_node:+, $gpu_node}" ;;
+    amd)    ok "AMD${gpu_driver:+, driver $gpu_driver}${gpu_node:+, $gpu_node}" ;;
+    *)      warn "no NVIDIA or AMD card found" ;;
+esac
+
+if [[ $gpu_vendor == amd ]]; then
+    echo "    The AMD path has never been run on real hardware. See docs/amd.md."
+fi
+
 step "Prerequisites"
 missing=()
-for pkg in incus nvidia-container-toolkit bpftrace python go; do
+prereqs=(incus bpftrace python go)
+
+# Only where it is the driver: libnvidia-container is what mirrors the host's
+# driver into every seat, and on AMD nothing is mirrored because Mesa is a
+# package the seat installs itself.
+[[ $gpu_vendor == amd ]] || prereqs+=(nvidia-container-toolkit)
+
+for pkg in "${prereqs[@]}"; do
     if pacman -Qq "$pkg" >/dev/null 2>&1; then ok "$pkg"
     else warn "$pkg missing"; missing+=("$pkg"); fi
 done
@@ -237,122 +322,164 @@ if ((${#missing[@]})); then
     fi
 fi
 
-step "NVIDIA driver"
-# The one hard requirement that is not a Polyseat package, and the one worth
-# refusing over: a seat built without a working driver comes up, streams in
-# software and looks entirely healthy. The encoder line on its card is the only
-# place it shows.
-#
-# What NVENC needs is the driver's own userspace, libcuda.so.1 and
-# libnvidia-encode.so.1, which nvidia-container-toolkit injects into every seat
-# from the host. Both belong to nvidia-utils, established with pacman -Qo rather
-# than assumed. The cuda package is the toolkit, nvcc and the CUDA runtime, and a
-# seat needs none of it.
-if [[ -n "${POLYSEAT_ALLOW_NO_GPU:-}" ]]; then
-    warn "POLYSEAT_ALLOW_NO_GPU is set, so the driver is not checked"
-    echo "    Seats built on this machine will encode in software."
-elif driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null) &&
-     [[ -n $driver ]]; then
-    ok "driver $driver is loaded and answering"
-else
-    # Is there an NVIDIA card at all? Asked of sysfs rather than lspci, which is
-    # a package of its own and may not be there. 0x10de is NVIDIA.
-    has_nvidia=false
-    for v in /sys/bus/pci/devices/*/vendor; do
-        [[ -r $v ]] && [[ "$(<"$v")" == "0x10de" ]] && has_nvidia=true && break
-    done
-
-    if ! $has_nvidia; then
-        bad "no NVIDIA card found in this machine"
-        echo "    Polyseat encodes with NVENC. Nothing here will work on another"
-        echo "    vendor's GPU yet, and a seat would stream in software."
+if [[ $gpu_vendor == amd ]]; then
+    step "AMD driver"
+    # Far less to check than the other vendor, and that is the shape of AMD
+    # rather than an omission here: there is no userspace on the host for a seat
+    # to borrow. The kernel driver renders and encodes, Mesa lives inside the
+    # seat as an ordinary package, and nothing is injected across the boundary.
+    # That also means no host driver update can break a seat, which is the one
+    # standing hazard on the NVIDIA side.
+    if [[ -n "${POLYSEAT_ALLOW_NO_GPU:-}" ]]; then
+        warn "POLYSEAT_ALLOW_NO_GPU is set, so the driver is not checked"
+        echo "    Seats built on this machine will encode in software."
+    elif [[ $gpu_driver != amdgpu ]]; then
+        bad "the card is bound to ${gpu_driver:-no driver}, not amdgpu"
+        echo "    amdgpu is what renders and encodes. A card that came up on"
+        echo "    simpledrm or vesa can draw a picture and nothing else, so a"
+        echo "    seat on it would stream in software."
+        echo
+        echo "    Missing firmware is the usual reason. Install"
+        echo "    linux-firmware-amdgpu, reboot, and run this again."
         exit 1
-    fi
-
-    # The module package name is derived from the kernel package and cannot be
-    # guessed at: on this machine the module comes from linux-cachyos-nvidia-open,
-    # on plain Arch it would be nvidia-open or nvidia-open-dkms, and installing
-    # the wrong one leaves a machine with no graphics at all. So it is worked out
-    # from what this kernel actually is and offered rather than assumed.
-    kernel_pkg=$(pacman -Qoq "/usr/lib/modules/$(uname -r)/vmlinuz" 2>/dev/null | head -1 || true)
-
-    # A module package that is already installed is not wanted again, and its
-    # presence changes the answer: everything is there and the module is simply
-    # not loaded, which a reboot fixes and an install does not.
-    module=""
-    have_module=false
-
-    for candidate in "${kernel_pkg:+$kernel_pkg-nvidia-open}" \
-                     "${kernel_pkg:+$kernel_pkg-nvidia}" \
-                     nvidia-open-dkms nvidia-dkms; do
-        [[ -n $candidate ]] || continue
-
-        if pacman -Qq "$candidate" >/dev/null 2>&1; then
-            have_module=true
-            module=$candidate
-            break
-        fi
-
-        if [[ -z $module ]] && pacman -Si "$candidate" >/dev/null 2>&1; then
-            module=$candidate
-        fi
-    done
-
-    wanted=()
-    $have_module || [[ -z $module ]] || wanted+=("$module")
-    pacman -Qq nvidia-utils >/dev/null 2>&1 || wanted+=(nvidia-utils)
-
-    if grep -q "^\[multilib\]" /etc/pacman.conf 2>/dev/null &&
-       ! pacman -Qq lib32-nvidia-utils >/dev/null 2>&1; then
-        wanted+=(lib32-nvidia-utils)
-    fi
-
-    bad "the NVIDIA driver is not answering"
-    echo
-
-    if ((${#wanted[@]} == 0)); then
-        echo "    An NVIDIA card is here and the driver packages are installed"
-        echo "    ($module, nvidia-utils), so the module is simply not loaded."
-        echo "    Reboot, or modprobe nvidia, and run this again."
+    elif [[ ! -c $gpu_node ]]; then
+        bad "$gpu_node is not a device, so nothing can render on this card"
         exit 1
-    fi
+    else
+        ok "amdgpu is bound to the card and $gpu_node is there"
 
-    echo "    An NVIDIA card is here, but nvidia-smi does not answer, so either the"
-    echo "    userspace or the kernel module is missing. For this kernel"
-    echo "    (${kernel_pkg:-unknown}) that means:"
-    echo
-    echo "      ${wanted[*]}"
-    echo
-
-    if ((${#wanted[@]})) && [[ -t 0 ]] && [[ -z "${POLYSEAT_NO_DRIVER_INSTALL:-}" ]]; then
-        read -r -p "    Install those now? [y/N] " answer
-
-        if [[ $answer == y || $answer == Y ]]; then
-            if pacman -S --needed --noconfirm "${wanted[@]}"; then
-                echo
-                ok "installed ${wanted[*]}"
-                echo "    The module is not loaded yet. Reboot, then run this again."
+        # A warning rather than a refusal. Whether a seat encodes in hardware is
+        # answered inside the seat, and the interface shows it; this is only the
+        # cheapest place to find out before a seat has ever been built.
+        if command -v vainfo >/dev/null 2>&1; then
+            if vainfo --display drm --device "$gpu_node" 2>/dev/null |
+                   grep -q VAEntrypointEncSlice; then
+                ok "VA-API on this card can encode"
             else
-                echo
-                bad "that did not work, install the driver by hand and run this again"
+                warn "VA-API on this card offers no encoder, seats would stream in software"
             fi
-
+        else
+            echo "    To confirm the card can encode before building a seat:"
+            echo "      sudo pacman -S libva-utils"
+            echo "      vainfo --display drm --device $gpu_node | grep EncSlice"
+        fi
+    fi
+else
+    step "NVIDIA driver"
+    # The one hard requirement that is not a Polyseat package, and the one worth
+    # refusing over: a seat built without a working driver comes up, streams in
+    # software and looks entirely healthy. The encoder line on its card is the only
+    # place it shows.
+    #
+    # What NVENC needs is the driver's own userspace, libcuda.so.1 and
+    # libnvidia-encode.so.1, which nvidia-container-toolkit injects into every seat
+    # from the host. Both belong to nvidia-utils, established with pacman -Qo rather
+    # than assumed. The cuda package is the toolkit, nvcc and the CUDA runtime, and a
+    # seat needs none of it.
+    if [[ -n "${POLYSEAT_ALLOW_NO_GPU:-}" ]]; then
+        warn "POLYSEAT_ALLOW_NO_GPU is set, so the driver is not checked"
+        echo "    Seats built on this machine will encode in software."
+    elif driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null) &&
+         [[ -n $driver ]]; then
+        ok "driver $driver is loaded and answering"
+    else
+        # Whether there is a card at all was settled in the Graphics step, which
+        # asks the PCI bus for exactly this case: a machine whose driver is
+        # missing has no render node to be found by.
+        if [[ $gpu_vendor != nvidia ]]; then
+            bad "no NVIDIA or AMD card found in this machine"
+            echo "    Polyseat encodes with NVENC on NVIDIA and VA-API on AMD."
+            echo "    Nothing here works on another vendor's GPU, and a seat"
+            echo "    would stream in software."
             exit 1
         fi
+
+        # The module package name is derived from the kernel package and cannot be
+        # guessed at: on this machine the module comes from linux-cachyos-nvidia-open,
+        # on plain Arch it would be nvidia-open or nvidia-open-dkms, and installing
+        # the wrong one leaves a machine with no graphics at all. So it is worked out
+        # from what this kernel actually is and offered rather than assumed.
+        kernel_pkg=$(pacman -Qoq "/usr/lib/modules/$(uname -r)/vmlinuz" 2>/dev/null | head -1 || true)
+
+        # A module package that is already installed is not wanted again, and its
+        # presence changes the answer: everything is there and the module is simply
+        # not loaded, which a reboot fixes and an install does not.
+        module=""
+        have_module=false
+
+        for candidate in "${kernel_pkg:+$kernel_pkg-nvidia-open}" \
+                         "${kernel_pkg:+$kernel_pkg-nvidia}" \
+                         nvidia-open-dkms nvidia-dkms; do
+            [[ -n $candidate ]] || continue
+
+            if pacman -Qq "$candidate" >/dev/null 2>&1; then
+                have_module=true
+                module=$candidate
+                break
+            fi
+
+            if [[ -z $module ]] && pacman -Si "$candidate" >/dev/null 2>&1; then
+                module=$candidate
+            fi
+        done
+
+        wanted=()
+        $have_module || [[ -z $module ]] || wanted+=("$module")
+        pacman -Qq nvidia-utils >/dev/null 2>&1 || wanted+=(nvidia-utils)
+
+        if grep -q "^\[multilib\]" /etc/pacman.conf 2>/dev/null &&
+           ! pacman -Qq lib32-nvidia-utils >/dev/null 2>&1; then
+            wanted+=(lib32-nvidia-utils)
+        fi
+
+        bad "the NVIDIA driver is not answering"
+        echo
+
+        if ((${#wanted[@]} == 0)); then
+            echo "    An NVIDIA card is here and the driver packages are installed"
+            echo "    ($module, nvidia-utils), so the module is simply not loaded."
+            echo "    Reboot, or modprobe nvidia, and run this again."
+            exit 1
+        fi
+
+        echo "    An NVIDIA card is here, but nvidia-smi does not answer, so either the"
+        echo "    userspace or the kernel module is missing. For this kernel"
+        echo "    (${kernel_pkg:-unknown}) that means:"
+        echo
+        echo "      ${wanted[*]}"
+        echo
+
+        if ((${#wanted[@]})) && [[ -t 0 ]] && [[ -z "${POLYSEAT_NO_DRIVER_INSTALL:-}" ]]; then
+            read -r -p "    Install those now? [y/N] " answer
+
+            if [[ $answer == y || $answer == Y ]]; then
+                if pacman -S --needed --noconfirm "${wanted[@]}"; then
+                    echo
+                    ok "installed ${wanted[*]}"
+                    echo "    The module is not loaded yet. Reboot, then run this again."
+                else
+                    echo
+                    bad "that did not work, install the driver by hand and run this again"
+                fi
+
+                exit 1
+            fi
+        fi
+
+        echo "    Install them, reboot, and run this again."
+        exit 1
     fi
 
-    echo "    Install them, reboot, and run this again."
-    exit 1
-fi
+    # A warning and not a refusal: everything works without it except the 32 bit
+    # games, and Steam's own client and a great many games are 32 bit.
+    if pacman -Qq lib32-nvidia-utils >/dev/null 2>&1; then
+        ok "lib32-nvidia-utils, so 32 bit games get the GPU too"
+    elif [[ -z "${POLYSEAT_ALLOW_NO_GPU:-}" ]]; then
+        warn "lib32-nvidia-utils is missing, so 32 bit games in a seat will not find the GPU"
+        grep -q "^\[multilib\]" /etc/pacman.conf 2>/dev/null ||
+            echo "    Enable the multilib repository in /etc/pacman.conf first."
+    fi
 
-# A warning and not a refusal: everything works without it except the 32 bit
-# games, and Steam's own client and a great many games are 32 bit.
-if pacman -Qq lib32-nvidia-utils >/dev/null 2>&1; then
-    ok "lib32-nvidia-utils, so 32 bit games get the GPU too"
-elif [[ -z "${POLYSEAT_ALLOW_NO_GPU:-}" ]]; then
-    warn "lib32-nvidia-utils is missing, so 32 bit games in a seat will not find the GPU"
-    grep -q "^\[multilib\]" /etc/pacman.conf 2>/dev/null ||
-        echo "    Enable the multilib repository in /etc/pacman.conf first."
 fi
 
 step "idmap ranges"

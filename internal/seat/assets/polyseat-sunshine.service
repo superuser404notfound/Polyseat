@@ -5,8 +5,8 @@ BindsTo=polyseat-sway.service
 
 [Service]
 Type=simple
-Environment=GBM_BACKEND=nvidia-drm
-Environment=__GLX_VENDOR_LIBRARY_NAME=nvidia
+# The graphics vendor's own variables arrive as the 20-gpu.conf drop-in beside
+# this file, since they differ per machine. See polyseat-sway.service.
 Environment=SDL_JOYSTICK_DISABLE_UDEV=1
 # Waits for the Wayland session itself - see sunshine-run.sh.
 ExecStart=/usr/local/bin/polyseat-sunshine-run

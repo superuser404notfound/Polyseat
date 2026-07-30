@@ -21,7 +21,7 @@
 # subvolume that way, and three tmpfs mounts were still in place. Both are handled
 # below.
 #
-# What it does NOT touch: the NVIDIA driver. The installer requires it, installing
+# What it does NOT touch: the graphics driver. The installer requires it, installing
 # one is not this script's business, and a machine without graphics is a poor
 # starting point for testing anything.
 set -euo pipefail
@@ -60,7 +60,7 @@ if $library; then
 else
     echo "  shared game library:     $LIBRARYDIR is KEPT, so the games come back"
 fi
-echo "  NVIDIA driver:           left alone, the installer needs it"
+echo "  graphics driver:         left alone, the installer needs it"
 echo
 
 if ! $assume_yes; then

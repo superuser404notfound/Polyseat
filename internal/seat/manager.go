@@ -37,6 +37,11 @@ type Manager struct {
 	store  *Store
 	log    *slog.Logger
 
+	// gpu is the host's card, read once at startup because it cannot change
+	// while the daemon runs: swapping a card means a reboot. Every seat on one
+	// machine gets the same one.
+	gpu GPU
+
 	mu sync.Mutex
 	rt map[string]*runtime
 
@@ -142,7 +147,7 @@ type runtime struct {
 
 // NewManager prepares the manager. Nothing is started yet; see Run.
 func NewManager(cfg config.Config, client *incusx.Client, store *Store, logger *slog.Logger) *Manager {
-	return &Manager{
+	m := &Manager{
 		cfg:    cfg,
 		client: client,
 		store:  store,
@@ -150,7 +155,49 @@ func NewManager(cfg config.Config, client *incusx.Client, store *Store, logger *
 		rt:     map[string]*runtime{},
 		subs:   map[int]chan struct{}{},
 	}
+
+	m.gpu = m.detectGPU()
+
+	return m
 }
+
+// detectGPU reads the machine's card once.
+//
+// A failure here is logged rather than fatal, and the zero value it falls back
+// to is NVIDIA, which is the shape every seat built before this existed has.
+// The daemon has plenty to do that does not need a GPU, and refusing to start
+// would take the interface down with it, which is where somebody would have to
+// go to fix the setting. Provisioning says which stack it is building on every
+// run and fails at the GPU step if the card is not there, so a wrong answer
+// here surfaces where it can be acted on.
+func (m *Manager) detectGPU() GPU {
+	if node := m.cfg.GPURenderNode; node != "" {
+		gpu, err := GPUAt("/sys", node)
+		if err != nil {
+			m.log.Error("the configured gpu_render_node is not usable, falling back to what is here",
+				"node", node, "err", err)
+		} else {
+			m.log.Info("graphics", "gpu", gpu.String(), "source", "gpu_render_node")
+
+			return gpu
+		}
+	}
+
+	gpu, err := DetectGPU("/sys")
+	if err != nil {
+		m.log.Error("no supported GPU found, seats will be built as if this were NVIDIA and will fail at the gpu step",
+			"err", err)
+
+		return GPU{}
+	}
+
+	m.log.Info("graphics", "gpu", gpu.String(), "source", "detected")
+
+	return gpu
+}
+
+// GPU is the card the seats use, for the interface.
+func (m *Manager) GPU() GPU { return m.gpu }
 
 // Run starts the observer, brings up the seats marked for autostart and follows
 // the Incus event stream until the context ends.
@@ -662,6 +709,7 @@ func (m *Manager) checkOrigins(ctx context.Context, name string, addresses map[s
 		}
 
 		p := &Provisioner{
+			GPU:    m.gpu,
 			Client: m.client,
 			Seat:   seat,
 			Image:  m.cfg.Image,
@@ -1498,6 +1546,7 @@ func (m *Manager) build(ctx context.Context, name string) error {
 	m.stopBroker(name)
 
 	p := &Provisioner{
+		GPU:     m.gpu,
 		Client:  m.client,
 		Seat:    seat,
 		Uplink:  uplink,
@@ -1591,6 +1640,7 @@ func (m *Manager) startSession(ctx context.Context, name string) error {
 	}
 
 	p := &Provisioner{
+		GPU:    m.gpu,
 		Client: m.client,
 		Seat:   seat,
 		Image:  m.cfg.Image,
@@ -1820,6 +1870,7 @@ func (m *Manager) applyPointerSpeed(ctx context.Context, seat Seat) {
 	}
 
 	p := &Provisioner{
+		GPU:    m.gpu,
 		Client: m.client,
 		Seat:   seat,
 		Image:  m.cfg.Image,

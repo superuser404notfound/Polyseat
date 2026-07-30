@@ -166,7 +166,7 @@ step "The driver check, which this machine cannot pass"
 check "it refuses without a working driver" \
     vm bash -c '! SUDO_USER='"$TESTUSER"' bash /root/polyseat/host/install.sh </dev/null >/root/nogpu.log 2>&1'
 check "and says why"                        \
-    vm grep -qiE "no NVIDIA card|driver is not answering" /root/nogpu.log
+    vm grep -qiE "no NVIDIA or AMD card|driver is not answering" /root/nogpu.log
 
 step "Running install.sh"
 # POLYSEAT_ALLOW_NO_GPU is the door the check above leaves open for exactly this:

@@ -43,7 +43,11 @@ Incus rather than Podman or systemd-nspawn, for three concrete reasons:
    libnvidia-container. On a rolling release this is essential - otherwise the
    container userspace drifts against the host kernel module after every
    `nvidia-utils` update. With nspawn you would have to rebuild
-   libnvidia-container by hand.
+   libnvidia-container by hand. On AMD the key is set to `false` and the `gpu`
+   device alone is the whole arrangement: Mesa is a package inside the seat,
+   nothing crosses the boundary but the render node, and there is no version to
+   keep in step. See [amd.md](amd.md), which is honest about not having been
+   run on a real AMD card.
 3. **System containers** bring their own systemd, their own users, their own
    PipeWire. A seat *is* a small machine instead of simulating one. On top of
    that, `limits.cpu` / `limits.memory` per seat and a btrfs storage pool.
@@ -146,7 +150,9 @@ without uhid, keyboard and mouse appear normally but a pad never does.
 Per seat: headless Sway (`WLR_BACKENDS=headless`, `LIBSEAT_BACKEND=noop`) as the
 session shell, because Sunshine can capture there via
 `wlr-screencopy`/`export-dmabuf` - KMS capture is dead on the proprietary NVIDIA
-driver. Optionally gamescope nested per game for scaling and FPS caps.
+driver, and on AMD it wants `cap_sys_admin` on the Sunshine binary, which is not
+something a container is going to be given. Same setting on both vendors, for
+two different reasons. Optionally gamescope nested per game for scaling and FPS caps.
 
 ## GUI instead of CLI
 

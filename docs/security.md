@@ -315,6 +315,13 @@ enumerate GPU processes host-wide through `nvidia-smi`, and the usual caveats
 about reading another context's GPU memory apply. Nothing here changes that; it
 is inherent to putting several tenants on one consumer card.
 
+Consumer AMD is the same bargain with a different surface. A seat gets
+`/dev/dri/renderD*` at mode `0666`, which is the whole of what a render node
+grants: no partitioning, no per-context isolation, and the same caveats about
+another context's memory. It has one less enumeration channel than NVIDIA,
+since there is no `nvidia-smi` inside a seat, but that is a smaller window on
+the same room rather than a different room.
+
 ### bwrap is setuid inside a seat
 
 Seats carry `bubblewrap-suid` rather than the plain package, which means one

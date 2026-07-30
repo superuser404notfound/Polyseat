@@ -320,6 +320,19 @@ type stateResponse struct {
 
 type hostInfo struct {
 	Hostname string `json:"hostname"`
+
+	// GPU is the card every seat on this machine is built for, as the daemon
+	// found it at startup. Shown because it decides the whole shape of a seat
+	// and because it is the first thing worth knowing when a seat reports the
+	// software encoder: a card detected as the wrong vendor produces exactly
+	// that, and nothing else in the interface would say so.
+	GPU string `json:"gpu"`
+
+	// GPUVendor is empty when nothing usable was found. Sent alongside the
+	// description rather than left for the page to work out from the text,
+	// because deciding whether something is broken by reading a sentence is
+	// how a message becomes impossible to reword.
+	GPUVendor string `json:"gpu_vendor"`
 }
 
 func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
@@ -338,9 +351,13 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 		Observer:        s.manager.ObserverState(),
 		Config:          s.manager.Config(),
 		Uplinks:         config.Uplinks(),
-		Host:            hostInfo{Hostname: hostname},
-		Warnings:        s.warnings(),
-		Now:             time.Now(),
+		Host: hostInfo{
+			Hostname:  hostname,
+			GPU:       s.manager.GPU().String(),
+			GPUVendor: string(s.manager.GPU().Vendor),
+		},
+		Warnings: s.warnings(),
+		Now:      time.Now(),
 	}
 
 	// Always send arrays, never null. A client that has to guard every list

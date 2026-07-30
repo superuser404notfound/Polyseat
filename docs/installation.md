@@ -17,8 +17,8 @@ hard way, so the reasons are kept with the steps.
 
 ### Packages
 
-`incus`, `nvidia-container-toolkit`, `bpftrace`, `python`, plus `go` while the
-daemon is built from source.
+`incus`, `bpftrace`, `python`, plus `go` while the daemon is built from source,
+and `nvidia-container-toolkit` on NVIDIA machines only.
 
 The installer installs the ones that are missing rather than printing a command
 and stopping. **Deliberately not with `-Sy`:** refreshing the package database
@@ -37,6 +37,35 @@ seat is a plain Arch container. The M1 spike bootstrapped the CachyOS keyring
 into every seat out of the host's package cache, which tied the seats to a
 CachyOS host and was where the mirror lag problem came from. Provisioning
 removes that repository from seats that still carry it.
+
+### Which card is in the machine
+
+Worked out before anything else, because it decides the rest: which package the
+installer needs, which driver check has to pass and what the daemon builds
+seats from. An AMD machine has no use for `nvidia-container-toolkit`, which is
+a shim for a driver that is not there.
+
+Render nodes under `/sys/class/drm/renderD*` first, since a node exists only
+where a driver is bound to something that can render, and the PCI bus as a
+fallback, since a machine whose driver is missing has no render node at all and
+is exactly the machine this script exists to help. With cards from both vendors
+present NVIDIA wins, the same rule the daemon follows. The daemon's choice can
+be overridden with `gpu_render_node` in `/etc/polyseat/polyseatd.json`.
+
+The two detections are checked against machines this one is not, in
+`host/test-gpu-detect.sh` and `go test ./internal/seat -run GPU`.
+
+### The AMD driver
+
+`amdgpu` bound to the card, and that is the whole host requirement. There is no
+userspace on the host for a seat to borrow: Mesa is an ordinary package inside
+each seat, so nothing is injected and no host driver update can leave a seat
+behind. Refused when the card came up on `simpledrm` or `vesa` instead, which
+usually means missing firmware and `linux-firmware-amdgpu`.
+
+`vainfo` is reported rather than refused over, both here and again inside the
+seat during provisioning. **The AMD path has never been run on real hardware:**
+[amd.md](amd.md) says what was verified and what was not.
 
 ### The NVIDIA driver
 
@@ -197,7 +226,8 @@ under `spike/m1-seat/` and moves into the daemon in M5:
 
 * create the container, attach the macvlan interface, configure DHCP
 * install packages inside the seat, including Steam in the base image
-* repair the NVIDIA userspace that `nvidia.runtime` does not bring
+* repair the NVIDIA userspace that `nvidia.runtime` does not bring, or on AMD
+  install Mesa and Vulkan as packages and repair nothing
 * generate the Sunshine configuration, `XDG_SEAT` and the CSRF origins
 * install the session units inside the seat
 * start and stop the per-seat broker

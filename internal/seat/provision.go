@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 21
+const Generation = 22
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -49,6 +49,16 @@ type Provisioner struct {
 	Uplink string
 	Image  string
 	Log    Logger
+
+	// GPU is the host's card, detected once by the daemon. It decides which
+	// packages the seat gets, which container options are set, what the
+	// session's environment is and which encoder Sunshine is told to use.
+	//
+	// The zero value means NVIDIA, which is not a default so much as the
+	// history: every seat built before this field existed was an NVIDIA seat,
+	// and a caller that forgets to set it gets exactly what it used to get
+	// rather than something new and untested.
+	GPU GPU
 
 	// Secrets are the credentials to apply inside the seat. Prepared by the
 	// caller, because they have to survive a rebuild: a seat whose container
@@ -77,7 +87,8 @@ type Step struct {
 //   - Packages before nvidia.runtime. Once the driver has been injected, its
 //     files sit in the container filesystem as real entries and pacman
 //     collides with them. Steam in particular can no longer be installed
-//     afterwards, because lib32-mesa cannot be written.
+//     afterwards, because lib32-mesa cannot be written. On AMD nothing is
+//     injected and the ordering costs nothing, so it is not made conditional.
 //   - The session last, because it needs the addresses of a running container
 //     to generate Sunshine's allowed origins.
 func Steps() []Step {
@@ -90,7 +101,7 @@ func Steps() []Step {
 		{"user", (*Provisioner).stepUser},
 		{"flatpak", (*Provisioner).stepFlatpak},
 		{"gpu", (*Provisioner).stepGPU},
-		{"nvidia userspace", (*Provisioner).stepNvidiaUserspace},
+		{"graphics userspace", (*Provisioner).stepGraphicsUserspace},
 		{"library", (*Provisioner).stepLibrary},
 		{"session", (*Provisioner).stepSession},
 		{"sunshine credentials", (*Provisioner).stepCredentials},
@@ -290,11 +301,16 @@ func (p *Provisioner) waitNetwork(ctx context.Context) error {
 
 // driverFlags tell pacman that the graphics driver is already there.
 //
-// Inside a seat it always is: it comes from the host through nvidia.runtime and
-// never from a package. Without these, pacman picks a provider for the virtual
-// driver packages and installs nvidia-utils and lib32-nvidia-utils, whose files
-// are exactly the ones the injection already put in the filesystem. The
-// transaction then dies with several hundred lines of "exists in filesystem".
+// NVIDIA only, which is why they are reached through stackFor rather than used
+// directly. Inside an NVIDIA seat the driver always is already there: it comes
+// from the host through nvidia.runtime and never from a package. Without these,
+// pacman picks a provider for the virtual driver packages and installs
+// nvidia-utils and lib32-nvidia-utils, whose files are exactly the ones the
+// injection already put in the filesystem. The transaction then dies with
+// several hundred lines of "exists in filesystem".
+//
+// On AMD the opposite holds and using them would be the bug: there the driver
+// is a package, so the virtual providers have to resolve normally.
 //
 // They belong on every pacman call that can resolve dependencies, not only on
 // the Steam one. Steam depends on vulkan-driver and lib32-vulkan-driver, so
@@ -307,6 +323,9 @@ var driverFlags = []string{
 	"--assume-installed", "lib32-opengl-driver",
 	"--assume-installed", "lib32-vulkan-driver",
 }
+
+// stack is the whole vendor specific answer for this seat's host. See gpu.go.
+func (p *Provisioner) stack() stack { return stackFor(p.GPU) }
 
 // ------------------------------------------------------------------ packages
 
@@ -361,7 +380,8 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 
 	p.Log("updating and installing the session packages, this takes a while")
 
-	argv := append([]string{"pacman", "-Syu", "--noconfirm", "--needed"}, driverFlags...)
+	argv := append([]string{"pacman", "-Syu", "--noconfirm", "--needed"}, p.stack().driverFlags...)
+	argv = append(argv, p.stack().packages...)
 	argv = append(argv,
 		"sway", "swaybg", "foot", "xorg-xwayland",
 		// The desktop proper. A seat used to come up as sway with a single
@@ -544,14 +564,17 @@ func sunshineRelease(ctx context.Context) (url, version string, err error) {
 // the container filesystem which never go away, and lib32-mesa can no longer be
 // installed over them.
 //
-// The --assume-installed flags matter just as much. Inside a seat the graphics
-// driver always comes from the host and never from a package. Without them
-// pacman picks the first provider of those virtual packages, which is a ten
-// year old lib32-nvidia driver that would overwrite exactly the injected files.
+// On NVIDIA the --assume-installed flags matter just as much. Inside such a
+// seat the graphics driver always comes from the host and never from a
+// package. Without them pacman picks the first provider of those virtual
+// packages, which is a ten year old lib32-nvidia driver that would overwrite
+// exactly the injected files. On AMD there are no flags, and lib32-mesa and
+// lib32-vulkan-radeon are already in by the time this runs, so the same
+// dependencies resolve to what is installed.
 func (p *Provisioner) stepSteam(ctx context.Context) error {
 	p.Log("installing Steam and the 32 bit userspace")
 
-	argv := append([]string{"pacman", "-S", "--noconfirm", "--needed"}, driverFlags...)
+	argv := append([]string{"pacman", "-S", "--noconfirm", "--needed"}, p.stack().driverFlags...)
 	argv = append(argv,
 		"steam", "lib32-libglvnd", "lib32-vulkan-icd-loader",
 		"ttf-liberation", "zenity")
@@ -742,10 +765,12 @@ func (p *Provisioner) readUID(ctx context.Context) error {
 // ----------------------------------------------------------------------- gpu
 
 func (p *Provisioner) stepGPU(ctx context.Context) error {
-	config := map[string]string{
-		"nvidia.runtime":             "true",
-		"nvidia.driver.capabilities": "all",
+	// Said on every run, because which stack a seat was built on is the first
+	// thing anybody needs when the encoder line later says libx264, and the
+	// provisioning log is the only place it would otherwise not appear.
+	p.Log("graphics: %s", p.GPU)
 
+	config := map[string]string{
 		// The daemon decides when a seat runs, so Incus must not also start it.
 		// Otherwise a seat comes up at boot without its input broker and the
 		// two race each other.
@@ -756,6 +781,15 @@ func (p *Provisioner) stepGPU(ctx context.Context) error {
 		// seat needs nested containers; Steam's own sandbox uses user
 		// namespaces, which work without this.
 		"security.nesting": "false",
+	}
+
+	// The vendor's own keys on top. On NVIDIA that switches the driver
+	// injection on; on AMD it switches it off, which is not the same as
+	// leaving it out: Incus merges what it is given, so a seat that was built
+	// while an NVIDIA card was in this machine would keep the injection and
+	// fail to start over a driver that is no longer there.
+	for k, v := range p.stack().config {
+		config[k] = v
 	}
 
 	devices := map[string]map[string]string{
@@ -787,7 +821,8 @@ func (p *Provisioner) stepGPU(ctx context.Context) error {
 		return err
 	}
 
-	// nvidia.runtime only takes effect on a fresh start, so a change here costs
+	// nvidia.runtime only takes effect on a fresh start, and a device that was
+	// just added is not in a running container either, so a change here costs
 	// a restart. Nothing changed means nothing to restart, which is what keeps
 	// re-provisioning a healthy seat from interrupting it.
 	if changed {
@@ -802,6 +837,10 @@ func (p *Provisioner) stepGPU(ctx context.Context) error {
 		if err := p.waitSystemd(ctx); err != nil {
 			return err
 		}
+	}
+
+	if p.GPU.Vendor == VendorAMD {
+		return p.verifyAMD(ctx)
 	}
 
 	out, err := p.run(ctx, "nvidia-smi", "-L")
@@ -819,6 +858,86 @@ func (p *Provisioner) stepGPU(ctx context.Context) error {
 	p.Log("%s", strings.TrimSpace(out))
 
 	return nil
+}
+
+// verifyAMD is the AMD half of the check nvidia-smi does for the other vendor.
+//
+// Two questions, and only the first is fatal. Whether the render node arrived
+// in the seat is unambiguous and nothing works without it. Whether the card
+// can encode is answered by vainfo, which is the one command that predicts a
+// software fallback before anybody tries to play, but its output is a table
+// this code does not own: a change in its wording would fail every AMD seat on
+// the machine over a card that is perfectly fine. So it warns loudly instead,
+// and the authoritative answer stays where it already is, in the encoder line
+// the interface shows once the session runs.
+func (p *Provisioner) verifyAMD(ctx context.Context) error {
+	node := p.GPU.RenderNode
+	if node == "" {
+		node = "/dev/dri/renderD128"
+	}
+
+	if _, code, err := p.Client.Try(ctx, p.name(), "test", "-c", node); err != nil {
+		return err
+	} else if code != 0 {
+		return fmt.Errorf("%s did not arrive in the seat, so the GPU is not there", node)
+	}
+
+	// --display drm because there is no Wayland or X display at this point in
+	// provisioning, and vainfo's default is to look for one and fail.
+	out, code, err := p.Client.Try(ctx, p.name(),
+		"vainfo", "--display", "drm", "--device", node)
+	if err != nil {
+		return err
+	}
+
+	if code != 0 {
+		p.Log("! vainfo could not open %s, the seat may encode in software: %s",
+			node, lastLines(out, 3))
+
+		return nil
+	}
+
+	// VAEntrypointEncSlice is the encoder, and the low power variant
+	// VAEntrypointEncSliceLP has it as a prefix, so one test covers both. A
+	// card whose driver loaded but offers only decoding entry points is
+	// exactly the case that looks healthy everywhere else, so the string is
+	// worth matching for rather than taking vainfo's exit code as an answer.
+	if !strings.Contains(out, "VAEntrypointEncSlice") {
+		p.Log("! %s has no VA-API encoder entry point, the seat will encode in software",
+			node)
+
+		return nil
+	}
+
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Driver version") {
+			p.Log("%s", strings.TrimSpace(line))
+
+			break
+		}
+	}
+
+	p.Log("VA-API on %s can encode", node)
+
+	return nil
+}
+
+// stepGraphicsUserspace makes the driver usable from inside the seat.
+//
+// It is a whole step on NVIDIA and nothing at all on AMD, and that asymmetry
+// is the point rather than an oversight. NVIDIA arrives as files injected past
+// the package manager, so everything the packages would have brought with them
+// has to be put back by hand. Mesa arrives as packages, which brought their
+// own manifests, their own GBM backend and their own Vulkan ICD with them, and
+// anything written here would be a second copy competing with the real one.
+func (p *Provisioner) stepGraphicsUserspace(ctx context.Context) error {
+	if p.GPU.Vendor == VendorAMD {
+		p.Log("Mesa came from packages, nothing to repair")
+
+		return nil
+	}
+
+	return p.stepNvidiaUserspace(ctx)
 }
 
 // stepNvidiaUserspace repairs what nvidia.runtime does not bring along.
@@ -1294,10 +1413,23 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 	// this worth doing was seeing the first terminal in a seat greet somebody
 	// with "Polyseat seat: unknown": sway inherited nothing, so neither did its
 	// children.
+	// The graphics vendor's variables, for the same reason: what they say
+	// depends on the card in the host, so they cannot live in a unit file that
+	// is the same everywhere. Both units get them, because sway has to render
+	// on the card and Sunshine has to encode from it.
+	gpuDropin := p.stack().dropIn()
+
 	for _, unit := range []string{"polyseat-sunshine.service.d", "polyseat-sway.service.d"} {
 		err = p.Client.PushFile(p.name(),
 			home+"/.config/systemd/user/"+unit+"/10-seat.conf",
 			[]byte(dropin), 0o644, p.uid, p.uid)
+		if err != nil {
+			return err
+		}
+
+		err = p.Client.PushFile(p.name(),
+			home+"/.config/systemd/user/"+unit+"/20-gpu.conf",
+			gpuDropin, 0o644, p.uid, p.uid)
 		if err != nil {
 			return err
 		}
@@ -1479,6 +1611,8 @@ func (p *Provisioner) WriteSunshineConfig(ctx context.Context) ([]string, error)
 	conf, err := render("assets/sunshine.conf", map[string]string{
 		"Origins":    strings.Join(origins, ","),
 		"Resolution": p.Seat.Resolution,
+		"Encoder":    p.stack().encoder,
+		"Adapter":    p.stack().adapter,
 	})
 	if err != nil {
 		return nil, err
