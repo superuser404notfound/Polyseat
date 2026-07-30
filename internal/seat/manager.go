@@ -103,6 +103,10 @@ type runtime struct {
 	// nobody needs to learn within ten seconds that a game was uninstalled.
 	appsChecked time.Time
 
+	// appsPending records that the app list wants rebuilding but somebody is
+	// streaming, so it has to wait for them to finish.
+	appsPending bool
+
 	// progress is how far a long operation has got, 0 to 100, or -1 when
 	// there is nothing to say. Only installing software reports it: that is
 	// the operation whose length depends on somebody else's server rather than
@@ -497,17 +501,33 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		// seat, with nothing to tell the daemon. It stayed in Moonlight's list
 		// afterwards and starting it did nothing.
 		//
-		// Only writes when the result differs, and tells Sunshine to reload
-		// when it does, which takes effect without restarting anything or
-		// interrupting a stream.
+		// Never while somebody is streaming. Telling Sunshine to reload its app
+		// list ends the stream in progress, and not politely: it emits no
+		// CLIENT DISCONNECTED and runs none of the undo commands, so the seat is
+		// left at the client's resolution with the framerate still capped. This
+		// used to carry a comment saying a reload interrupts nothing, which was
+		// an assumption rather than a measurement, and the measurement is a
+		// Moonlight session ending mid-game one minute after a launcher was
+		// installed.
+		//
+		// So it waits, and the moment the stream ends it happens.
 		m.mu.Lock()
+		streaming := session != nil
 		due := time.Since(rt.appsChecked) >= appsInterval
-		if due {
+
+		// Remembered only when it was actually due, so that the end of a stream
+		// does not always drag an update behind it that nothing asked for.
+		if due && streaming {
+			rt.appsPending = true
+		}
+
+		if due && !streaming {
 			rt.appsChecked = time.Now()
 		}
+
 		m.mu.Unlock()
 
-		if due {
+		if due && !streaming {
 			m.refreshApps(ctx, name)
 		}
 	}
@@ -524,11 +544,21 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 	}
 
 	rt.output = output
+
+	// The end of a stream, seen by the daemon rather than reported by Sunshine.
+	// Sunshine's own undo commands put the resolution and the framerate cap back,
+	// and they do not run when a session ends abnormally, which the app list
+	// reload above used to cause.
+	ended := rt.session != nil && session == nil
 	rt.session = session
 
 	state := StateStarting
 	if up {
 		state = StateRunning
+	}
+
+	if ended {
+		defer m.sessionEnded(ctx, name)
 	}
 
 	changed := rt.state != state
@@ -751,6 +781,54 @@ func parseEncoders(out string) (string, []string) {
 	}
 
 	return backend, codecs
+}
+
+// sessionEnded puts a seat back the way an idle seat should be, and does the
+// work that was held back while somebody was streaming.
+//
+// Sunshine's own undo commands do this when a stream ends properly. They do not
+// run when it ends any other way: a reload of the app list used to end a session
+// without a CLIENT DISCONNECTED and without any undo, and the seat was left at
+// the client's resolution with the framerate still capped, which the web
+// interface then reported as the truth because it was.
+//
+// Running them again after a normal end costs nothing. The resize is idempotent
+// and the cap is already off.
+func (m *Manager) sessionEnded(ctx context.Context, name string) {
+	seat, err := m.store.Get(name)
+	if err != nil {
+		return
+	}
+
+	quick, cancel := quick(ctx)
+	defer cancel()
+
+	if _, _, err := m.client.Try(quick, name, m.asPlayer(name,
+		"/usr/local/bin/polyseat-resize", seat.Resolution)...); err != nil {
+		m.logf(name, "! the resolution could not be put back: %v", err)
+	}
+
+	if _, _, err := m.client.Try(quick, name, m.asPlayer(name,
+		"/usr/local/bin/polyseat-fps", "off")...); err != nil {
+		m.logf(name, "! the framerate cap could not be taken off: %v", err)
+	}
+
+	rt := m.runtimeOf(name)
+
+	m.mu.Lock()
+	pending := rt.appsPending
+	rt.appsPending = false
+
+	if pending {
+		rt.appsChecked = time.Now()
+	}
+
+	m.mu.Unlock()
+
+	if pending {
+		m.logf(name, "the stream ended, updating the app list now")
+		m.refreshApps(ctx, name)
+	}
 }
 
 // readSession reports who is streaming from a seat and what they asked for, or

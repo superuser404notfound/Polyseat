@@ -312,7 +312,7 @@ func (m *Manager) InstallSoftware(name, id string) error {
 		// So it appears in Moonlight without waiting for the next restart. The
 		// app list is generated from what is installed, and this is the moment
 		// that changed.
-		m.refreshApps(ctx, name)
+		m.refreshAppsWhenNobodyIsStreaming(ctx, name)
 
 		return nil
 	})
@@ -351,7 +351,7 @@ func (m *Manager) RemoveSoftware(name, id string) error {
 			m.logf(name, "! unused runtimes could not be cleaned up, they are only taking space")
 		}
 
-		m.refreshApps(ctx, name)
+		m.refreshAppsWhenNobodyIsStreaming(ctx, name)
 
 		return nil
 	})
@@ -372,6 +372,34 @@ func (m *Manager) layerForFlatpaks(ctx context.Context, name string) {
 	}
 
 	p.flatpakMangoHud(ctx)
+}
+
+// refreshAppsWhenNobodyIsStreaming does it, or remembers to do it later.
+//
+// Telling Sunshine to reload its app list ends the stream in progress, without a
+// CLIENT DISCONNECTED and without running any of the undo commands. Somebody who
+// installs a launcher from the web interface while another person is playing
+// should not throw that person out of their game; the new entry is worth a few
+// minutes' wait, and the seat picks it up the moment the stream ends.
+func (m *Manager) refreshAppsWhenNobodyIsStreaming(ctx context.Context, name string) {
+	rt := m.runtimeOf(name)
+
+	m.mu.Lock()
+	streaming := rt.session != nil
+
+	if streaming {
+		rt.appsPending = true
+	}
+
+	m.mu.Unlock()
+
+	if streaming {
+		m.logf(name, "somebody is streaming, so Moonlight's list will be updated when they stop")
+
+		return
+	}
+
+	m.refreshApps(ctx, name)
 }
 
 // refreshApps rewrites the Moonlight app list for a running seat.

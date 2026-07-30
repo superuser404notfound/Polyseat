@@ -584,6 +584,30 @@ and opening the on-screen keyboard during a game killed the game. The session
 therefore shows the keyboard once at startup and puts it away again, before
 anybody has connected and while there is nobody to see it.
 
+## Never reload the app list under somebody
+
+Telling Sunshine to reread its app list ends the stream in progress. Not politely:
+it emits no `CLIENT DISCONNECTED` and runs none of the `undo` commands, so the
+seat is left at the client's resolution with the framerate still capped, and the
+interface then reports that as the truth because it is the truth. Two complaints,
+one cause: a Moonlight session ending by itself, and a resolution that stayed
+after the client had gone.
+
+The code carried a comment claiming a reload interrupts nothing. That was an
+assumption from the fact that it is not `/api/restart`, never measured, and the
+measurement is in the seat's own log: a stream started, the list was rebuilt one
+minute later, and nothing followed.
+
+So the rebuild waits while somebody is streaming, and happens the moment they
+stop. Both paths, the minute timer and somebody installing a launcher from the
+web interface, because throwing a player out of their game is a worse outcome
+than a menu entry appearing a few minutes late.
+
+The daemon also puts the seat back itself when it sees a session end, rather than
+trusting Sunshine's undo to have run. That is the same signal the card uses, an
+established connection on the control ports, and it covers every abnormal end and
+not only this one.
+
 ## Bringing the seats up to date, and seeing who is on them
 
 Two things the interface owes somebody running a machine several people share.
