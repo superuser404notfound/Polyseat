@@ -721,11 +721,29 @@ func parseEncoders(out string) (string, []string) {
 //
 // Read out of a file the seat writes rather than asked of Sunshine, which has no
 // endpoint for it: see polyseat-session, which explains what was tried. Written
-// by Sunshine's own prep commands, so it exists for exactly as long as a stream
-// does.
+// by Sunshine's own prep commands, so it should exist for exactly as long as a
+// stream does.
+//
+// "Should", which is why the connection is checked as well and the file is only
+// believed when there is one. The file is written when a stream starts and
+// removed when it ends, and the removal is a command Sunshine runs: it does not
+// happen if Sunshine is restarted mid stream, if the seat is rebooted, or if
+// anything writes that file by hand. The card then reports somebody streaming
+// for the last twenty-eight minutes when the seat has been idle all along, which
+// is worse than reporting nothing, because it is the answer somebody would act
+// on. Seen exactly that way while testing.
+//
+// The stale file is cleared out on the way past, so this corrects itself instead
+// of reporting the same absence every ten seconds.
 func (m *Manager) readSession(ctx context.Context, name string) *Session {
-	out, code, err := m.client.Try(ctx, name, m.asPlayer(name,
-		"cat", SessionPath)...)
+	// One command for both, so that the answer cannot come from two different
+	// moments. The control channel is a TCP connection that lives as long as
+	// the stream does.
+	check := `if [ -z "$(ss -Htn state established ` +
+		`'( sport = :47989 or sport = :48010 )')" ]; then rm -f ` + SessionPath +
+		`; exit 1; fi; cat ` + SessionPath
+
+	out, code, err := m.client.Try(ctx, name, m.asPlayer(name, "sh", "-c", check)...)
 	if err != nil || code != 0 {
 		return nil
 	}
