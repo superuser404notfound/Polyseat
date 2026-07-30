@@ -189,19 +189,19 @@ func TestAStreamSurvivesTheClientDroppingAndComingBack(t *testing.T) {
 
 	playing := &Session{App: "Desktop", Width: 1920, Height: 1080}
 
-	if ended := rt.observeStream(true, playing, start); ended {
+	if ended := rt.observeStream(streamBusy, playing, start); ended {
 		t.Fatal("the start of a stream was reported as its end")
 	}
 
 	// The dropout. Twelve seconds is what was measured, and the reconnect
 	// carries no marker with it because no prep command ran.
 	for _, at := range []time.Duration{10 * time.Second, 20 * time.Second} {
-		if ended := rt.observeStream(false, nil, start.Add(at)); ended {
+		if ended := rt.observeStream(streamIdle, nil, start.Add(at)); ended {
 			t.Fatalf("a dropout of %s ended the stream", at)
 		}
 	}
 
-	if ended := rt.observeStream(true, nil, start.Add(25*time.Second)); ended {
+	if ended := rt.observeStream(streamBusy, nil, start.Add(25*time.Second)); ended {
 		t.Error("the reconnect was reported as an end")
 	}
 
@@ -214,21 +214,98 @@ func TestAStreamSurvivesTheClientDroppingAndComingBack(t *testing.T) {
 	}
 }
 
+// A seat that did not answer is not a seat that is idle. This is the reading
+// that used to be indistinguishable from "nobody is streaming", and acting on it
+// is what rebuilds the app list under a live session.
+func TestAReadingThatSaysNothingLeavesTheStreamAlone(t *testing.T) {
+	rt := &runtime{}
+	start := time.Date(2026, 7, 30, 17, 47, 11, 0, time.UTC)
+
+	rt.observeStream(streamBusy, &Session{App: "DREDGE"}, start)
+
+	// Long enough that treating these as absences would have ended it twice
+	// over.
+	for _, at := range []time.Duration{time.Second, 2 * sessionGrace, 4 * sessionGrace} {
+		if ended := rt.observeStream(streamUnknown, nil, start.Add(at)); ended {
+			t.Fatalf("a reading that said nothing ended the stream after %s", at)
+		}
+	}
+
+	if !rt.streaming {
+		t.Error("the seat stopped counting as streaming because it did not answer")
+	}
+
+	if !rt.unclear {
+		t.Error("nothing recorded that the answer was missing, so the app list would be rebuilt anyway")
+	}
+
+	// And the grace period starts from the first real absence, not from the
+	// readings that said nothing.
+	if ended := rt.observeStream(streamIdle, nil, start.Add(5*sessionGrace)); ended {
+		t.Error("the first real absence ended it immediately, so a client that dropped for a moment loses its session")
+	}
+
+	if rt.unclear {
+		t.Error("a seat that answered is still marked as not having answered")
+	}
+
+	if ended := rt.observeStream(streamIdle, nil, start.Add(6*sessionGrace+time.Second)); !ended {
+		t.Error("a stream really gone for the whole grace period never ended")
+	}
+}
+
+// What the check prints, and what each of those means. The dangerous direction
+// is the one that reads as an idle seat, so every answer that is not the word
+// for it has to come back as unknown.
+func TestOnlyTheWordIdleMeansNobodyIsStreaming(t *testing.T) {
+	for _, c := range []struct {
+		what  string
+		out   string
+		want  streamState
+		named string
+	}{
+		{what: "an idle seat", out: "idle\n", want: streamIdle},
+		{
+			what:  "a stream with a marker",
+			out:   "streaming\n{\"app\":\"DREDGE\",\"width\":2560,\"height\":1440}\n",
+			want:  streamBusy,
+			named: "DREDGE",
+		},
+		{what: "a stream whose marker is gone", out: "streaming\n", want: streamBusy},
+		{what: "a stream whose marker is nonsense", out: "streaming\nnot json", want: streamBusy},
+		{what: "nothing at all", out: "", want: streamUnknown},
+		{what: "an error from the shell", out: "sh: ss: not found\n", want: streamUnknown},
+		{what: "a truncated answer", out: "idl", want: streamUnknown},
+	} {
+		session, got := parseStreamCheck(c.out)
+		if got != c.want {
+			t.Errorf("%s was read as %v, want %v", c.what, got, c.want)
+		}
+
+		switch {
+		case c.named == "" && session != nil:
+			t.Errorf("%s produced a description out of nowhere: %+v", c.what, session)
+		case c.named != "" && (session == nil || session.App != c.named):
+			t.Errorf("%s lost its description: %+v", c.what, session)
+		}
+	}
+}
+
 // And a stream that really ends still has to end, or the resolution is never put
 // back and the card claims somebody is playing long after they closed Moonlight.
 func TestAStreamThatStaysGoneEndsAfterTheGrace(t *testing.T) {
 	rt := &runtime{}
 	start := time.Date(2026, 7, 30, 17, 47, 11, 0, time.UTC)
 
-	rt.observeStream(true, &Session{App: "DREDGE"}, start)
+	rt.observeStream(streamBusy, &Session{App: "DREDGE"}, start)
 
-	if ended := rt.observeStream(false, nil, start.Add(time.Second)); ended {
+	if ended := rt.observeStream(streamIdle, nil, start.Add(time.Second)); ended {
 		t.Fatal("the first missing reading ended it, which is the bug this is about")
 	}
 
 	// The grace runs from the first reading that missed it, not from the start
 	// of the stream.
-	if ended := rt.observeStream(false, nil, start.Add(time.Second+sessionGrace)); !ended {
+	if ended := rt.observeStream(streamIdle, nil, start.Add(time.Second+sessionGrace)); !ended {
 		t.Fatal("a stream gone for the whole grace period never ended")
 	}
 
@@ -238,7 +315,7 @@ func TestAStreamThatStaysGoneEndsAfterTheGrace(t *testing.T) {
 
 	// Once only. A second reading of the same absence would run the undo
 	// commands and the pending app list rebuild again.
-	if ended := rt.observeStream(false, nil, start.Add(2*sessionGrace)); ended {
+	if ended := rt.observeStream(streamIdle, nil, start.Add(2*sessionGrace)); ended {
 		t.Error("the same end was reported twice")
 	}
 }

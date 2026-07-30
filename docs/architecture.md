@@ -698,9 +698,8 @@ web interface, because throwing a player out of their game is a worse outcome
 than a menu entry appearing a few minutes late.
 
 The daemon also puts the seat back itself when it sees a session end, rather than
-trusting Sunshine's undo to have run. That is the same signal the card uses, an
-established connection on the control ports, and it covers every abnormal end and
-not only this one.
+trusting Sunshine's undo to have run. That is the same signal the card uses, and
+it covers every abnormal end and not only this one.
 
 **A guard is only as good as the thing it asks.** The first version of this asked
 the marker file that describes the stream, and got thrown out of a stream anyway.
@@ -713,12 +712,51 @@ later the list was rebuilt under it. Both halves are in the logs: the seat's
 `CLIENT DISCONNECTED` at 17:48:21 and `CLIENT CONNECTED` at 17:48:33 with no
 `Do Cmd` between them, and the daemon's rebuild at 17:49:12.
 
-So the two questions are kept apart. The connection decides whether somebody is
-streaming, because it comes back by itself; the file only describes what they
-are playing, and is kept rather than replaced when a reading brings none. A
+So the two questions are kept apart. The sockets decide whether somebody is
+streaming, because they come back by themselves; the file only describes what
+they are playing, and is kept rather than replaced when a reading brings none. A
 missing connection has to stay missing for 45 seconds before the stream counts
 as over, which is what a reconnect fits into, and the stale file is cleared only
 then.
+
+**And the guard has to ask something that is there for the whole stream.** The
+second version asked for an established TCP connection on the control ports, and
+somebody lost a stream to a game installed in Steam anyway. The seat's own log
+has both halves: `CLIENT CONNECTED` at 19:51:02, the whole app list printed at
+19:52:31, `Process terminated` in the same second, and no `CLIENT DISCONNECTED`
+anywhere between them. The daemon believed the seat idle throughout, and the
+stale marker file it never cleared proves it: it only clears one when it sees a
+stream end, and it never saw one, because it never saw a stream. A client that
+has finished its handshake can leave no established connection behind at all.
+
+What is there for exactly as long as a session is the set of sockets Sunshine
+opens for it: video, control and audio on UDP 47998, 47999 and 48000. None of
+them exists in an idle seat, checked, and they belong to the running process, so
+unlike anything written to a file they cannot be left behind by a session that
+died badly. The connection is still asked about as well; either one says
+streaming.
+
+Three further things follow from being wrong about this twice.
+
+**The check says which of three things it found.** Idle, streaming, or nothing
+it understood, and the last one holds the app list back exactly as firmly as the
+second. The old check ended in `cat` of a file that need not exist, so a seat
+without a marker answered with a non zero status, and that was read as nobody
+streaming: a check whose failure mode was the dangerous answer. A reading that
+says nothing also no longer ends a stream, so an `incus exec` that timed out
+cannot put the resolution back under a game.
+
+**The guard sits immediately in front of the destructive step, not a minute
+ahead of it.** Between deciding that nobody is streaming and telling Sunshine to
+reload, the seat is scanned: Steam's manifests, Lutris, artwork fetched over the
+network. Somebody who connects during those seconds used to lose their session
+to a decision taken before they existed. The list is still written in that case,
+because writing the file disturbs nothing, and the reload alone is held back.
+
+**Which is why a held back reload is remembered.** The file on disk is then
+ahead of what Sunshine has loaded, and the next pass would find it already
+correct, report no change and never reload, leaving Moonlight on the old list
+until the seat restarted.
 
 ## Bringing the seats up to date, and seeing who is on them
 

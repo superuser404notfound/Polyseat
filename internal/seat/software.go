@@ -385,15 +385,18 @@ func (m *Manager) refreshAppsWhenNobodyIsStreaming(ctx context.Context, name str
 	rt := m.runtimeOf(name)
 
 	m.mu.Lock()
-	streaming := rt.streaming
 
-	if streaming {
+	// unclear counts as busy here too. A seat that cannot say whether somebody
+	// is streaming is not a seat to rebuild the app list under.
+	busy := rt.streaming || rt.unclear
+
+	if busy {
 		rt.appsPending = true
 	}
 
 	m.mu.Unlock()
 
-	if streaming {
+	if busy {
 		m.logf(name, "somebody is streaming, so Moonlight's list will be updated when they stop")
 
 		return
@@ -428,11 +431,41 @@ func (m *Manager) refreshApps(ctx context.Context, name string) {
 		return
 	}
 
-	if !changed {
+	rt := m.runtimeOf(name)
+
+	m.mu.Lock()
+	owed := rt.reloadPending
+	m.mu.Unlock()
+
+	// owed as well as changed, because a reload held back last time left the
+	// file ahead of what Sunshine has loaded. Without it the list would look
+	// settled from here and Moonlight would go on showing the old one.
+	if !changed && !owed {
 		return
 	}
 
-	m.logf(name, "Moonlight will offer: %s", strings.Join(apps, ", "))
+	if changed {
+		m.logf(name, "Moonlight will offer: %s", strings.Join(apps, ", "))
+	}
+
+	// Asked again, here, immediately before the one step that ends streams.
+	//
+	// Whoever called this decided that nobody was streaming, and then the scan
+	// above ran: Steam's manifests, Lutris, artwork over the network. That is
+	// seconds, sometimes more, and a client that connects inside them would
+	// otherwise have its session terminated by a decision taken before it
+	// existed. The check itself is one exec, and it only runs when there is
+	// something to reload.
+	if m.streaming(ctx, name) {
+		m.mu.Lock()
+		rt.reloadPending = true
+		m.mu.Unlock()
+
+		m.logf(name, "a stream started while the list was being built, so Sunshine "+
+			"will be told about it when the stream ends")
+
+		return
+	}
 
 	// Writing the file is not enough on its own. Sunshine reads it once, at
 	// startup, for the list it serves to clients; its own web interface rereads
@@ -447,13 +480,25 @@ func (m *Manager) refreshApps(ctx context.Context, name string) {
 	if err != nil {
 		m.logf(name, "! the app list changed but Sunshine could not be told: %v", err)
 
+		m.mu.Lock()
+		rt.reloadPending = true
+		m.mu.Unlock()
+
 		return
 	}
 
-	if err := client.ReloadApps(ctx); err != nil {
+	err = client.ReloadApps(ctx)
+	if err != nil {
 		m.logf(name, "! Sunshine did not reload the app list, it will show the "+
 			"old one until the seat restarts: %v", err)
 	}
+
+	// Still owed when it did not happen, so that the next pass tries again
+	// rather than finding the file settled and concluding there is nothing to
+	// do. Cleared here and nowhere else: this is the only place it is paid.
+	m.mu.Lock()
+	rt.reloadPending = err != nil
+	m.mu.Unlock()
 }
 
 // ansi strips the escape sequences a terminal application writes.

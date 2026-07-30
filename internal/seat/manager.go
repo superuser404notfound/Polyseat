@@ -107,11 +107,25 @@ type runtime struct {
 	// streaming, so it has to wait for them to finish.
 	appsPending bool
 
+	// reloadPending records that the file on disk is ahead of what Sunshine has
+	// loaded: the list was written and the reload that would make Sunshine read
+	// it was held back. Without this the next pass would find the file already
+	// correct, report no change, and never reload, so Moonlight would go on
+	// showing the old list until the seat restarted.
+	reloadPending bool
+
 	// streaming is whether somebody is connected to this seat right now, which
 	// is a different question from whether session below describes them. The
 	// connection is the authority: it is what survives a client dropping for a
 	// few seconds and coming back.
 	streaming bool
+
+	// unclear is set while the seat cannot answer whether somebody is streaming
+	// at all. Kept apart from streaming because the two mean different things:
+	// one is a seat known to be busy, the other a seat that did not answer, and
+	// only the first says anything about the card. Both hold the app list back,
+	// see refreshSession.
+	unclear bool
 
 	// quiet is when the seat's control connection was first found gone, or the
 	// zero time while it is there. A stream is only treated as over once it has
@@ -486,14 +500,14 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 	encoder, codecs, output := "", []string(nil), ""
 
 	var (
-		session   *Session
-		connected bool
+		session *Session
+		stream  streamState
 	)
 
 	if sunshine == "active" {
 		encoder, codecs = m.readEncoders(ctx, name)
 		output = m.readOutput(ctx, name)
-		session, connected = m.readSession(ctx, name)
+		session, stream = m.readSession(ctx, name)
 	}
 
 	m.checkOrigins(ctx, name, addresses)
@@ -501,9 +515,13 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 	up := sway == "active" && sunshine == "active"
 
 	// What the stream is doing, settled before anything acts on it.
+	//
+	// busy rather than streaming, because a seat that did not answer must hold
+	// the app list back just as firmly as one that answered yes. The card goes
+	// on saying what it last knew; only this decision changes.
 	m.mu.Lock()
-	ended := rt.observeStream(connected, session, time.Now())
-	streaming := rt.streaming
+	ended := rt.observeStream(stream, session, time.Now())
+	busy := rt.streaming || rt.unclear
 	m.mu.Unlock()
 
 	// The broker is the daemon's own child process, so bringing it back is
@@ -536,17 +554,24 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 
 		// Remembered only when it was actually due, so that the end of a stream
 		// does not always drag an update behind it that nothing asked for.
-		if due && streaming {
+		first := due && busy && !rt.appsPending
+
+		if due && busy {
 			rt.appsPending = true
 		}
 
-		if due && !streaming {
+		if due && !busy {
 			rt.appsChecked = time.Now()
 		}
 
 		m.mu.Unlock()
 
-		if due && !streaming {
+		// Once per wait rather than once a minute for as long as it lasts.
+		if first {
+			m.logf(name, "the seat is in use, so Moonlight's list will be updated when the stream ends")
+		}
+
+		if due && !busy {
 			m.refreshApps(ctx, name)
 		}
 	}
@@ -857,7 +882,7 @@ func (m *Manager) sessionEnded(ctx context.Context, name string) {
 	rt := m.runtimeOf(name)
 
 	m.mu.Lock()
-	pending := rt.appsPending
+	pending := rt.appsPending || rt.reloadPending
 	rt.appsPending = false
 
 	if pending {
@@ -887,9 +912,20 @@ func (m *Manager) sessionEnded(ctx context.Context, name string) {
 // So a missing connection has to stay missing for sessionGrace, and the
 // description is kept rather than replaced when a reading brings none.
 //
+// A reading that says nothing at all changes nothing at all. The seat was not
+// asked successfully, so the last thing known about it still stands: a stream
+// is not ended by an exec that timed out, and the grace period does not start
+// running on the strength of one.
+//
 // Called with the lock held.
-func (rt *runtime) observeStream(connected bool, session *Session, now time.Time) bool {
-	if connected {
+func (rt *runtime) observeStream(state streamState, session *Session, now time.Time) bool {
+	rt.unclear = state == streamUnknown
+
+	if state == streamUnknown {
+		return false
+	}
+
+	if state == streamBusy {
 		rt.quiet = time.Time{}
 		rt.streaming = true
 
@@ -921,14 +957,64 @@ func (rt *runtime) observeStream(connected bool, session *Session, now time.Time
 	return true
 }
 
-// readSession reports whether somebody is connected to a seat, and what they
-// asked for if the seat says.
+// streamState is what a reading of a seat says about the stream.
+//
+// Three answers rather than two, because "the seat did not answer" is not "the
+// seat is idle" and acting on it as if it were is what ends somebody's game.
+// Everything that could disturb a stream treats unknown like busy; only the
+// card, which nobody's session depends on, treats it like nothing to report.
+type streamState int
+
+const (
+	streamUnknown streamState = iota
+	streamIdle
+	streamBusy
+)
+
+// streamCheck asks the seat whether a stream is in progress.
+//
+// Sunshine has no endpoint that answers this: /api/clients/list names the
+// clients that are paired, not the one that is connected, and there is nothing
+// else. So the seat is asked about its own sockets, and about two kinds of them
+// rather than one, because the first kind turned out not to be there for the
+// whole of a stream.
+//
+// The sockets Sunshine opens for a session are the reliable half. Video,
+// control and audio are UDP ports it binds when a session starts and closes
+// when it ends: none of them exist in an idle seat, all of them exist while
+// somebody plays, and unlike anything written to a file they cannot go stale,
+// because they belong to the running process.
+//
+// The established connection on the control ports is kept as the second half.
+// It is what this used to rely on alone, and alone it is not enough: a client
+// that has finished the handshake can leave no established connection behind at
+// all, so the check reported an idle seat while somebody was streaming, and one
+// minute later the app list was rebuilt and Sunshine terminated their session.
+// Measured: CLIENT CONNECTED at 19:51:02, "Process terminated" at 19:52:31,
+// with no CLIENT DISCONNECTED in between.
+//
+// Always exits zero, and says idle or streaming in so many words. The old
+// version ended in `cat` of a file that need not exist, so a seat with no
+// session file answered with a non zero status, and the caller read that as
+// nobody streaming: a check whose failure mode was the dangerous answer.
+const streamCheck = `state=idle
+if [ -n "$(ss -Huan '( sport = :47998 or sport = :47999 or sport = :48000 )' 2>/dev/null)" ]; then
+    state=streaming
+fi
+if [ -n "$(ss -Htn state established '( sport = :47989 or sport = :48010 )' 2>/dev/null)" ]; then
+    state=streaming
+fi
+echo "$state"
+cat ` + SessionPath + ` 2>/dev/null
+exit 0`
+
+// readSession reports what the stream in a seat is doing, and what it is.
 //
 // Two answers rather than one, and they come from two different things. Whether
-// somebody is connected is the established control connection, which exists for
-// as long as the stream does and comes back by itself when a client reconnects.
-// What they are playing is a file the seat writes, because Sunshine has no
-// endpoint for it: see polyseat-session, which explains what was tried.
+// somebody is connected is the seat's own sockets, see streamCheck: they are
+// there for as long as the stream is and come back by themselves when a client
+// reconnects. What they are playing is a file the seat writes, because Sunshine
+// has no endpoint for it: see polyseat-session, which explains what was tried.
 //
 // The file alone is not enough for either question. It is written by Sunshine's
 // prep commands, which run once per application launch, so it is absent through
@@ -938,42 +1024,71 @@ func (rt *runtime) observeStream(connected bool, session *Session, now time.Time
 // idle all along is worse than reporting nothing, because it is the answer
 // somebody would act on. Seen both ways while testing.
 //
-// So the connection decides and the file only describes. Clearing a stale file
+// So the sockets decide and the file only describes. Clearing a stale file
 // belongs to the caller, which is the only place that knows the stream is over
 // rather than briefly interrupted.
-func (m *Manager) readSession(ctx context.Context, name string) (*Session, bool) {
+func (m *Manager) readSession(ctx context.Context, name string) (*Session, streamState) {
 	ctx, cancel := quick(ctx)
 	defer cancel()
 
 	// One command for both, so that the answer cannot come from two different
-	// moments. The control channel is a TCP connection that lives as long as
-	// the stream does, and the file describes what the stream is.
-	check := `if [ -n "$(ss -Htn state established ` +
-		`'( sport = :47989 or sport = :48010 )')" ]; then echo streaming; fi; cat ` +
-		SessionPath + ` 2>/dev/null`
-
-	out, code, err := m.client.Try(ctx, name, m.asPlayer(name, "sh", "-c", check)...)
+	// moments.
+	out, code, err := m.client.Try(ctx, name, m.asPlayer(name, "sh", "-c", streamCheck)...)
 	if err != nil || code != 0 {
-		return nil, false
+		return nil, streamUnknown
 	}
 
-	connected, rest, _ := strings.Cut(strings.TrimSpace(out), "\n")
-	if strings.TrimSpace(connected) != "streaming" {
-		return nil, false
+	return parseStreamCheck(out)
+}
+
+// parseStreamCheck reads what streamCheck printed.
+//
+// Its own function because the dangerous case is a reading that is not
+// understood, and that has to be provable without a container: everything that
+// could disturb a stream asks this, and every answer it cannot make sense of
+// has to come back as unknown rather than as an idle seat.
+func parseStreamCheck(out string) (*Session, streamState) {
+	answer, rest, _ := strings.Cut(strings.TrimSpace(out), "\n")
+
+	switch strings.TrimSpace(answer) {
+	case "streaming":
+	case "idle":
+		return nil, streamIdle
+	default:
+		// Neither word means the command did not run as written: a shell that
+		// was not there, an exec that came back empty. Not an idle seat.
+		return nil, streamUnknown
 	}
 
 	var session Session
 	if json.Unmarshal([]byte(strings.TrimSpace(rest)), &session) != nil {
-		return nil, true
+		return nil, streamBusy
 	}
 
 	// An app name is the one field always written, so its absence means the file
 	// is something else entirely rather than a stream nobody named.
 	if session.App == "" {
-		return nil, true
+		return nil, streamBusy
 	}
 
-	return &session, true
+	return &session, streamBusy
+}
+
+// streaming reports whether it is safe to disturb a seat right now, asked fresh
+// rather than taken from the last sweep.
+//
+// The sweep decides a minute in advance and then scans the seat, which reads
+// Steam's manifests, runs Lutris and fetches artwork, so seconds pass between
+// deciding that nobody is streaming and acting on it. Somebody who connects in
+// that window loses their session to a reload that was cleared while they were
+// not there yet. So the one destructive step asks again, immediately before it.
+//
+// Anything but a clear idle counts as busy: this is the guard in front of the
+// step that ends streams.
+func (m *Manager) streaming(ctx context.Context, name string) bool {
+	_, state := m.readSession(ctx, name)
+
+	return state != streamIdle
 }
 
 // readOutput reports the size the seat's screen is actually running at.
