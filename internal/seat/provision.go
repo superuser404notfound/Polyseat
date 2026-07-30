@@ -1387,15 +1387,29 @@ const (
 // folder they installed into, and both are answers this has no business
 // overruling.
 //
-// Only ever with Steam stopped, which is why it is called while provisioning and
-// when a session starts. Steam holds this file in memory and writes it out when
-// it exits, so editing it underneath a running client changes nothing and loses
-// the edit.
+// Only ever with Steam stopped, which the script checks for itself. Steam holds
+// this file in memory and writes it out when it exits, so editing it underneath a
+// running client changes nothing and loses the edit.
+//
+// That check is what lets this also run on the minute, and it is the difference
+// between "restart the seat and it will be right" and "close Steam once and it
+// will be right". The first Steam session after signing in cannot be covered at
+// all: there is no file to write until the account exists, and by then Steam is
+// running. Reordering libraryfolders.vdf so the shared folder comes first was the
+// obvious way around that, and it does not work: Steam puts its own directory
+// back at index 0 on the next start, which was measured rather than assumed.
 const steamDefaultFolder = `
-import glob, os, re, sys
+import glob, os, re, subprocess, sys
 
 mount = sys.argv[1]
 home = sys.argv[2]
+
+# Only with Steam stopped. It keeps this file in memory and writes it out when it
+# exits, so an edit underneath a running client is ignored and then overwritten
+# by the very state it was meant to change.
+if subprocess.run(["pgrep", "-c", "steam"],
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+    raise SystemExit(0)
 
 folders = home + "/.local/share/Steam/config/libraryfolders.vdf"
 

@@ -319,10 +319,23 @@ the places worth guessing: not `libraryfolders.vdf`, not `config.vdf`, not
 `registry.vdf`, and the string appears in none of Steam's binaries in a seat.
 
 It follows that there is nothing to write while a seat is being built: the file
-belongs to an account and nobody has signed in yet. So it is written when a
-session starts as well, the other moment Steam is certainly not running. Steam
-holds that file in memory and writes it out when it exits, so an edit underneath
-a running client is ignored and then overwritten.
+belongs to an account and nobody has signed in yet. So it is also written when a
+session starts, and once a minute after that, with the script standing down while
+Steam is running. Steam holds that file in memory and writes it out when it
+exits, so an edit underneath a running client is ignored and then overwritten by
+the very state it was meant to change.
+
+That means signing in for the first time and installing straight away still lands
+in the private library, and nothing can prevent it. The obvious way around it,
+listing the shared folder first in `libraryfolders.vdf` so that the fallback of
+index 0 points at it, was tried and does not work: with the key removed Steam
+does fall back to index 0, but it also rewrites the file at every start and puts
+its own directory back at the front. Both halves of that were measured in a seat,
+by removing the key and by swapping the entries and looking at which folder
+carries the star in Steam's own storage settings.
+
+What is left is the next best thing, and it is a minute rather than a restart:
+close Steam once and the setting is there.
 
 A value that is already there is never touched. It is either somebody's own
 choice or the last folder they installed into, and neither is this program's to

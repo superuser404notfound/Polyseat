@@ -514,6 +514,7 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		m.mu.Lock()
 		streaming := session != nil
 		due := time.Since(rt.appsChecked) >= appsInterval
+		uid := rt.uid
 
 		// Remembered only when it was actually due, so that the end of a stream
 		// does not always drag an update behind it that nothing asked for.
@@ -529,6 +530,23 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 
 		if due && !streaming {
 			m.refreshApps(ctx, name)
+
+			// Cheap and idempotent: the script returns at once while Steam is
+			// running, and does nothing for an account that already has the
+			// setting. It is here so that signing in for the first time does not
+			// mean restarting the seat to get the install folder right; closing
+			// Steam once is enough.
+			p := &Provisioner{
+				Client: m.client,
+				Seat:   Seat{Name: name},
+				Image:  m.cfg.Image,
+				Log:    func(f string, a ...any) { m.logf(name, f, a...) },
+				uid:    uid,
+			}
+
+			if err := p.writeLauncherDefaults(ctx); err != nil {
+				m.logf(name, "! the launcher defaults could not be written: %v", err)
+			}
 		}
 	}
 
