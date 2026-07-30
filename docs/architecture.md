@@ -696,10 +696,27 @@ Three things carry it into place, because there are three ways an application
 gets started in a seat. Sunshine's app list carries the two variables in its
 `env` block, which Sunshine applies to what it launches and not to itself: the
 same library loaded into Sunshine would be limiting the encoder, and loaded into
-sway it would be limiting the desktop. The launcher passes everything it starts
-through `mangohud` for the same reason. And flatpaks get a user wide override,
-because a sandbox sees neither the seat's environment nor its home directory,
-along with the MangoHud layer extension for whichever runtime version they use.
+sway it would be limiting the desktop. Each game's own launcher entry carries
+them again, in its `Exec` line, for the games somebody starts from the desktop.
+And flatpaks get a user wide override, because a sandbox sees neither the seat's
+environment nor its home directory, along with the MangoHud layer extension for
+whichever runtime version they use.
+
+**The cap goes on games and on nothing else, and that was learned the hard
+way.** It used to reach the desktop from both ends at once: fuzzel had
+`launch-prefix=/usr/bin/mangohud`, so everything started from the launcher was
+wrapped, and the launcher is opened by a Sunshine prep command, so it inherited
+the app environment and passed the preload on to everything, a terminal
+included. Firefox dies of that immediately, every time: measured in a seat,
+SIGSEGV during EGL setup, a minidump written, nothing on screen. Which made the
+browser unusable from the one menu somebody holding a gamepad can reach, and
+pointed at nothing. Steam survived only because MangoHud blacklists
+`steamwebhelper` by name. So the prefix is gone, the launcher unsets
+`LD_PRELOAD` before it starts, and the cap rides on the entries that name a
+game. `MANGOHUD` itself stays set everywhere, because it only enables a Vulkan
+layer and costs nothing outside a Vulkan application. Measured through the entry
+form with glxgears: 21039 fps uncapped, 59.94 with a 60 fps cap. What is no
+longer capped is a game started from an entry Polyseat did not write.
 
 One thing had to be fixed before any of it worked. squeekboard registers a
 virtual keyboard with the compositor when it starts but only gives it a layout

@@ -30,6 +30,21 @@ running() { pgrep -x fuzzel >/dev/null 2>&1; }
 show() {
     running && return 0
 
+    # The desktop does not inherit the OpenGL half of the framerate cap.
+    #
+    # Sunshine applies its app environment to the prep command that opens this,
+    # so without this line everything somebody starts from the launcher, and
+    # everything started from a terminal opened from it, runs with MangoHud's
+    # shim preloaded. Firefox dies of that immediately, every time: measured in
+    # a seat, SIGSEGV during EGL setup with a minidump and nothing on screen.
+    #
+    # Only the preload goes. MANGOHUD stays set, so a Vulkan game started from
+    # the launcher is still capped, and the games Polyseat puts in this menu
+    # carry the preload in their own entries, so they are capped as well. What
+    # loses the cap is a game started by hand that is neither: OpenGL, and not
+    # one of ours.
+    unset LD_PRELOAD
+
     # Detached, because a prep command that does not return holds up the
     # stream it is preparing.
     setsid fuzzel >/dev/null 2>&1 </dev/null &

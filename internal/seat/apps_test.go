@@ -469,8 +469,15 @@ func TestDesktopEntryIsOneKeyPerLine(t *testing.T) {
 		seen[key] = value
 	}
 
-	if seen["Exec"] != "steam steam://rungameid/3751950" {
-		t.Errorf("Exec is %q, want the launch command", seen["Exec"])
+	// The command, behind the framerate cap. The cap is in the entry rather
+	// than in the environment the launcher was started with, because the
+	// desktop deliberately does not carry MangoHud's OpenGL shim: it kills
+	// applications that are not games, Firefox among them.
+	want := "env MANGOHUD=1 LD_PRELOAD=/usr/$LIB/mangohud/libMangoHud_shim.so " +
+		"steam steam://rungameid/3751950"
+
+	if seen["Exec"] != want {
+		t.Errorf("Exec is %q, want %q", seen["Exec"], want)
 	}
 
 	if strings.Contains(seen["Name"], "rm -rf") == false {

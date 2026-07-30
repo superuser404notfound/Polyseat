@@ -371,7 +371,7 @@ func mergeApps(ours []app, existing []byte) (appList, int, error) {
 			// linker, not by a shell, so a 32 bit process picks up the 32 bit
 			// build of the same library.
 			"MANGOHUD":   "1",
-			"LD_PRELOAD": "/usr/$LIB/mangohud/libMangoHud_shim.so",
+			"LD_PRELOAD": mangoHudPreload,
 		},
 	}
 
@@ -821,6 +821,16 @@ func launchTarget(launch string) string {
 	return last
 }
 
+// mangoHudPreload is the OpenGL half of the framerate cap.
+//
+// $LIB is expanded by the dynamic linker rather than by a shell, so a 32 bit
+// process picks up the 32 bit build of the same library. Named here because it
+// is set in two places that cannot share one: Sunshine's environment block, for
+// what a client picks, and each game's own launcher entry, for what somebody
+// picks on the desktop. The desktop itself deliberately has neither, because
+// MangoHud's shim kills applications that are not games. See polyseat-launcher.
+const mangoHudPreload = "/usr/$LIB/mangohud/libMangoHud_shim.so"
+
 // desktopEntry renders one game as a launcher entry.
 func desktopEntry(g Game) []byte {
 	var b strings.Builder
@@ -828,7 +838,12 @@ func desktopEntry(g Game) []byte {
 	b.WriteString("[Desktop Entry]\n")
 	b.WriteString("Type=Application\n")
 	b.WriteString("Name=" + oneLine(g.Name) + "\n")
-	b.WriteString("Exec=" + oneLine(g.Launch) + "\n")
+
+	// The cap travels with the game rather than with the desktop it was started
+	// from. env rather than a shell, so nothing here is interpreted twice, and
+	// the linker still gets its own $LIB unexpanded.
+	b.WriteString("Exec=env MANGOHUD=1 LD_PRELOAD=" + mangoHudPreload + " " +
+		oneLine(g.Launch) + "\n")
 
 	// The card drawn for Moonlight, because it is the picture the seat already
 	// has for this game and a launcher entry with no icon is a blank square.
