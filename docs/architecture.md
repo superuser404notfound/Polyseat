@@ -89,6 +89,15 @@ The chain has two halves:
 3. **Broker** runs `incus config device add <seat> padN unix-char …` and
    `remove` on disconnect.
 
+That is the chain as it was designed, and the name is no longer what decides
+step 2. It turned out to be both forgeable and incomplete, and what replaced it
+is structural: the creating process is read from the kernel, through
+`UI_GET_SYSNAME` for uinput and a kprobe on uhid, the observer the daemon
+supervises alongside each broker. The name survives only as a fast path in the
+udev rule, which closes the exposure window for the devices it does know.
+Measured, including both forgery attempts refused, in
+[`security.md`](security.md).
+
 **Half 2 - enumeration inside the container.** Incus containers have no working
 udev. The node is there, but Steam and SDL *enumerate* gamepads through libudev
 rather than by scanning `/dev/input`. Ways out: `SDL_JOYSTICK_DISABLE_UDEV=1`,
@@ -184,9 +193,12 @@ a PIN, listing paired devices, unpairing one. It uses the same calls Sunshine's
 own page makes, read out of the bundle it ships.
 
 Two things about that path are worth writing down. It goes over the **Incus
-bridge, never the LAN address**, because the seats reach the LAN through macvlan
-and a macvlan interface cannot talk to its own host; using the address Moonlight
-uses produces a timeout that looks like Sunshine being down. And the seat's
+bridge, never the LAN address**. A seat on a macvlan cannot talk to its own
+host, so the address Moonlight uses produces a timeout that looks like Sunshine
+being down. On a bridged uplink that particular obstacle is gone, and the path
+stays the same anyway: which of the two arrangements a seat is in is a setting,
+and a daemon that reached its seats one way here and another way there would
+work until somebody ticked a box. And the seat's
 Sunshine password is **generated once and kept**, because paired devices are
 stored against it and a rebuilt container has to come back with the same one.
 
@@ -272,8 +284,10 @@ With reflinks none of that applies, because at the POSIX level nothing is
 shared. Each Steam sees an ordinary library it owns outright. Copies diverge
 only when a seat updates a game, and then only by the changed blocks.
 
-**Taking part is per seat and off by default**, because this is the only place
-that mounts host storage into a seat. Ticking the box applies straight away:
+**Taking part is per seat**, because this is the only place that mounts host
+storage into a seat. A new seat has it on, since somebody adding a second seat
+to a machine that already has games is asking for exactly this; a seat built
+before M6 keeps what it had, which is off. Ticking the box applies straight away:
 the disk device is hotplugged and the games are cloned in within seconds, no
 provisioning run needed. Turning it off takes the mount away again, and since
 the shared directory is Steam's own library folder rather than a second one,
@@ -1079,6 +1093,52 @@ the repair can be tested at all: the real one needs the Incus socket, which a
 test running as an ordinary user cannot open, and a repair that quietly fails to
 happen looks exactly like one that worked.
 
+## Where a seat sits on the network
+
+Each seat is a host of its own on the LAN with its own address, so it can use
+the standard Sunshine ports and no port juggling is needed. How it gets there
+depends on one thing about the machine, and the daemon reads that rather than
+being told: whether the uplink named in the configuration is a bridge, which is
+`/sys/class/net/<if>/bridge` existing. A plain interface gives the seat a
+**macvlan** on it, a bridge gives it a **port** on that bridge. No new setting,
+and `lanDevice` builds the device for provisioning and for the checkbox below
+from the same rule, or which arrangement a seat ended up in would depend on
+which code path touched it last.
+
+**Why the bridge exists at all.** A macvlan and its parent are kept apart by the
+kernel, deliberately and unconditionally: the host and its seats are on the same
+wire and cannot hear each other, and no route, firewall rule or port forward
+changes it. That is fine until somebody wants to play a local multiplayer game
+between the host and a seat, because those games find each other by
+broadcasting. `host/lan-bridge.sh` makes the uplink a bridge and moves the
+address onto it. Measured after the change on this machine: ping both ways, UDP
+broadcast in all three directions (host to seat, seat to host, seat to seat),
+and a gateway round trip of 0.640 ms against 0.647 ms before, so bridging costs
+nothing measurable.
+
+**An interface with macvlan children cannot be enslaved to a bridge.** The
+kernel answers `EBUSY`, and moving the children into another network namespace
+does not help; reproduced on a dummy interface three ways. Worse, none of it is
+visible from the host, since `/sys/class/net/<if>/upper_*` only shows the current
+namespace, so the question "does anything have a macvlan on this uplink" has to
+be asked of Incus. Getting that wrong once cost this machine its LAN: the script
+built the bridge, moved the address, failed silently at the enslave and reported
+success. It now stops the seats first, rolls back everything from the first
+change on any failure, and calls it a success only when the interface really is
+a port, the bridge really has the address, and the gateway really answers over
+it.
+
+**Which side of the line a seat is on is a checkbox on the seat**, on for a new
+one. A seat with it off gets a macvlan on the bridge rather than a port on it,
+which restores exactly the isolated arrangement for that one seat: it reaches
+the gateway and the other seats and cannot reach the host, and the host cannot
+reach it. No nftables rule is involved; it is the same macvlan property as
+before. The MAC is pinned and carried across the switch, because Incus otherwise
+generates a new one, the new one gets a new DHCP lease, and the seat moves to a
+different address the first time somebody ticks the box. What that costs on the
+security side is in [`security.md`](security.md), and it is a real cost: the
+bridge is the removal of a line that used to hold.
+
 ## Capacity
 
 Reference machine: RTX 4080 (16 GB), 24 cores, **31 GB RAM**, btrfs.
@@ -1109,9 +1169,13 @@ into the container itself. Attribution is then **structural**. It knows which
 container created a device because it mediated the call, so there is no name
 tag, no regular expression and no polling of `/sys`.
 
-That is strictly nicer than what we do. Our broker infers ownership from a name
-that Sunshine happens to write, which means it depends on a third party's
-formatting staying stable.
+That was strictly nicer than what we did at the time this was written, when the
+broker inferred ownership from a name Sunshine happens to write. It no longer
+describes the difference: attribution here is structural too. For uinput the
+creating descriptor is asked directly through `UI_GET_SYSNAME`, and for uhid a
+kprobe records the creating process at the moment the kernel makes the device.
+Names decide nothing, and a device called something nobody listed is attributed
+correctly anyway.
 
 **We are still not using it, for one concrete reason: vuinputd proxies
 `/dev/uinput` only, not `/dev/uhid`.** And we measured in M3 that Sunshine
@@ -1122,8 +1186,13 @@ the project alpha.
 
 Our approach covers keyboard, mouse, touch, pen and gamepad today, verified on
 real hardware, and puts nothing in the event path between Sunshine and the
-kernel. If vuinputd gains uhid support, replacing the broker's name correlation
-with it would be a clear improvement and should be reconsidered then.
+kernel. What is left to envy is that vuinputd never has to attribute a device at
+all, because it mediated its creation; ours attributes after the fact, and pays
+for it with the half second before the broker's next pass for a device that is
+neither named in the udev rule nor made through uhid. Gamepads and their raw HID
+nodes are sealed at creation and are not in that gap, which
+[`security.md`](security.md) measures. If it gains uhid support, it is worth
+reconsidering for that reason and not for the old one.
 
 ## Rejected alternatives
 

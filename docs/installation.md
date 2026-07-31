@@ -185,6 +185,12 @@ directions: a missing games feature is no reason to take every seat down, and a
 pool that quietly made full copies would fill the disk and only announce itself
 when there was no space left to fix it in.
 
+Nothing has to be set up for the games already on the machine, either. The daemon
+looks for a Steam library on the host on every pass and takes it into the pool
+when there is exactly one and it can share blocks with the pool, so this is one
+more thing the installer has no business doing: the library may well be installed
+after Polyseat is, and a one-time step at install time would miss it.
+
 Everything else in Polyseat works on any filesystem.
 
 ### Host-side pieces
@@ -207,11 +213,13 @@ filesystem instead of asking its name, by cloning a file the way the daemon does
 at startup, and says plainly when the answer is no. Nothing fails on a no: every
 other part of Polyseat works on any filesystem and the library simply stays off.
 
-**Whether there is an uplink for the seats.** Each seat gets a macvlan interface
-so it is a host of its own on the LAN. Two things make that impossible and both
-are quiet: no default route to take the interface from, and a wireless one,
-where macvlan cannot work at all because 802.11 does not carry more than one MAC
-address per association.
+**Whether there is an uplink for the seats.** Each seat becomes a host of its own
+on the LAN, through a macvlan on the uplink or, where the uplink is a bridge,
+through a port on that bridge. Two things make that impossible and both are
+quiet: no default route to take the interface from, and a wireless one, where
+macvlan cannot work at all because 802.11 does not carry more than one MAC
+address per association, and where bridging a station interface does not work
+either for the same reason.
 
 ### Optional hardening
 
@@ -221,10 +229,11 @@ its text consoles. That judgement belongs to the operator, not to an installer.
 
 ## What the daemon does instead
 
-Everything per-seat and everything at runtime. Today it lives as shell scripts
-under `spike/m1-seat/` and moves into the daemon in M5:
+Everything per-seat and everything at runtime. This was a list of shell scripts
+under `spike/m1-seat/` until M5; it is the daemon's own work now, and the scripts
+are kept as the record of how each step was arrived at:
 
-* create the container, attach the macvlan interface, configure DHCP
+* create the container, attach its LAN interface, configure DHCP
 * install packages inside the seat, including Steam in the base image
 * repair the NVIDIA userspace that `nvidia.runtime` does not bring, or on AMD
   install Mesa and Vulkan as packages and repair nothing

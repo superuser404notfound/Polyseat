@@ -26,7 +26,7 @@ input devices, shares the game library, and repairs what drifts.
 | **Packages** | `incus`, `bpftrace`, `python`, `go`, plus `nvidia-container-toolkit` on NVIDIA. The installer works out which card is in the machine first and installs whichever of them are missing. |
 | **GPU** | **NVIDIA**, with the driver installed and answering. `nvidia-utils` carries the two libraries NVENC needs, `libcuda.so.1` and `libnvidia-encode.so.1`, and the container toolkit injects them into every seat. `lib32-nvidia-utils` as well, or 32 bit games will not find the GPU. The `cuda` package is the toolkit and is **not** needed.<br><br>**AMD** works differently and is simpler: `amdgpu` on the host is the whole requirement, and Mesa goes into each seat as an ordinary package, so no host driver update can leave a seat behind. Encoding is VA-API, the only hardware path AMD has on Linux. **This path has never been run on real hardware**, see [docs/amd.md](docs/amd.md) for what was verified and what was not.<br><br>Either way the installer refuses rather than warns if the driver is missing, because a seat without it comes up, streams in software and looks perfectly healthy. |
 | **Filesystem** | btrfs, or XFS created with `reflink=1`, **and only for the shared game library**. `ext4` cannot share blocks, and neither can tmpfs or a network filesystem. Seats still work on those; the shared library simply stays off and every seat downloads its own games. The installer tests it and says which it found. |
-| **Network** | One wired interface the seats can take a macvlan from, so each seat is a host of its own on the LAN and can use the standard Sunshine ports. |
+| **Network** | One wired interface, so each seat is a host of its own on the LAN and can use the standard Sunshine ports. Seats take a macvlan from it, or a port on it where it is a bridge, which is what `host/lan-bridge.sh` makes it and what local multiplayer between the host and a seat needs. Wireless cannot do either: 802.11 carries one MAC address per association. |
 
 **1. Install it, once per machine:**
 
@@ -111,6 +111,21 @@ as nothing in it is using the shared files.
 where one folder is one game; point Heroic, Lutris or Bottles at it and the game
 appears in the other seats by itself.
 
+**Every seat carries Proton CachyOS** alongside Valve's own, from the project's
+GitHub releases rather than from a package repository, so a seat stays a plain
+Arch container that trusts no extra source. It is set as the seat's default
+compatibility tool, it keeps itself up to date, and it waits for a seat that is
+neither streaming nor holding the files open before it replaces anything.
+
+**A seat can be on the same network segment as the host, or behind a line.**
+Seats are hosts of their own on the LAN either way. `host/lan-bridge.sh` turns
+the uplink into a bridge, which is what local multiplayer between the host and a
+seat needs, since those games find each other by broadcasting and a macvlan
+cannot hear its own parent. Whether a particular seat takes part in that is a
+checkbox on its card: turned off it goes back behind the line, reaching the
+gateway and the other seats but not this machine, and this machine not reaching
+it.
+
 **A seat is something you can sit down in front of.** Connecting lands on a
 desktop with an application launcher, a bar and a file manager, not on a bare
 terminal. Moonlight's app list is generated from what the seat really has, with
@@ -145,7 +160,7 @@ holding two of Select, Start and Guide for a second overrides that by hand - the
 pad buzzes to say it took. How fast it moves is a slider on the seat's card that
 takes effect while somebody is holding the controller.
 
-Confirmed on real hardware, most recently on 2026-07-30. The logs of each step
+Confirmed on real hardware, most recently on 2026-07-31. The logs of each step
 live in [`spike/`](spike/) and record what works, what does not, and why.
 
 ## Day to day

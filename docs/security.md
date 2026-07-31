@@ -2,7 +2,8 @@
 
 What this setup actually guarantees, what it deliberately does not, and why.
 Everything here was measured on the running two-seat rig rather than reasoned
-about, on 2026-07-28 and, for what M7 added, on 2026-07-29.
+about: on 2026-07-28, for what M7 added on 2026-07-29, and for the bridged
+uplink and the per seat isolation on 2026-07-31.
 
 ## The threat model
 
@@ -43,6 +44,18 @@ is interesting under the threat model above, where the seats belong to people
 in the same house who could equally hand each other a file by any other means.
 Both would matter if a seat were ever given to a stranger, which is one more
 reason not to.
+
+**And "the other seats" now includes the host.** The host's own Steam library is
+a member of the pool, so a game directory a seat contributes is cloned into it,
+under the ownership of whoever that library belongs to, where that person's own
+Steam will list it and run it. Since the daemon adopts the host's library by
+itself when it finds exactly one, that path exists on a machine where nobody
+pressed anything. This is a real widening and it is worth being plain about:
+under the threat model it is the same house handing itself a file, and the seat
+already had that reach through the pool; for a seat given to a stranger it is
+the shortest path from that seat to code running as the person at the keyboard.
+The way to close it is the same button that opened it, "Stop watching" on that
+library, which the daemon then leaves alone for good.
 
 **The Incus socket is not reachable from a seat.** It is `root:incus-admin 0660`
 on the host and not passed through, so a seat cannot manage containers.

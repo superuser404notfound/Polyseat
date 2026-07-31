@@ -356,7 +356,9 @@ function renderLibrary() {
           textContent:
             "Nothing in the pool yet. Install a game in any seat that takes part " +
             "and it appears here within a minute, then in the other seats. " +
-            "Games already on the host can be brought in with Import.",
+            "The games already on this host come in by themselves once their " +
+            "Steam library is watched, which the daemon does for you where it " +
+            "can.",
         }),
         // Worth the most here of anywhere: an empty pool on a machine that has
         // a Steam library full of games is exactly the state this is for.
