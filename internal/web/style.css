@@ -63,9 +63,19 @@ h1 {
 .host {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.5rem;
   color: var(--dim);
   font-size: 0.85rem;
+}
+
+/* The GPU pill carries a full PCI address and render node, which is wider than
+   a phone. Nowrap is right for the short pills, wrong for that one, so here the
+   text breaks instead of pushing the page sideways. */
+.host .pill {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 main {
