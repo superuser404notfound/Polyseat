@@ -703,9 +703,25 @@ client produces.
 
 The override holds until something goes fullscreen or stops being: that covers a
 windowed game, and it means a forgotten override cannot leave somebody holding a
-stick that does nothing. The gamepad is never
-grabbed, so games see it exactly as before. Left stick points and right stick
-scrolls, which is the way round the Windows tools do it and worth matching.
+stick that does nothing. The gamepad is never grabbed, so games see it exactly
+as before. Left stick points and right stick scrolls, which is the way round the
+Windows tools do it and worth matching.
+
+**The buttons are the ones those tools already trained.** A clicks, X right
+clicks, B is Escape, Y and a short press of Start are Enter; JoyXoff's primary
+bindings are the same arrangement, and B for cancel is what every menu on the
+machine does anyway. Start is the interesting one, because it is also half the
+chord: it cannot act when it goes down, since that is the moment somebody may be
+starting to hold it, so it acts on release and only if nothing joined it. The
+same shape would be needed for anything else put on a chord button.
+
+**Watch the evdev names while reading that code.** `BTN_NORTH` is the X button
+and `BTN_WEST` is the Y button - they read like positions and are the old
+`BTN_X` and `BTN_Y`. Checked against inputtino, which builds the pad Sunshine
+hands to a seat. The mapping was once right in the code and backwards in the
+seat's help text for exactly this reason, and nobody holding a controller can
+tell which of the two is lying, so a test now reads the help text and compares
+it against what the helper actually does.
 
 **How fast it moves is a fraction of the screen, not a number of pixels.** A
 seat's output becomes whatever size the connected client asked for, so a fixed
