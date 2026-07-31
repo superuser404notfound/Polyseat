@@ -220,24 +220,42 @@ func (p *Provisioner) waitSystemd(ctx context.Context) error {
 
 func (p *Provisioner) stepNetwork(ctx context.Context) error {
 	// eth0 stays on the Incus bridge and is the management path the daemon
-	// talks over. eth1 sits directly in the LAN via macvlan, so Moonlight sees
-	// the seat as a host of its own and every seat can use the standard
-	// Sunshine ports without any juggling.
+	// talks over. eth1 sits directly in the LAN, so Moonlight sees the seat as a
+	// host of its own and every seat can use the standard Sunshine ports
+	// without any juggling.
 	//
-	// Known property of macvlan: host and container cannot reach each other
-	// over it. That is what eth0 is for, and it is also a large part of why a
-	// seat cannot attack the host over the network.
+	// How eth1 gets there depends on what the uplink is, and the difference is
+	// one nobody should have to configure twice: it is already visible from the
+	// interface itself.
+	//
+	// A plain interface gives a macvlan, and macvlan has the known property
+	// that host and container cannot reach each other over it. That is what
+	// eth0 is for, and it is a large part of why a seat cannot attack the host
+	// over the network.
+	//
+	// A bridge gives an ordinary port on that bridge, and then the host is on
+	// the same segment as the seats: they see each other's broadcasts and can
+	// play the same game over the local network, which macvlan makes impossible
+	// no matter what is configured on either side. It also costs the isolation
+	// that macvlan was giving away for free, and docs/security.md says so.
+	nictype := "macvlan"
+	if isBridge(p.Uplink) {
+		nictype = "bridged"
+	}
+
 	_, err := p.Client.Configure(ctx, p.name(), nil, map[string]map[string]string{
 		"eth1": {
 			"type":    "nic",
-			"nictype": "macvlan",
+			"nictype": nictype,
 			"parent":  p.Uplink,
 			"name":    "eth1",
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("attach the macvlan interface to %s: %w", p.Uplink, err)
+		return fmt.Errorf("attach the %s interface to %s: %w", nictype, p.Uplink, err)
 	}
+
+	p.Log("the seat is on the LAN through %s as a %s interface", p.Uplink, nictype)
 
 	// The LAN wins the default route, and it has to win it explicitly.
 	//

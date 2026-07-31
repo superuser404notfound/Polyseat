@@ -51,9 +51,12 @@ on the host and not passed through, so a seat cannot manage containers.
 `/` and on `/api/config`. The credentials live in a separate `credentials/`
 directory rather than in `sunshine_state.json`.
 
-**A seat cannot reach the host over the LAN.** That is the macvlan property:
-`ping` from either seat to the host's LAN address fails. The management bridge
-is a separate matter, see below.
+**A seat cannot reach the host over the LAN**, as long as the uplink is a plain
+interface. That is the macvlan property: `ping` from either seat to the host's
+LAN address fails. It stops being true the moment the uplink is made a bridge,
+which `host/lan-bridge.sh` does and which is the only way to play a local
+multiplayer game between the host and a seat; see below. The management bridge
+is a separate matter, also below.
 
 **Input devices are attributed structurally**, not by the name their creator
 chose. For uinput the creating descriptor is asked directly through
@@ -291,6 +294,29 @@ every other machine on it, but not the host over that path. **This is the
 assumption that breaks first if a seat is ever given to somebody you do not
 trust.** The fix then is a separate VLAN or an isolated bridge rather than
 macvlan onto the main network.
+
+### Bridging the uplink gives that last line away deliberately
+
+`host/lan-bridge.sh` makes the uplink a bridge and gives the host its address
+there, and the daemon then gives seats a port on that bridge instead of a
+macvlan. The host and the seats become devices on one segment.
+
+That is not a tweak, it is the removal of the `blocked` line above. It is also
+the only thing that makes local multiplayer between the host and a seat
+possible: games find each other by broadcasting on the network they are on, and
+macvlan means the host and the seats are on the same wire with no way to hear
+each other. No route, no firewall rule and no port forward changes that; the
+kernel keeps a macvlan and its parent apart by design.
+
+After bridging, a seat reaches everything on the host that the host is listening
+on, which today is Polyseat's own interface on 47800 and whatever else is
+running there. Everything in "Seats reach the host on the management bridge"
+below then applies to the LAN path as well, and the hardening in that section is
+what is left holding. Worth it for a machine whose seats are for people in the
+same room, which is what this is for; not worth it for a seat handed to somebody
+you do not trust, and that was already the case before this existed.
+
+`sudo host/lan-bridge.sh --undo` puts the macvlan arrangement back.
 
 ### Seats reach the host on the management bridge
 
