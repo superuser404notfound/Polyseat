@@ -1,12 +1,19 @@
 # Host-side artifacts
 
-Things that live on the host rather than inside a seat. The daemon will
-eventually generate and maintain these; for now they are applied by hand.
+Things that live on the host rather than inside a seat. `install.sh` puts them
+where they belong; the rest are run by hand, when you want them.
 
 | | |
 |---|---|
-| `72-polyseat-hide.rules` | udev rule that keeps the seats' virtual devices off the host desktop, input and raw HID alike |
+| `install.sh` | sets the machine up, builds and installs the daemon, and restarts it if it was already running. `--uninstall`, `--purge` and `--purge --library` take it back out |
+| `update.sh` | moves the checkout to the newest release and hands over to `install.sh`. Refuses a checkout with uncommitted work, waits for nobody to be streaming. `--check`, `--now`, `--tag`, `--yes` |
+| `lan-bridge.sh` | turns the uplink into a bridge, which is what local multiplayer between the host and a seat needs. `--undo` puts it back |
+| `reset-machine.sh` | puts the machine back the way it was before Polyseat, keeping the game library |
 | `check-hardening.sh` | reports host-side exposures that no seat-side measure can close |
+| `test-install.sh` | runs `install.sh` against a fresh VM, which is the only way to test the parts that only a fresh machine reaches |
+| `test-gpu-detect.sh` | checks the card detection against made up `/dev/dri` layouts |
+| `72-polyseat-hide.rules` | udev rule that keeps the seats' virtual devices off the host desktop, input and raw HID alike |
+| `polyseatd.service` | the one unit. The broker and observer units it replaced are removed by `install.sh` |
 
 ## Why the udev rule is not optional
 

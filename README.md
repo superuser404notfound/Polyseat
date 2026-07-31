@@ -196,26 +196,43 @@ host/check-hardening.sh     # console and device exposures
 journalctl -fu polyseatd
 ```
 
-**Updating.** Check out the newer tag and run the installer again:
+**Updating.** The interface says when a newer version has been published. Taking
+it is one command:
+
+```
+sudo host/update.sh          # --check to look without changing anything
+```
+
+It refuses a checkout with uncommitted work in it, and it waits for a moment
+when nobody is streaming, because installing restarts the daemon and that takes
+every seat's input broker with it. `--now` skips the waiting and `--tag v0.1.0`
+goes to a particular release, older ones included.
+
+By hand is the same thing and stays supported:
 
 ```
 git fetch --tags
-git checkout v0.1.0     # or whichever is newest
+git checkout v0.2.0
 sudo host/install.sh
 ```
 
-That rebuilds the daemon and restarts it if it was running, which is the step
-that makes an update take effect at all: building a new binary does not disturb
-the process using the old one. Seats that exist are not touched. If the new
-version builds them differently the interface names the ones that are behind and
-offers one button to bring them up to date, at a moment you pick rather than
-in the middle of somebody's game.
+Either way the daemon is rebuilt and restarted, which is the step that makes an
+update take effect at all: building a new binary does not disturb the process
+using the old one. Seats that exist are not touched. If the new version builds
+them differently the interface names the ones that are behind and offers one
+button to bring them up to date, at a moment you pick rather than in the middle
+of somebody's game.
 
 Which version is actually serving is at the bottom of the interface, in
 `polyseatd -version`, and in the journal at every start. It is the tag it was
-built from, so a build from an untagged commit says so. Nothing asks GitHub
-whether there is a newer one yet; [`CHANGELOG.md`](CHANGELOG.md) is where the
-differences are written down.
+built from, so a build from an untagged commit says so and is told about no
+updates: there is nothing sensible to compare it with.
+
+The check itself is one request to GitHub every six hours, it sends nothing
+about the machine, and it never installs anything. `"update_check": false` in
+`/etc/polyseat/polyseatd.json` turns it off.
+[`CHANGELOG.md`](CHANGELOG.md) is where the differences between versions are
+written down.
 
 **Removing it** leaves your seats alone: `sudo host/install.sh --uninstall`
 takes out the daemon, its unit, the udev rule and the helpers, and touches

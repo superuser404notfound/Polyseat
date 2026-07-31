@@ -449,6 +449,24 @@ nobody rewrote in transit.
 `0.0.0.0:27036` for Remote Play discovery. Reachable from the LAN like any other
 seat port.
 
+### The daemon asks GitHub whether there is a newer Polyseat
+
+Once a minute after it starts and once every six hours after that, one GET to
+`api.github.com` for this project's latest release. It carries no identifier, no
+host name and nothing about the machine beyond what any HTTP request carries,
+which is an address and a user agent, and the answer is a version number that
+goes into a line in the interface. **Nothing is ever downloaded or installed by
+it**: updating is `host/update.sh`, run by somebody who chose the moment.
+
+What it does give away is that a machine at that address runs something which
+watches this repository, to GitHub and to anybody who can see the connection.
+`"update_check": false` in `/etc/polyseat/polyseatd.json` turns it off, and then
+no request is made at all.
+
+Seats make their own requests for their own reasons, and those are not affected
+by this setting: Sunshine and Proton CachyOS come from GitHub releases, box art
+comes from Steam, and a seat installs its own software.
+
 ### The kernel console
 
 Virtual keyboards reach the kernel VT and sysrq handlers exactly like a physical

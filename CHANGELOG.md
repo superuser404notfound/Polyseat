@@ -10,6 +10,27 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## Unreleased
+
+Seats are untouched by this one. Nothing in it changes how a seat is built, so
+updating to it is a rebuild and a restart of the daemon and no more.
+
+- **The interface says when a newer Polyseat has been published.** One request
+  to GitHub every six hours, a line at the top when there is something to say,
+  and nothing else: it never downloads and never installs. It sends nothing
+  about the machine, and `"update_check": false` in the configuration turns it
+  off, after which no request is made at all.
+- Only a build sitting exactly on a release tag is told anything. A build from
+  an untagged commit cannot be compared with a release, and being told to
+  "update" to something older than what is running is worse than silence.
+- **`host/update.sh`** does the update: fetch, check out the newest release, run
+  the installer. It refuses a checkout with uncommitted work in it rather than
+  stashing or forcing, and it waits for a moment when nobody is streaming,
+  because installing restarts the daemon and that takes every seat's input
+  broker with it. `--check` looks without changing anything, `--now` skips the
+  waiting, `--tag` goes to a particular release.
+- Doing it by hand is unchanged and still documented.
+
 ## 0.1.0
 
 The first release, and the state the project was in when it stopped being an
