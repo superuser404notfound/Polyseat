@@ -41,7 +41,7 @@ func (m *Manager) uplink() string {
 // gives it to nothing else. Asking that is exact and needs no tools; parsing
 // the output of ip link would be the same answer with a fork and a format that
 // is allowed to change.
-func isBridge(iface string) bool {
+func IsBridge(iface string) bool {
 	if iface == "" {
 		return false
 	}
@@ -64,7 +64,7 @@ func isBridge(iface string) bool {
 func (m *Manager) Uplink() string { return m.uplink() }
 
 // UplinkBridged reports whether that interface is a bridge.
-func (m *Manager) UplinkBridged() bool { return isBridge(m.uplink()) }
+func (m *Manager) UplinkBridged() bool { return IsBridge(m.uplink()) }
 
 // lanDeviceName is the seat's interface onto the LAN. eth0 is the management
 // path on the Incus bridge and is not this.
@@ -95,7 +95,7 @@ const lanDeviceName = "eth1"
 // a checkbox.
 func lanDevice(uplink, hwaddr string, isolated bool) map[string]string {
 	nictype := "macvlan"
-	if isBridge(uplink) && !isolated {
+	if IsBridge(uplink) && !isolated {
 		nictype = "bridged"
 	}
 
@@ -176,7 +176,7 @@ func (m *Manager) applyNetwork(ctx context.Context, s Seat) error {
 		return err
 	}
 
-	if !isBridge(uplink) {
+	if !IsBridge(uplink) {
 		m.logf(s.Name, "! %s is not a bridge, so this seat cannot reach the host "+
 			"over the LAN either way, see host/lan-bridge.sh", uplink)
 

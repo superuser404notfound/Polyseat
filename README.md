@@ -192,9 +192,19 @@ whole machine was built for is in the header, beside the host name.
 For the host itself:
 
 ```
+sudo polyseatd -report      # everything about this installation, in one go
 host/check-hardening.sh     # console and device exposures
 journalctl -fu polyseatd
 ```
+
+**`polyseatd -report` is what to put in a bug report.** Version, distribution,
+kernel, card and driver, Incus, whether the library filesystem can really share
+blocks, the uplink and whether it is a bridge, every seat and which recipe built
+it, and the last 200 journal lines. It runs without the daemon, which is the
+point: it is wanted most on a machine where the daemon will not start. It reads
+and changes nothing, and it opens no password, key or certificate. It does carry
+this machine's host name, its seat names and their private addresses, and it
+says so at the top, so read it before pasting it somewhere public.
 
 **Updating.** The interface says when a newer version has been published. Taking
 it is one command:

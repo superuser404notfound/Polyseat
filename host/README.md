@@ -10,6 +10,7 @@ where they belong; the rest are run by hand, when you want them.
 | `lan-bridge.sh` | turns the uplink into a bridge, which is what local multiplayer between the host and a seat needs. `--undo` puts it back |
 | `reset-machine.sh` | puts the machine back the way it was before Polyseat, keeping the game library |
 | `check-hardening.sh` | reports host-side exposures that no seat-side measure can close |
+| (`polyseatd -report`) | not in this directory, but this is where people look: one description of the whole installation, for a bug report. Runs without the daemon |
 | `test-install.sh` | runs `install.sh` against a fresh VM, which is the only way to test the parts that only a fresh machine reaches |
 | `test-gpu-detect.sh` | checks the card detection against made up `/dev/dri` layouts |
 | `72-polyseat-hide.rules` | udev rule that keeps the seats' virtual devices off the host desktop, input and raw HID alike |

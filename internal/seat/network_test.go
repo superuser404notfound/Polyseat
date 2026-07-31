@@ -15,7 +15,7 @@ func TestIsBridge(t *testing.T) {
 	// incusbr0 is a bridge and it is on every machine this daemon runs on,
 	// which is what makes it usable as the positive case here.
 	if _, err := os.Stat("/sys/class/net/incusbr0/bridge"); err == nil {
-		if !isBridge("incusbr0") {
+		if !IsBridge("incusbr0") {
 			t.Error("incusbr0 is a bridge and was not recognised as one")
 		}
 	} else {
@@ -30,7 +30,7 @@ func TestIsBridge(t *testing.T) {
 		".",
 		"..",
 	} {
-		if isBridge(name) {
+		if IsBridge(name) {
 			t.Errorf("%q was taken for a bridge", name)
 		}
 	}

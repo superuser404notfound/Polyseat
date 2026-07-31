@@ -42,18 +42,27 @@ jobs:
       # exists to clone game directories would be checked by nobody. Half a
       # gigabyte of btrfs in a file fixes that.
       #
-      # librsvg and Pillow are here for the same reason: the seat package skips
-      # its icon and box art tests without them.
+      # The packages are here for the same reason: without them the seat package
+      # skips its icon tests (librsvg), its box art tests (Pillow) and every one
+      # of its gamepad pointer tests (evdev, which the helper imports at the
+      # top). The first run of this workflow skipped seventeen tests, and that
+      # is how these three were found rather than guessed at.
+      #
+      # The bridge is a real one by the name the network tests look for. They
+      # ask sysfs whether an interface is a bridge, which is a question only a
+      # real interface can answer, and skip when there is none. It needs no
+      # address and is never brought up.
       - name: A filesystem that can share blocks, and the helpers the tests use
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq btrfs-progs librsvg2-bin python3-pil
+          sudo apt-get install -y -qq btrfs-progs librsvg2-bin python3-pil python3-evdev
           truncate -s 512M /tmp/reflink.img
           mkfs.btrfs -q /tmp/reflink.img
           sudo mkdir -p /mnt/reflink
           sudo mount -o loop /tmp/reflink.img /mnt/reflink
           sudo chmod 0777 /mnt/reflink
           echo "POLYSEAT_TEST_DIR=/mnt/reflink" >> "$GITHUB_ENV"
+          sudo ip link add incusbr0 type bridge
 
       - name: gofmt
         run: |

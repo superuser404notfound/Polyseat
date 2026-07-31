@@ -24,6 +24,7 @@ import (
 	"github.com/superuser404notfound/Polyseat/internal/auth"
 	"github.com/superuser404notfound/Polyseat/internal/config"
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
+	"github.com/superuser404notfound/Polyseat/internal/report"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
 	"github.com/superuser404notfound/Polyseat/internal/update"
 	"github.com/superuser404notfound/Polyseat/internal/version"
@@ -33,10 +34,30 @@ func main() {
 	configPath := flag.String("config", config.DefaultPath, "path to the bootstrap configuration")
 	listen := flag.String("listen", "", "override the listen address from the configuration")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	writeReport := flag.Bool("report", false, "describe this installation on stdout and exit, for a bug report")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println("polyseatd", version.Version)
+
+		return
+	}
+
+	// Before the root check and before anything is opened, because the report
+	// is wanted most on a machine where the daemon will not run. It says which
+	// parts it could not read rather than refusing to say anything.
+	if *writeReport {
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			// Not fatal. A configuration that cannot be parsed is one of the
+			// things a report should be able to describe, so it carries on with
+			// the defaults and says so.
+			fmt.Fprintf(os.Stderr, "the configuration could not be read, reporting on the defaults instead: %v\n", err)
+
+			cfg = config.Default()
+		}
+
+		report.Write(os.Stdout, cfg, version.Version, time.Now())
 
 		return
 	}
