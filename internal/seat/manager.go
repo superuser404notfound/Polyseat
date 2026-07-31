@@ -104,7 +104,7 @@ type runtime struct {
 
 	output         string
 	session        *Session
-	devices        []string
+	devices        []InputDevice
 	checked        time.Time
 
 	// appsChecked is when the Moonlight app list was last rebuilt from what the
@@ -1316,21 +1316,29 @@ func (m *Manager) asPlayer(name string, argv ...string) []string {
 	return append(prefix, argv...)
 }
 
-func (m *Manager) attachedDevices(name string) ([]string, error) {
+func (m *Manager) attachedDevices(name string) ([]InputDevice, error) {
 	inst, _, err := m.client.Instance(name)
 	if err != nil {
 		return nil, err
 	}
 
-	var out []string
+	var out []InputDevice
 
 	for dev := range inst.Devices {
 		if strings.HasPrefix(dev, devicePrefix) {
-			out = append(out, strings.TrimPrefix(dev, devicePrefix))
+			out = append(out, describeInput(strings.TrimPrefix(dev, devicePrefix), name))
 		}
 	}
 
-	sort.Strings(out)
+	// By what somebody reads rather than by the node, so the list keeps the same
+	// order when a device is unplugged and comes back as a different number.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+
+		return out[i].Node < out[j].Node
+	})
 
 	return out, nil
 }

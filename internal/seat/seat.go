@@ -190,7 +190,7 @@ type Status struct {
 	Broker string `json:"broker"`
 
 	// Devices currently attached to the seat by the broker.
-	Devices []string `json:"devices,omitempty"`
+	Devices []InputDevice `json:"devices,omitempty"`
 
 	// Busy names the long running operation in progress, empty when idle.
 	Busy string `json:"busy,omitempty"`

@@ -13,7 +13,7 @@
   <div class="host">
     <span id="hostname"></span>
     <span id="observer" class="pill" title="The uhid observer records which container created which gamepad."></span>
-    <span id="gpu" class="pill" title="The card every seat on this machine is built for. NVIDIA seats encode with NVENC, AMD seats with VA-API." hidden></span>
+    <span id="gpu" class="pill" title="The card every seat on the host is built for. NVIDIA seats encode with NVENC, AMD seats with VA-API." hidden></span>
     <span id="link" class="pill offline">offline</span>
     <button id="account" class="quiet" hidden>Account</button>
   </div>
@@ -24,7 +24,7 @@
   <form id="setup-form" hidden>
     <h2>Choose a password</h2>
     <p class="hint">
-      Nobody has claimed this machine yet, so the first person to open this page
+      Nobody has claimed this host yet, so the first person to open this page
       sets the password. Do it now rather than later: until it is set, anybody
       who can reach this page can set it instead.
     </p>
@@ -154,7 +154,7 @@
 
     <label class="check">
       <input type="checkbox" name="host_access" checked>
-      Let this seat and this machine reach each other on the network
+      Let this seat and the host reach each other on the network
     </label>
     <small class="standalone" id="editor-host-access-note"></small>
 
@@ -173,7 +173,7 @@
 
     <p class="hint">
       Takes an existing Steam library into the pool and keeps watching it, which
-      is how the games already on this machine reach the seats and stay in step
+      is how the games already on the host reach the seats and stay in step
       afterwards. Nothing is moved or deleted and nothing is ever written back:
       the files stay where they are and the pool shares their blocks.
     </p>

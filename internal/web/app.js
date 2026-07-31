@@ -356,7 +356,7 @@ function renderLibrary() {
           textContent:
             "Nothing in the pool yet. Install a game in any seat that takes part " +
             "and it appears here within a minute, then in the other seats. " +
-            "Games already on this machine can be brought in with Import.",
+            "Games already on the host can be brought in with Import.",
         }),
         aside,
       ].filter(Boolean),
@@ -396,7 +396,7 @@ function renderLibrary() {
           (receiving
             ? " Games from the seats are cloned back into " +
               receiving +
-              ", where this machine's Steam finds them. Steam picks up a title" +
+              ", where the host's Steam finds them. Steam picks up a title" +
               " it did not install itself the next time it starts." +
               (sources.length > 1
                 ? " The other watched libraries are read only."
@@ -1271,7 +1271,26 @@ function facts(seat) {
   }
 
   row("Input broker", seat.broker, seat.broker === "running" ? null : "flag");
-  row("Devices", (seat.devices || []).join(", ") || "none attached");
+  // What each device calls itself, not the kernel's number for it. eventN says
+  // nothing about whether a controller arrived, which is the only question this
+  // row is ever asked. The number is kept as the hover text, because it is what
+  // every log line and every Incus attachment is named after.
+  const devices = seat.devices || [];
+
+  if (devices.length === 0) {
+    row("Devices", "none attached");
+  } else {
+    const names = document.createElement("span");
+
+    devices.forEach((device, i) => {
+      const span = document.createElement("span");
+      span.textContent = (i ? ", " : "") + (device.name || device.node);
+      span.title = device.node;
+      names.append(span);
+    });
+
+    row("Devices", names);
+  }
 
   // What the session comes up with, and what it is running at now. They differ
   // whenever somebody is connected, because the output is virtual and becomes
@@ -1291,7 +1310,7 @@ function facts(seat) {
   // machine once per seat.
   if (state.host.uplink_bridged) {
     row(
-      "Reaches this machine",
+      "Reaches the host",
       seat.isolated ? "no, isolated on a macvlan" : "yes, on " + state.host.uplink,
     );
   }
@@ -1658,13 +1677,13 @@ function describeHostAccess() {
   note.textContent = box.checked
     ? "This seat is a port on " +
       host.uplink +
-      ", so it and this machine are on one network segment: they see each " +
+      ", so it and the host are on one network segment: they see each " +
       "other's broadcasts and can play the same local multiplayer game. It " +
-      "also means the seat can reach whatever this machine is listening on."
+      "also means the seat can reach whatever the host is listening on."
     : "This seat gets a macvlan on " +
       host.uplink +
       " instead. It keeps its own address, still reaches the rest of the " +
-      "network and the other seats, and cannot reach this machine or be " +
+      "network and the other seats, and cannot reach the host or be " +
       "reached by it. That was how every seat worked before.";
 }
 
