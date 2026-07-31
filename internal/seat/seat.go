@@ -97,8 +97,36 @@ type Seat struct {
 	// provisioned again before it can be trusted to work.
 	Provisioned int `json:"provisioned"`
 
+	// Schema is the layout of this record, not of the seat. It answers one
+	// question and only one: was this file written by a Polyseat that knew more
+	// than this one does.
+	//
+	// Here from the moment other people started having installations, and worth
+	// nothing at all if added later. A field that arrives after the records do
+	// cannot say anything about the records that came before it, and every
+	// reader would have to guess about the ones without it forever.
+	//
+	// Not the same thing as Provisioned, which is about the container: a seat
+	// can be built by an old recipe and still be described in the current
+	// layout, and that is the normal state of every seat after an update.
+	//
+	// Zero means a record from before this field, which is the same layout by
+	// definition, so nothing has to be done about it. See RecordSchema for what
+	// happens to a number this build does not know.
+	Schema int `json:"schema"`
+
 	Created time.Time `json:"created"`
 }
+
+// RecordSchema is the layout the current build writes and the highest it will
+// read.
+//
+// Raised only when a record cannot be understood correctly by an older build:
+// a field that changes meaning, a field that is removed, a value that is
+// reinterpreted. Adding a field does not need it, because Go's decoder ignores
+// what it does not know and a missing field is the zero value, which is what
+// every optional field here already means.
+const RecordSchema = 1
 
 // State is where a seat is in its lifecycle. Distinct from the Incus instance
 // status because a seat is more than a container: it is a container plus a
@@ -347,11 +375,33 @@ func (s *Store) load(path string) (Seat, error) {
 		return seat, fmt.Errorf("%s: %w", path, err)
 	}
 
+	// Refused, not guessed at. A record from a newer Polyseat may mean something
+	// different by a field this build thinks it understands, and acting on that
+	// is how a seat gets rebuilt, renamed or handed the wrong library.
+	//
+	// This makes the daemon refuse to start rather than run with one seat
+	// missing, because List gives up on the first record it cannot read. That
+	// is the right way round: a seat that has quietly vanished from the
+	// interface is a seat somebody creates a second time, on top of the
+	// container the first one still has. So the message has to be enough to act
+	// on without reading any code.
+	if seat.Schema > RecordSchema {
+		return Seat{}, fmt.Errorf(
+			"%s was written by a newer Polyseat: record schema %d, and this build understands %d. "+
+				"Update Polyseat, or move that file aside to forget the seat",
+			path, seat.Schema, RecordSchema)
+	}
+
 	return seat, nil
 }
 
 // Put writes a seat definition atomically.
 func (s *Store) Put(seat Seat) error {
+	// Stamped here rather than by every caller, so that there is one place that
+	// decides it and no way to write a record without one. Seat is taken by
+	// value, so this does not reach back into the caller's copy.
+	seat.Schema = RecordSchema
+
 	data, err := json.MarshalIndent(seat, "", "  ")
 	if err != nil {
 		return err

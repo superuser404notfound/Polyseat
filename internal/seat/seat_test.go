@@ -312,3 +312,72 @@ func TestSeatAcceptsNoPointerSpeedAndSensibleOnes(t *testing.T) {
 		}
 	}
 }
+
+// The record says which layout it is in, and a build refuses one it does not
+// know rather than reading it anyway.
+//
+// The refusal is the point. A newer Polyseat may mean something different by a
+// field this build believes it understands, and acting on that guess is how a
+// seat gets rebuilt or handed the wrong library.
+func TestStoreRefusesARecordFromANewerPolyseat(t *testing.T) {
+	dir := t.TempDir()
+
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Put(Seat{Name: "lounge", Resolution: "1920x1080@60Hz"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Written by this build, so it carries this build's schema without anybody
+	// asking for it.
+	got, err := store.Get("lounge")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.Schema != RecordSchema {
+		t.Errorf("a record written here has schema %d, want %d", got.Schema, RecordSchema)
+	}
+
+	// A record from before the field existed is the same layout by definition
+	// and has to keep working, or this change would break every installation
+	// that already has seats.
+	old := `{"name":"attic","resolution":"1920x1080@60Hz","provisioned":3}`
+	if err := os.WriteFile(filepath.Join(dir, "seats", "attic.json"), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if attic, err := store.Get("attic"); err != nil {
+		t.Errorf("a record from before schemas existed was refused: %v", err)
+	} else if attic.Name != "attic" {
+		t.Errorf("that record read back as %q", attic.Name)
+	}
+
+	future := `{"name":"cellar","schema":99,"resolution":"1920x1080@60Hz"}`
+	if err := os.WriteFile(filepath.Join(dir, "seats", "cellar.json"), []byte(future), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.Get("cellar")
+	if err == nil {
+		t.Fatal("a record from a newer Polyseat was read as though it were understood")
+	}
+
+	// The message is the whole remedy: this stops the daemon from starting, so
+	// it has to name the file and both numbers without anybody reading code.
+	for _, want := range []string{"cellar.json", "99", "move that file aside"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+
+	// And List refuses too, rather than quietly leaving the seat out. A seat
+	// missing from the interface is one somebody creates again, on top of the
+	// container the first one still has.
+	if _, err := store.List(); err == nil {
+		t.Error("List skipped the record it could not understand instead of refusing")
+	}
+}
