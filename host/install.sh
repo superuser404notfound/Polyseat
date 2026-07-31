@@ -612,11 +612,35 @@ else
 fi
 
 step "Building polyseatd"
-# Built here rather than shipped as a binary: there is no release process yet,
-# and a binary of unknown provenance running as root is worse than a compiler.
-( cd "$REPO" && go build -o "$BINDIR/polyseatd" ./cmd/polyseatd )
+# Built here rather than shipped as a binary: a binary of unknown provenance
+# running as root is worse than a compiler, and the compiler is a requirement of
+# this project anyway.
+#
+# The version is taken from git rather than from a file in the tree. A number
+# written down somewhere can disagree with the tag it was cut from; one derived
+# from the tag cannot. `safe.directory` is passed because this runs as root over
+# a repository owned by somebody else, which is exactly the case git refuses to
+# look at by default.
+#
+# A source tarball has no .git and leaves this at "unknown". Saying so is better
+# than inventing a number: the daemon has no other way to find out what it is,
+# and an update check that compares against a guess is worse than none.
+version=$(git -C "$REPO" -c safe.directory="$REPO" describe --tags --always --dirty 2>/dev/null || true)
+[[ -n $version ]] || version=unknown
+
+( cd "$REPO" && go build \
+    -ldflags "-X github.com/superuser404notfound/Polyseat/internal/version.Version=$version" \
+    -o "$BINDIR/polyseatd" ./cmd/polyseatd )
 chmod 0755 "$BINDIR/polyseatd"
 ok "$BINDIR/polyseatd $("$BINDIR/polyseatd" -version | awk '{print $2}')"
+
+# Written as `if` and not as `[[ ]] && warn`, because under `set -e` a test that
+# comes out false ends the whole script.
+if [[ $version == unknown ]]; then
+    warn "built from a tree without git history, so it cannot name its own version"
+elif [[ $version == *-dirty ]]; then
+    warn "built from a tree with uncommitted changes, which is what -dirty means"
+fi
 
 step "Installing the input helpers to $LIBDIR"
 # These stay Python. They are what M2 proved out, and rewriting a working input
@@ -650,6 +674,24 @@ fi
 install -m 0644 "$HERE/polyseatd.service" "$UNITDIR/polyseatd.service"
 systemctl daemon-reload
 ok "registered"
+
+step "Restarting the daemon"
+# The build wrote a new binary. It did not touch the process that is using the
+# old one, and nothing else here does either: without this step an update
+# installs cleanly, reports success and changes nothing at all until somebody
+# works out that they have to restart it themselves.
+#
+# Only a daemon that is already running gets restarted. Starting one here would
+# bring up Polyseat on a machine whose owner has not finished installing it, and
+# the closing message asks them to do that when they are ready.
+if systemctl is-active --quiet polyseatd.service; then
+    systemctl restart polyseatd.service
+    ok "restarted, so the new build is the one serving"
+    echo "    A seat that was streaming keeps running, but its input broker is"
+    echo "    restarted with the daemon, so a controller can drop for a moment."
+else
+    ok "not running, so there is nothing to restart"
+fi
 
 step "Group membership"
 # The daemon does not need this. It runs as root and opens every device node

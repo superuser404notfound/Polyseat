@@ -22,6 +22,7 @@ import (
 	"github.com/superuser404notfound/Polyseat/internal/library"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
 	"github.com/superuser404notfound/Polyseat/internal/sunshine"
+	"github.com/superuser404notfound/Polyseat/internal/version"
 	"github.com/superuser404notfound/Polyseat/internal/web"
 )
 
@@ -324,6 +325,16 @@ type stateResponse struct {
 type hostInfo struct {
 	Hostname string `json:"hostname"`
 
+	// Version is what this daemon was built from. Behind the session like the
+	// rest of the state rather than on the login page, because the version of a
+	// root daemon answering on the whole network is worth exactly as much to a
+	// stranger as it is to its owner.
+	//
+	// Shown at all because two questions need it and neither has another answer:
+	// what to put in a bug report, and whether the binary on disk is the one
+	// actually running after an install.
+	Version string `json:"version"`
+
 	// GPU is the card every seat on this machine is built for, as the daemon
 	// found it at startup. Shown because it decides the whole shape of a seat
 	// and because it is the first thing worth knowing when a seat reports the
@@ -366,6 +377,7 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 		Uplinks:         config.Uplinks(),
 		Host: hostInfo{
 			Hostname:      hostname,
+			Version:       version.Version,
 			GPU:           s.manager.GPU().String(),
 			GPUVendor:     string(s.manager.GPU().Vendor),
 			Uplink:        s.manager.Uplink(),

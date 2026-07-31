@@ -207,6 +207,10 @@ function render() {
   gpu.textContent = state.host.gpu || "no GPU detected";
   gpu.className = "pill " + (state.host.gpu_vendor ? "online" : "offline");
 
+  // What is running, not what is installed. An install builds a new binary and
+  // leaves the old process serving, so this is the line that settles it.
+  el("version").textContent = "polyseatd " + (state.host.version || "unknown");
+
   // The list is absent rather than empty when there is nothing to warn about,
   // and calling map on that is what silently broke the whole page once.
   el("warnings").replaceChildren(

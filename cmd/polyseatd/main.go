@@ -25,10 +25,8 @@ import (
 	"github.com/superuser404notfound/Polyseat/internal/config"
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
+	"github.com/superuser404notfound/Polyseat/internal/version"
 )
-
-// version is stamped in at build time.
-var version = "dev"
 
 func main() {
 	configPath := flag.String("config", config.DefaultPath, "path to the bootstrap configuration")
@@ -37,7 +35,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("polyseatd", version)
+		fmt.Println("polyseatd", version.Version)
 
 		return
 	}
@@ -58,6 +56,12 @@ func run(configPath, listenOverride string, logger *slog.Logger) error {
 	if os.Geteuid() != 0 {
 		return errors.New("polyseatd has to run as root")
 	}
+
+	// Logged at the start of every run because the journal is where the question
+	// gets asked. Installing builds a new binary but does not replace a running
+	// process, so "which version is actually serving" and "which version is on
+	// disk" are two questions, and only this one answers the first.
+	logger.Info("polyseatd starting", "version", version.Version)
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
