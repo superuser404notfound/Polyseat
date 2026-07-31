@@ -74,6 +74,64 @@ func TestSupportsReflink(t *testing.T) {
 	}
 }
 
+// TestSharesBlocks covers the pair test the automatic adoption is gated on.
+//
+// The negative case is the one that matters, and it is not hypothetical: two
+// directories can each support reflinks perfectly well and still cost a full
+// copy of every game between them, because FICLONE returns EXDEV across
+// filesystems. A daemon that adopted a library on another disk by itself would
+// duplicate it in full, quietly, on a timer.
+func TestSharesBlocks(t *testing.T) {
+	dir := reflinkDir(t)
+
+	from := filepath.Join(dir, "from")
+	to := filepath.Join(dir, "to")
+
+	for _, d := range []string{from, to} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := SharesBlocks(from, to); err != nil {
+		t.Errorf("two directories on the same filesystem were reported as not "+
+			"sharing blocks: %v", err)
+	}
+
+	// Nothing of ours is left behind in what is somebody else's Steam library.
+	for _, d := range []string{from, to} {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if len(entries) != 0 {
+			t.Errorf("%s still holds %d file(s) after the probe", d, len(entries))
+		}
+	}
+
+	if _, err := os.Stat("/dev/shm"); err != nil {
+		t.Skip("no /dev/shm to use as a second filesystem")
+	}
+
+	other, err := os.MkdirTemp("/dev/shm", "polyseat-crossfs-")
+	if err != nil {
+		t.Skipf("cannot write to /dev/shm: %v", err)
+	}
+
+	defer os.RemoveAll(other)
+
+	// Both directions, because the pool clones both ways: it harvests from the
+	// library and clones games back into it.
+	if err := SharesBlocks(other, to); err == nil {
+		t.Error("a directory on tmpfs was reported as sharing blocks with the pool")
+	}
+
+	if err := SharesBlocks(from, other); err == nil {
+		t.Error("the pool was reported as sharing blocks with a directory on tmpfs")
+	}
+}
+
 // TestCloneSharesBlocks is the claim the whole milestone rests on.
 //
 // The assertion is that no file fell back to a full copy, which is a sound

@@ -134,6 +134,15 @@ type state struct {
 	// harvests from them and never writes into them, and a game uninstalled
 	// there is not uninstalled anywhere else.
 	Sources []string `json:"sources"`
+
+	// Unwatched are libraries somebody stopped watching by hand.
+	//
+	// Remembered because the daemon adopts a library it finds on its own, and a
+	// search that runs every minute would otherwise take back what a person
+	// just removed, every minute, forever. Nothing else reads this: a library
+	// in here is still offered as a candidate in the interface, since the point
+	// is to stop the daemon deciding, not to stop the person deciding again.
+	Unwatched []string `json:"unwatched,omitempty"`
 }
 
 const (
@@ -731,8 +740,10 @@ func (p *Pool) copyManifest(from, to string, owner Owner) error {
 // machine". A one time import leaves the host's copy to drift ahead after the
 // next update, and the seats would download that update themselves.
 //
-// Read only in both senses: the daemon takes from it and never writes into it,
-// and a game uninstalled there stays in the pool and in the seats that have it.
+// A game uninstalled there stays in the pool and in the seats that have it. The
+// first tracked library is not read only, though: it is the host's side of the
+// pool and games from the seats are cloned into it, which is what makes the
+// sharing go both ways.
 func (p *Pool) AddSource(steamapps string, log Logger) (Report, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -762,6 +773,15 @@ func (p *Pool) AddSource(steamapps string, log Logger) (Report, error) {
 		log("now tracking %s", resolved)
 	}
 
+	// Somebody asking for this library is somebody changing their mind about
+	// having removed it, so the note that keeps the daemon's hands off it goes
+	// away. Left in place it would be a trap for later: the library would be
+	// tracked now and never be picked up again if it were ever removed and the
+	// person expected the automatic pass to find it.
+	p.state.Unwatched = slices.DeleteFunc(p.state.Unwatched, func(s string) bool {
+		return s == resolved
+	})
+
 	if err := p.harvestFrom(resolved, "host", p.own, &report, log); err != nil {
 		return report, err
 	}
@@ -775,6 +795,10 @@ func (p *Pool) AddSource(steamapps string, log Logger) (Report, error) {
 
 // RemoveSource stops tracking a library. What was already taken from it stays
 // in the pool, because the seats are using it.
+//
+// The library is also remembered as one the daemon must not adopt again. A
+// removal that only removed would be undone by the next automatic pass a minute
+// later, and the person doing the removing would have no way to win.
 func (p *Pool) RemoveSource(steamapps string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -783,7 +807,21 @@ func (p *Pool) RemoveSource(steamapps string) error {
 		return s == steamapps
 	})
 
+	if !slices.Contains(p.state.Unwatched, steamapps) {
+		p.state.Unwatched = append(p.state.Unwatched, steamapps)
+		sort.Strings(p.state.Unwatched)
+	}
+
 	return p.save()
+}
+
+// Unwatched lists the libraries somebody stopped watching by hand, which the
+// daemon leaves alone from then on.
+func (p *Pool) Unwatched() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return slices.Clone(p.state.Unwatched)
 }
 
 // Sources lists the libraries outside the seats that the pool tracks.

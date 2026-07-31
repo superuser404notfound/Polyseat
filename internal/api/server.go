@@ -67,6 +67,7 @@ func New(manager *seat.Manager, credentials *auth.Store, logger *slog.Logger) ht
 	guarded.HandleFunc("GET /api/library", s.getLibrary)
 	guarded.HandleFunc("POST /api/library/sync", s.syncLibrary)
 	guarded.HandleFunc("POST /api/library/import", s.importLibrary)
+	guarded.HandleFunc("POST /api/library/unwatch", s.unwatchLibrary)
 	guarded.HandleFunc("DELETE /api/library/{appid}", s.removeTitle)
 	guarded.HandleFunc("POST /api/library/{appid}/offer/{seat}", s.offerTitle)
 	guarded.HandleFunc("POST /api/seats/{name}/{action}", s.seatAction)
@@ -1002,6 +1003,34 @@ func (s *Server) importLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, arrays(report))
+}
+
+// unwatchLibrary stops tracking a library the pool was watching.
+//
+// A counterpart to importLibrary rather than a symmetry for its own sake: the
+// daemon now adopts a library it finds by itself, and a decision it makes has to
+// be one somebody can take back.
+func (s *Server) unwatchLibrary(w http.ResponseWriter, r *http.Request) {
+	var req importRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if req.Path == "" {
+		fail(w, http.StatusBadRequest, errors.New("no path given"))
+
+		return
+	}
+
+	if err := s.manager.UnwatchLibrary(req.Path); err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.libraryStatus())
 }
 
 func (s *Server) removeTitle(w http.ResponseWriter, r *http.Request) {

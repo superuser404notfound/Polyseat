@@ -124,6 +124,119 @@ func steamLibraries(exclude string, tracked []string) []string {
 	return out
 }
 
+// adoptable picks the one library the daemon may start watching on its own, and
+// says why it is not doing so when it picks none.
+//
+// A separate function from the pass that calls it because every line of it is a
+// reason to do nothing, and those reasons are what deserve testing.
+//
+// The rules, in the order they matter:
+//
+//   - Nothing is adopted once a library is tracked. This runs every minute, so
+//     the automatic choice has to be a choice made once, at the point where
+//     nobody has answered the question yet. After that the answer stands.
+//   - A library somebody removed by hand is never taken back.
+//   - Exactly one candidate, or none is taken. Only the first tracked library
+//     receives games from the seats, so with two of them the choice decides
+//     whose Steam directory the daemon writes into. That is a question for a
+//     person, and a wrong guess is worse than a question left open.
+//   - The blocks have to be shareable between the candidate and the pool, which
+//     is measured rather than assumed. Without it every game harvested or
+//     delivered is a full byte copy, and a machine that adopts a library on
+//     another disk by itself fills that disk by itself.
+func adoptable(candidates, unwatched []string, pool string, shares func(from, to string) error) (string, string) {
+	fresh := slices.DeleteFunc(slices.Clone(candidates), func(c string) bool {
+		return slices.Contains(unwatched, c)
+	})
+
+	switch len(fresh) {
+	case 0:
+		return "", ""
+
+	case 1:
+		// The one case that goes on.
+
+	default:
+		return "", fmt.Sprintf("found %d Steam libraries on this host (%s) and "+
+			"will not choose between them, because the first one watched is also "+
+			"the one games from the seats are cloned into",
+			len(fresh), strings.Join(fresh, ", "))
+	}
+
+	if err := shares(fresh[0], pool); err != nil {
+		return "", fmt.Sprintf("found %s but left it alone: it cannot share "+
+			"blocks with %s, so watching it would copy every game instead of "+
+			"sharing it (%v)", fresh[0], pool, err)
+	}
+
+	return fresh[0], ""
+}
+
+// adoptHostLibrary takes the host's own Steam library into the pool without
+// being asked, when there is exactly one and taking it is free.
+//
+// The alternative was a button nobody sees. The pool works between seats from
+// the first day, so a host whose own games never join looks like it is working,
+// and the games that are already downloaded stay downloaded twice. Doing it on
+// the timer rather than at startup is what covers the ordinary case of a fresh
+// machine: Steam is installed after Polyseat, and the directory turns up minutes
+// or days later.
+func (m *Manager) adoptHostLibrary() {
+	if m.pool == nil {
+		return
+	}
+
+	sources := m.pool.Sources()
+	if len(sources) > 0 {
+		return
+	}
+
+	find := m.libraries
+	if find == nil {
+		find = steamLibraries
+	}
+
+	pick, why := adoptable(
+		find(m.pool.Root(), sources),
+		m.pool.Unwatched(),
+		m.pool.PoolApps(),
+		library.SharesBlocks,
+	)
+
+	if pick == "" {
+		// Said once rather than every minute. The condition is a property of
+		// the machine, not an event, and a daemon that repeats it forever
+		// teaches people to stop reading its log.
+		if why != "" && why != m.adoptSaid {
+			m.log.Info("the shared library: " + why)
+			m.adoptSaid = why
+		}
+
+		return
+	}
+
+	m.syncMu.Lock()
+
+	_, err := m.pool.AddSource(pick, func(f string, a ...any) {
+		m.log.Info("library: " + fmt.Sprintf(f, a...))
+	})
+
+	m.syncMu.Unlock()
+
+	if err != nil {
+		m.log.Warn("the shared library could not adopt the host's Steam library",
+			"dir", pick, "err", err)
+
+		return
+	}
+
+	m.adoptSaid = ""
+
+	m.log.Info("the shared library adopted the host's Steam library, so games "+
+		"already downloaded here reach the seats and games installed in a seat "+
+		"turn up here", "dir", pick)
+}
+
 // openLibrary prepares the pool, treating an unusable filesystem as a missing
 // feature rather than as a reason not to start.
 //
@@ -369,6 +482,10 @@ func (m *Manager) syncLibrary(ctx context.Context) {
 		return
 	}
 
+	// Before the members are read, so a library adopted in this pass is a member
+	// in this pass rather than in the next one.
+	m.adoptHostLibrary()
+
 	members := m.members()
 	if len(members) == 0 {
 		return
@@ -503,6 +620,34 @@ func (m *Manager) ImportLibrary(ctx context.Context, steamapps string) (library.
 	m.syncLibrary(ctx)
 
 	return report, nil
+}
+
+// UnwatchLibrary stops watching a library outside the seats.
+//
+// The games it already gave stay in the pool and in the seats, because they are
+// installed there and somebody is playing them. What stops is the tracking: no
+// further harvesting from it, and if it was the one receiving, no more games
+// cloned into it.
+func (m *Manager) UnwatchLibrary(steamapps string) error {
+	if m.pool == nil {
+		return fmt.Errorf("%w: %s", ErrNoLibrary, m.libraryErr)
+	}
+
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+
+	if !slices.Contains(m.pool.Sources(), steamapps) {
+		return fmt.Errorf("%s is not being watched", steamapps)
+	}
+
+	if err := m.pool.RemoveSource(steamapps); err != nil {
+		return err
+	}
+
+	m.log.Info("the shared library stopped watching a Steam library and will "+
+		"not adopt it again by itself", "dir", steamapps)
+
+	return nil
 }
 
 // RemoveFromLibrary drops a title from the pool without touching the seats that

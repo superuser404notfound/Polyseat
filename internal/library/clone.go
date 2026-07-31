@@ -96,6 +96,54 @@ func SupportsReflink(dir string) error {
 	return nil
 }
 
+// SharesBlocks reports whether a file in from can be cloned into to.
+//
+// SupportsReflink asks whether one directory can clone at all. This asks the
+// question the pool actually depends on, which is about a pair: cloneFile falls
+// back to a byte copy on EXDEV, so two directories on two filesystems that both
+// support reflinks perfectly well still cost a full copy of every game between
+// them. On btrfs the cheap test would also be the wrong one, since every
+// subvolume has its own device number while clones across them work.
+//
+// The probe is written into from, which is somebody's Steam library rather than
+// ours. It is 4 KiB, it is named for us, and it is removed on every path out of
+// here, including the error ones. Writing there is not a liberty we would not
+// take anyway: the first library the pool tracks is the one it clones games
+// into.
+func SharesBlocks(from, to string) error {
+	src, err := os.CreateTemp(from, ".polyseat-probe-src-")
+	if err != nil {
+		return err
+	}
+
+	defer os.Remove(src.Name())
+	defer src.Close()
+
+	// A full block, for the reason SupportsReflink gives: an empty file can be
+	// "cloned" where there is nothing to clone.
+	if _, err := src.Write(make([]byte, 4096)); err != nil {
+		return err
+	}
+
+	if err := src.Sync(); err != nil {
+		return err
+	}
+
+	dst, err := os.CreateTemp(to, ".polyseat-probe-dst-")
+	if err != nil {
+		return err
+	}
+
+	defer os.Remove(dst.Name())
+	defer dst.Close()
+
+	if err := unix.IoctlFileClone(int(dst.Fd()), int(src.Fd())); err != nil {
+		return fmt.Errorf("%w: %s and %s: %v", ErrNoReflink, from, to, err)
+	}
+
+	return nil
+}
+
 // Result reports what a clone did.
 type Result struct {
 	Files    int

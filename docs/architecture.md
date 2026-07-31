@@ -336,6 +336,34 @@ remembered and re-read on every pass. Without that, a game the host updates
 afterwards never reaches the seats and every one of them downloads that update
 for itself.
 
+**And it is adopted rather than waited for.** The pool works between seats from
+the first day, so a host whose own games never join looks like a working
+installation, while the games already downloaded stay downloaded twice. Every
+pass therefore looks for a Steam library on the host and takes it, subject to
+four conditions that are all about not making a decision somebody would have to
+undo:
+
+- Nothing is adopted once a library is tracked. The pass runs every minute, so
+  the automatic choice is a choice made once, at the point where nobody has
+  answered the question yet.
+- A library somebody stopped watching is never taken back. Without the note in
+  `state.json` a removal would be undone a minute later, forever, and the person
+  removing it could not win.
+- Exactly one candidate, or none is taken. The first library tracked is the one
+  games from the seats are cloned into, so with two of them the choice decides
+  whose Steam directory the daemon writes into.
+- The candidate has to share blocks with the pool, measured with a 4 KiB probe
+  rather than inferred. `FICLONE` returns `EXDEV` across filesystems and the
+  clone falls back to a byte copy, so a machine that adopted a library on
+  another disk by itself would duplicate it in full, quietly, on a timer. The
+  device number would be the wrong test: on btrfs every subvolume has its own
+  and clones across them work.
+
+The refusals are logged once each rather than every minute, and the interface
+names any library on the host that the pool is not watching, because "the daemon
+looked at this and held back" is otherwise indistinguishable from "the daemon
+never looked".
+
 **The host is a member, not only a source.** It appears in the pool under the
 name `host`, which no seat may be called, and the traffic goes both ways: games
 it has are taken into the pool, and games installed in a seat are cloned into

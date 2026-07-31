@@ -58,6 +58,21 @@ type Manager struct {
 	// once would race over the same directories.
 	syncMu sync.Mutex
 
+	// adoptSaid is the last reason the daemon gave for not adopting a Steam
+	// library it found, so that a standing condition is logged when it starts
+	// and when it changes rather than once a minute for as long as it holds.
+	// Only ever touched from the library pass, which is one goroutine.
+	adoptSaid string
+
+	// libraries finds the Steam libraries on this host, and is nil everywhere
+	// except in a test.
+	//
+	// A seam rather than a setting. steamLibraries reads the real /home, so a
+	// test of the adoption that called it would offer whoever runs the test
+	// their own games, and the first thing the pool does with a library it
+	// adopts is clone every game out of it.
+	libraries func(exclude string, tracked []string) []string
+
 	subsMu sync.Mutex
 	subs   map[int]chan struct{}
 	nextID int
@@ -102,10 +117,10 @@ type runtime struct {
 	// nothing has been read yet or systemd reported no start time.
 	encodersFrom string
 
-	output         string
-	session        *Session
-	devices        []InputDevice
-	checked        time.Time
+	output  string
+	session *Session
+	devices []InputDevice
+	checked time.Time
 
 	// appsChecked is when the Moonlight app list was last rebuilt from what the
 	// seat has installed. Its own clock because that scan is the expensive one:

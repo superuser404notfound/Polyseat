@@ -100,9 +100,12 @@ Steam has, so signing in and pressing install puts the game where the other
 seats can reach it. Each seat keeps its own private, fully writable copy; the
 daemon replicates game directories between them with reflinks, so the copies
 share their blocks on disk. Taking this machine's 69 GB library into the pool took 0.8 seconds and
-cost 432 KB. It keeps working after an update, because the host's library is
-watched rather than imported once, and a seat that is behind is brought forward
-as soon as nothing in it is using the shared files.
+cost 432 KB. The host's own Steam library is found and taken into the pool
+without being asked, as long as there is exactly one of them and it can share
+blocks with the pool; two of them is a choice with consequences and stays a
+question. It keeps working after an update, because that library is watched
+rather than imported once, and a seat that is behind is brought forward as soon
+as nothing in it is using the shared files.
 
 **Launchers other than Steam work too.** Each seat has a `shared/` directory
 where one folder is one game; point Heroic, Lutris or Bottles at it and the game

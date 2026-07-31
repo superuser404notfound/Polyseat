@@ -535,6 +535,53 @@ func TestSourceIsTrackedNotImportedOnce(t *testing.T) {
 	}
 }
 
+// TestUnwatchedSurvivesRemoval guards the loop the automatic adoption could
+// otherwise turn into: the daemon looks for a library to adopt every minute, so
+// a removal that only removed would be undone a minute later, forever.
+func TestUnwatchedSurvivesRemoval(t *testing.T) {
+	pool := openPool(t)
+
+	host := filepath.Join(t.TempDir(), "steamapps")
+	mkdirs(t, filepath.Join(host, commonDir))
+
+	if _, err := pool.AddSource(host, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pool.Unwatched(); len(got) != 0 {
+		t.Fatalf("a library that was just added is already marked unwatched: %v", got)
+	}
+
+	if err := pool.RemoveSource(pool.Sources()[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pool.Unwatched(); len(got) != 1 || got[0] != host {
+		t.Fatalf("removing a source did not record it as unwatched: %v", got)
+	}
+
+	// The note is state, not memory: the daemon restarts and the decision has to
+	// outlive the process that took it.
+	reopened, err := Open(pool.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := reopened.Unwatched(); len(got) != 1 || got[0] != host {
+		t.Fatalf("the note did not survive a restart: %v", got)
+	}
+
+	// Asking for it again is somebody changing their mind, and the note has to
+	// go, or the library would be tracked now and never adopted again later.
+	if _, err := reopened.AddSource(host, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := reopened.Unwatched(); len(got) != 0 {
+		t.Fatalf("adding the library back left it marked unwatched: %v", got)
+	}
+}
+
 func TestSourceRefusesTheLibraryItself(t *testing.T) {
 	pool := openPool(t)
 

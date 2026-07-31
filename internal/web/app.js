@@ -358,6 +358,9 @@ function renderLibrary() {
             "and it appears here within a minute, then in the other seats. " +
             "Games already on the host can be brought in with Import.",
         }),
+        // Worth the most here of anywhere: an empty pool on a machine that has
+        // a Steam library full of games is exactly the state this is for.
+        ...watching(library),
         aside,
       ].filter(Boolean),
     );
@@ -377,34 +380,6 @@ function renderLibrary() {
 
   table.append(head, rows);
 
-  const sources = library.sources || [];
-
-  // The machine itself is a member of the pool under the name "host", so it
-  // appears in the In column like any seat. Which of its libraries receives has
-  // to be said out loud: only one can, because the same game cloned into two
-  // folders of one Steam client is installed twice as far as that client is
-  // concerned.
-  const receiving = library.receiving || "";
-
-  const tracking = sources.length
-    ? Object.assign(document.createElement("p"), {
-        className: "hint",
-        textContent:
-          "Also watching " +
-          sources.join(", ") +
-          ", so a game updated there reaches the seats by itself." +
-          (receiving
-            ? " Games from the seats are cloned back into " +
-              receiving +
-              ", where the host's Steam finds them. Steam picks up a title" +
-              " it did not install itself the next time it starts." +
-              (sources.length > 1
-                ? " The other watched libraries are read only."
-                : "")
-            : ""),
-      })
-    : null;
-
   const note = document.createElement("p");
   note.className = "hint";
   note.textContent =
@@ -416,7 +391,119 @@ function renderLibrary() {
     "until a seat updates a game. Sharing files is not sharing licences: a " +
     "seat can only play what its own Steam account owns.";
 
-  body.replaceChildren(...[table, note, tracking, aside].filter(Boolean));
+  body.replaceChildren(...[table, note, ...watching(library), aside].filter(Boolean));
+}
+
+// The libraries outside the seats: which ones the pool watches, and which ones
+// are sitting on this host without being watched.
+//
+// Both halves are here because the daemon adopts one on its own when it can, so
+// what the interface has to show is the outcome of a decision somebody else
+// made: what was taken, how to take it back, and, when nothing was taken, that
+// there was something to take.
+function watching(pool) {
+  const sources = pool.sources || [];
+  const candidates = pool.candidates || [];
+
+  // Which one receives has to be said out loud: only one can, because the same
+  // game cloned into two folders of one Steam client is installed twice as far
+  // as that client is concerned.
+  const receiving = pool.receiving || "";
+
+  const out = [];
+
+  if (sources.length) {
+    out.push(
+      Object.assign(document.createElement("p"), {
+        className: "hint",
+        textContent:
+          "Also watching, so a game updated there reaches the seats by itself:" +
+          (receiving
+            ? " games from the seats are cloned back into " +
+              receiving +
+              ", where the host's Steam finds them, and it picks up a title it" +
+              " did not install itself the next time it starts." +
+              (sources.length > 1
+                ? " The other watched libraries are read only."
+                : "")
+            : ""),
+      }),
+    );
+
+    const list = document.createElement("ul");
+    list.className = "devices";
+
+    sources.forEach((path) => {
+      const row = document.createElement("li");
+
+      row.append(
+        Object.assign(document.createElement("span"), { textContent: path }),
+      );
+
+      if (path === receiving) {
+        row.append(
+          Object.assign(document.createElement("span"), {
+            className: "badge",
+            textContent: "receiving",
+            title:
+              "Games installed in a seat are cloned into this one, so the " +
+              "sharing goes both ways.",
+          }),
+        );
+      }
+
+      const stop = document.createElement("button");
+      stop.className = "quiet tiny";
+      stop.textContent = "Stop watching";
+      stop.title =
+        "Stops taking games from this library and stops cloning games into " +
+        "it. Nothing already installed is removed anywhere.";
+      stop.onclick = () => {
+        if (
+          !confirm(
+            `Stop watching ${path}?\n\n` +
+              `The games it has already given stay in the pool and in the ` +
+              `seats. Polyseat will not start watching it again on its own.`,
+          )
+        ) {
+          return;
+        }
+
+        run(() => api("POST", "/api/library/unwatch", { path }));
+      };
+
+      row.append(stop);
+      list.append(row);
+    });
+
+    out.push(list);
+
+    return out;
+  }
+
+  if (candidates.length === 0) return out;
+
+  // Nothing watched while candidates exist means the daemon looked and held
+  // back: two libraries to choose between, one on a filesystem that cannot share
+  // blocks with the pool, or one somebody stopped watching by hand. Whichever it
+  // was, the way in is the same button, and it is worth pointing at rather than
+  // leaving somebody to find.
+  out.push(
+    Object.assign(document.createElement("p"), {
+      className: "hint",
+      textContent:
+        (candidates.length === 1
+          ? "There is a Steam library on this host that the pool is not watching: "
+          : "There are Steam libraries on this host that the pool is not watching: ") +
+        candidates.join(", ") +
+        ". Games in it stay out of the seats until it is watched, and games " +
+        "installed in a seat will not turn up in it. Use \u201cWatch a " +
+        "library\u201d to bring it in. The daemon does that by itself only " +
+        "when there is exactly one and it can share blocks with the pool.",
+    }),
+  );
+
+  return out;
 }
 
 function titleRow(title) {
