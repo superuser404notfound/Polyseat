@@ -19,11 +19,19 @@ fullscreen application in front means the controller belongs to it and the mode
 goes off; back on the desktop it goes on. That is what the Windows tools do from
 the foreground window, and sway can answer it exactly rather than by heuristic.
 
-Select and Start together still toggle it by hand, a chord because single
-buttons are taken: Guide opens Steam's overlay and everything else is a game
-input. A toggle holds until the next time something goes fullscreen or stops
-being fullscreen, at which point the automatic answer takes over again. That way
-a windowed game can be dealt with, and forgetting to switch back cannot leave
+Select and Start held together for a second still toggle it by hand, a chord
+because single buttons are taken: Guide opens Steam's overlay and everything
+else is a game input. Held rather than tapped, because Select and Start are
+ordinary buttons in a game and games do press both at once; a second is long
+enough that it cannot happen while somebody is playing, and short enough to
+still be a gesture rather than a wait. The pad buzzes when it happens, which is
+the only feedback there is: nothing appears on screen, and the pointer only
+shows itself once the stick is moved, so without it there is no way to tell a
+hold that was long enough from one that was not.
+
+A toggle holds until the next time something goes fullscreen or stops being
+fullscreen, at which point the automatic answer takes over again. That way a
+windowed game can be dealt with, and forgetting to switch back cannot leave
 somebody with a dead stick.
 
 While the mode is off, this reads events and emits nothing.
@@ -43,14 +51,16 @@ import errno
 import glob
 import json
 import os
+import queue
 import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 import evdev
-from evdev import ecodes
+from evdev import ecodes, ff
 
 # How far the stick has to move before it counts. Sticks rest slightly off
 # centre and a pointer that drifts on its own is worse than one that needs a
@@ -116,8 +126,23 @@ KEYS = {
     ecodes.BTN_DPAD_RIGHT: ecodes.KEY_RIGHT,
 }
 
-# The chord that turns the mode on and off.
+# The chord that turns the mode on and off, and how long it has to be held.
+#
+# Held, because both buttons are ordinary game inputs and pressing them together
+# is something a game can ask for. A tap was the first version and it meant a
+# player could flip the pointer on under their own hands in a windowed game.
 TOGGLE = (ecodes.BTN_SELECT, ecodes.BTN_START)
+HOLD = 1.0
+
+# The buzz that confirms it. Short and firm, and only for the switch by hand:
+# the automatic one follows what is on screen, which is feedback enough, and a
+# pad that buzzed every time a game went fullscreen would be a nuisance.
+#
+# Magnitudes are 0 to 0xffff per motor. The weak one carries most of it because
+# that is the motor that gives a buzz rather than a thud.
+RUMBLE_MS = 150
+RUMBLE_STRONG = 0x4000
+RUMBLE_WEAK = 0xA000
 
 
 def log(message):
@@ -468,6 +493,163 @@ class Pointer:
         self.keys.syn()
 
 
+class Chord:
+    """Select and Start, held rather than tapped.
+
+    Kept out of the loop and given its own state because the holding is the
+    whole of the protection: a chord that fires on the press is a chord a game
+    can trip, and both of these buttons are inputs a game may well ask for at
+    once.
+
+    Nothing here reads a clock. The time comes in from the caller, which is
+    what makes a second of holding something that can be tested rather than
+    waited for.
+    """
+
+    def __init__(self, buttons, hold):
+        self.buttons = buttons
+        self.hold = hold
+
+        # When the chord became complete, or None while it is not complete and
+        # also once it has fired.
+        self.since = None
+
+        # Set from firing until the chord is broken, so that a hand resting on
+        # both buttons toggles the mode once rather than once a second.
+        self.fired = False
+
+        # Which pad completed it, so the buzz goes back to the hands that did.
+        self.fd = None
+
+    def update(self, held, fd, now):
+        """A button of the chord went down or came up."""
+        if not all(button in held for button in self.buttons):
+            self.forget()
+        elif self.since is None and not self.fired:
+            self.since, self.fd = now, fd
+
+    def due(self, now):
+        """True exactly once, when the chord has been held long enough."""
+        if self.since is None or now - self.since < self.hold:
+            return False
+
+        self.since, self.fired = None, True
+
+        return True
+
+    def forget(self):
+        """Back to nothing held.
+
+        Also for a pad that vanished mid-chord: buttons that were down when it
+        went never send their release, and half a chord surviving its own
+        controller would let the next pad complete it with one button.
+        """
+        self.since, self.fired = None, False
+
+
+class Rumble:
+    """A short buzz on the pad that asked for the switch.
+
+    Sunshine's virtual pads carry force feedback back to the client, and
+    Moonlight hands it to the real controller, so this reaches the hands that
+    held the chord rather than anything in the seat.
+
+    **It happens on a thread of its own, and that is not tidiness.** Uploading
+    an effect to a pad that is itself a uinput device is a request to the
+    process behind it, and the kernel gives that process thirty seconds to
+    answer before giving up. Sunshine answers at once, because games rely on
+    the same path, but a Sunshine that did not would otherwise stop the pointer
+    dead for half a minute. So the loop hands the buzz over and carries on.
+
+    The effect is uploaded once per pad and replayed afterwards. A device holds
+    a small, fixed number of effects, and uploading a new one per buzz fills
+    that up and ends with a pad that cannot rumble at all.
+
+    Every failure is answered with silence. A pad without force feedback, a
+    driver that refuses the upload, a device that went away between the switch
+    and the buzz: none of that is worth losing the pointer over, and the switch
+    itself has already happened by the time this is called.
+    """
+
+    def __init__(self):
+        # Only the worker touches this, which is why the main loop asks for a
+        # pad to be forgotten through the queue rather than reaching in.
+        self.effects = {}
+        self.work = queue.Queue()
+
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def buzz(self, device):
+        if device is not None:
+            self.work.put(("buzz", device))
+
+    def forget(self, fd):
+        """Drop what was uploaded to a pad that is gone.
+
+        File descriptors are reused, so an entry left behind here would be
+        found again by the next pad to open on the same number and replayed as
+        an effect that pad never received.
+        """
+        self.work.put(("forget", fd))
+
+    def _serve(self):
+        while True:
+            what, subject = self.work.get()
+
+            if what == "forget":
+                self.effects.pop(subject, None)
+                continue
+
+            try:
+                self._play(subject)
+            except Exception as exc:               # noqa: BLE001
+                # A thread that dies takes every later buzz with it silently,
+                # which is worse than any single failed one.
+                log(f"the rumble went wrong and was dropped: {exc}")
+
+    def _play(self, device):
+        effect = self._effect(device)
+        if effect is None:
+            return
+
+        try:
+            device.write(ecodes.EV_FF, effect, 1)
+        except OSError as exc:
+            log(f"{device.name} would not rumble: {exc}")
+            self.effects[device.fd] = None
+
+    def _effect(self, device):
+        """The pad's uploaded effect, uploading it the first time. None if it
+        cannot have one."""
+        if device.fd in self.effects:
+            return self.effects[device.fd]
+
+        # Recorded before the attempt, so that a pad which cannot take one is
+        # asked once rather than on every switch for the rest of the session.
+        self.effects[device.fd] = None
+
+        if (ecodes.FF_RUMBLE not in device.capabilities().get(ecodes.EV_FF, [])
+                or not device.ff_effects_count):
+            log(f"{device.name} has no rumble, so switching by hand is silent there")
+
+            return None
+
+        effect = ff.Effect(
+            ecodes.FF_RUMBLE, -1, 0,
+            ff.Trigger(0, 0),
+            ff.Replay(RUMBLE_MS, 0),
+            ff.EffectType(ff_rumble_effect=ff.Rumble(
+                strong_magnitude=RUMBLE_STRONG, weak_magnitude=RUMBLE_WEAK)),
+        )
+
+        try:
+            self.effects[device.fd] = device.upload_effect(effect)
+        except OSError as exc:
+            log(f"could not give {device.name} something to rumble with: {exc}")
+
+        return self.effects[device.fd]
+
+
 def toggle_keyboard():
     try:
         subprocess.Popen([KEYBOARD], stdout=subprocess.DEVNULL,
@@ -480,10 +662,11 @@ def main():
     seat = os.environ.get("XDG_SEAT", "")
 
     pointer = Pointer(seat)
+    rumble = Rumble()
     sway = Sway()
 
     log("ready. The pointer follows what is in front, and Select with Start "
-        "overrides it until that changes")
+        "held for a second overrides it until that changes")
 
     ranges = {}
     by_fd = {}
@@ -528,6 +711,8 @@ def main():
         + ("" if setting is None else f", from this seat's setting of {setting:.2f}"))
 
     held = set()
+    chord = Chord(TOGGLE, HOLD)
+
     # Left stick points, right stick scrolls. That is the way round the
     # Windows tools do it and the way it is worth matching: the hand that
     # aims in a game is the hand that expects to aim here.
@@ -582,13 +767,21 @@ def main():
                     by_fd.pop(fd, None)
                     ranges.pop(fd, None)
                     paths.discard(device.path)
+                    rumble.forget(fd)
 
                     # Whoever was holding it is gone, so nothing should stay
                     # pressed and the next person should not inherit a mode
                     # that was set by hand. Back to whatever is in front.
+                    #
+                    # Buttons held at the moment a pad vanishes never send
+                    # their release, so what was down has to be forgotten too.
+                    # Otherwise half a chord survives its own controller and
+                    # the next pad completes it with one button.
                     if not by_fd:
                         pointer.release_all()
                         active = not fullscreen
+                        held.clear()
+                        chord.forget()
 
                     continue
                 raise
@@ -600,13 +793,8 @@ def main():
                     else:
                         held.discard(event.code)
 
-                    if all(button in held for button in TOGGLE):
-                        if event.value:
-                            active = not active
-                            log(f"pointer mode {'on' if active else 'off'} by hand, "
-                                "until something goes fullscreen or stops being")
-                            if not active:
-                                pointer.release_all()
+                    if event.code in TOGGLE:
+                        chord.update(held, fd, time.monotonic())
                         continue
 
                     if not active:
@@ -626,6 +814,20 @@ def main():
 
         now = time.monotonic()
         elapsed, last = now - last, now
+
+        # The chord is held rather than tapped, so it fires here on the clock
+        # instead of on the press. The loop turns over every INTERVAL whether
+        # anything arrived or not, which is what makes that possible without a
+        # timer of its own.
+        if chord.due(now):
+            active = not active
+            log(f"pointer mode {'on' if active else 'off'} by hand, "
+                "until something goes fullscreen or stops being")
+
+            if not active:
+                pointer.release_all()
+
+            rumble.buzz(by_fd.get(chord.fd))
 
         if now - last_scan >= 2.0:
             last_scan = now

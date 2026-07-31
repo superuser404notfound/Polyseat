@@ -196,6 +196,128 @@ func TestPointerHasNoHeightWhenSwaySaysNothingUseful(t *testing.T) {
 	}
 }
 
+// The driver for the chord. It replays a scripted session against the helper's
+// own state machine and reports when the switch by hand would have happened.
+//
+// Time comes from the script rather than from a clock, so a second of holding
+// is tested rather than waited for.
+const chordDriver = `
+import importlib.util, json, sys
+
+spec = importlib.util.spec_from_file_location("padpointer", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+chord = module.Chord(module.TOGGLE, module.HOLD)
+buttons = {"select": module.TOGGLE[0], "start": module.TOGGLE[1]}
+held, fired = set(), []
+
+# A step is a button and a moment. "select" presses it, "-select" lets go, and
+# an empty name is the loop coming round with nothing to report, which is what
+# a held chord looks like from in here.
+for name, when in json.loads(sys.argv[2]):
+    if name:
+        button = buttons[name.lstrip("-")]
+        held.discard(button) if name.startswith("-") else held.add(button)
+        chord.update(held, 1, when)
+
+    if chord.due(when):
+        fired.append(when)
+
+print(json.dumps(fired))
+`
+
+// chordFires replays a session and reports the moments the mode would flip.
+func chordFires(t *testing.T, script string) []float64 {
+	t.Helper()
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("SKIPPED: no python3, so the helper's behaviour is unverified here")
+	}
+
+	dir := t.TempDir()
+
+	path := filepath.Join(dir, "pad-pointer.py")
+	if err := os.WriteFile(path, asset("assets/pad-pointer.py"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command(python, "-c", chordDriver, path, script).Output()
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok && len(exit.Stderr) > 0 {
+			t.Skipf("SKIPPED: the helper could not be loaded here: %s", exit.Stderr)
+		}
+
+		t.Fatal(err)
+	}
+
+	var fired []float64
+	if err := json.Unmarshal(out, &fired); err != nil {
+		t.Fatalf("the driver printed %q", out)
+	}
+
+	return fired
+}
+
+// The point of the change: both buttons at once is something a game can ask
+// for, so pressing them is not enough. Only holding them is.
+func TestPointerChordHasToBeHeld(t *testing.T) {
+	tapped := `[["select",0.0],["start",0.05],["",0.3],["",0.6],["-start",0.8],["-select",0.9],["",3.0]]`
+
+	if fired := chordFires(t, tapped); len(fired) != 0 {
+		t.Errorf("a tap flipped the mode at %v, so a game pressing both buttons would take the stick away", fired)
+	}
+}
+
+func TestPointerChordFiresOnceItHasBeenHeldLongEnough(t *testing.T) {
+	held := `[["select",0.0],["start",0.0],["",0.5],["",0.9],["",1.1],["",1.5]]`
+
+	fired := chordFires(t, held)
+	if len(fired) != 1 {
+		t.Fatalf("holding the chord flipped the mode %d times, want once: %v", len(fired), fired)
+	}
+
+	if fired[0] < 1.0 {
+		t.Errorf("the mode flipped after %.2f seconds, want a full second", fired[0])
+	}
+}
+
+// A hand that stays on both buttons afterwards must not toggle once a second,
+// which is the difference between an override and a flicker.
+func TestPointerChordDoesNotRepeatWhileItIsStillHeld(t *testing.T) {
+	leaning := `[["select",0.0],["start",0.0],["",1.2],["",2.4],["",3.6],["",4.8],["",6.0]]`
+
+	if fired := chordFires(t, leaning); len(fired) != 1 {
+		t.Errorf("the mode flipped %d times while the chord was held: %v", len(fired), fired)
+	}
+}
+
+// Letting go and pressing again is a second override, and the clock starts
+// over rather than counting the first hold towards it.
+func TestPointerChordCanBeUsedAgainAfterLettingGo(t *testing.T) {
+	twice := `[["select",0.0],["start",0.0],["",1.1],["-start",1.2],["start",1.3],["",1.9],["",2.4]]`
+
+	fired := chordFires(t, twice)
+	if len(fired) != 2 {
+		t.Fatalf("the chord fired %d times, want twice: %v", len(fired), fired)
+	}
+
+	if fired[1] < 2.3 {
+		t.Errorf("the second override came at %.2f, so the first hold counted towards it", fired[1])
+	}
+}
+
+// Half the chord is not the chord, however long it is held. Select on its own
+// is a game input like any other.
+func TestPointerChordIgnoresOneButtonOnItsOwn(t *testing.T) {
+	alone := `[["select",0.0],["",1.5],["",3.0],["",9.0]]`
+
+	if fired := chordFires(t, alone); len(fired) != 0 {
+		t.Errorf("one button flipped the mode at %v", fired)
+	}
+}
+
 // The driver for the speed the daemon writes into a seat: it points the helper's
 // configuration path at a file built for the test and asks what it reads.
 const speedDriver = `

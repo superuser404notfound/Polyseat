@@ -682,10 +682,16 @@ every game unplayable, so the compositor is asked instead of guessed at: a
 fullscreen application in front means the controller belongs to it and the mode
 goes off, and back on the desktop it goes on. That is what the Windows tools do
 from the foreground window, and sway can answer it exactly rather than by
-heuristic. Select and Start together still override it by hand, a chord because
-single buttons are taken, and the override holds until something goes fullscreen
-or stops being: that covers a windowed game, and it means a forgotten override
-cannot leave somebody holding a stick that does nothing. The gamepad is never
+heuristic. Select and Start held together for a second still override it by
+hand, a chord because single buttons are taken and held rather than tapped
+because both are ordinary game inputs that a game may well want at once; the pad
+buzzes when it takes, which is the only confirmation available, since nothing
+appears on screen and the pointer shows itself only once the stick moves.
+Sunshine's virtual pads carry force feedback back to the client and Moonlight
+passes it to the real controller, so the buzz reaches the hands that held the
+chord. The override holds until something goes fullscreen or stops being: that
+covers a windowed game, and it means a forgotten override cannot leave somebody
+holding a stick that does nothing. The gamepad is never
 grabbed, so games see it exactly as before. Left stick points and right stick
 scrolls, which is the way round the Windows tools do it and worth matching.
 
