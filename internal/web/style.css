@@ -44,14 +44,27 @@ body {
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 1rem;
-  flex-wrap: wrap;
+/* The page head. Placed explicitly rather than left to the flow, because the
+   two arrangements it has do not differ in wrapping alone: on a phone the pills
+   take a row of their own and Account stays up on the title row, where a thumb
+   reaches it without scrolling past the pills. */
+header.top {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.6rem 1rem;
   padding: 1.25rem 1.5rem;
   border-bottom: 1px solid var(--line);
+}
+
+header.top h1 { grid-area: 1 / 1; }
+header.top .account { grid-area: 1 / 2; justify-self: end; }
+header.top .host { grid-row: 2; grid-column: 1 / -1; }
+
+@media (min-width: 46rem) {
+  header.top { grid-template-columns: auto 1fr auto; }
+  header.top .host { grid-area: 1 / 2; justify-content: flex-end; }
+  header.top .account { grid-area: 1 / 3; }
 }
 
 h1 {
@@ -115,8 +128,6 @@ main {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0;
-  border: 0;
 }
 
 .seat h2 {
@@ -142,6 +153,20 @@ dl.facts {
 
 dl.facts dt { color: var(--dim); }
 dl.facts dd { margin: 0; font-family: var(--mono); font-size: 0.82rem; }
+
+/* Two columns cost a phone about a third of the line, and the values that suffer
+   for it are the long ones (the device list, the encoder list) that need the
+   room most. Below this width the label goes above its value and the value gets
+   the whole card, with the pairs held apart by space rather than by a column. */
+@media (max-width: 34rem) {
+  dl.facts {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  dl.facts dt { margin-top: 0.6rem; }
+  dl.facts dt:first-of-type { margin-top: 0; }
+}
 
 dd a { color: var(--accent); }
 
@@ -190,8 +215,6 @@ button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad)
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0;
-  border: 0;
   flex-wrap: wrap;
 }
 
