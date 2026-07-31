@@ -1,0 +1,113 @@
+# What a runner can check about Polyseat, which is less than it looks like and
+# more than nothing.
+#
+# It cannot check the thing the project is: a runner has no GPU, no Incus, no
+# udev worth the name and no second machine to stream to. host/test-install.sh
+# covers the installer against a real VM and is run by hand.
+#
+# What it does cover is the class of breakage that never shows up on the machine
+# this is written on, because that machine builds before it commits: a push that
+# does not compile, a test that only passed against one person's filesystem, a
+# shell script with a mistake in a branch nobody took yet. Somebody cloning main
+# meets exactly those.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # From go.mod, so there is one place that says which Go this is.
+          go-version-file: go.mod
+          cache: true
+
+      # Without this the library package is green and tests nothing.
+      #
+      # Its tests need a filesystem that can share blocks, and they skip loudly
+      # rather than pass quietly when there is none. A runner's disk is ext4,
+      # which cannot, so every one of them would skip and the package that
+      # exists to clone game directories would be checked by nobody. Half a
+      # gigabyte of btrfs in a file fixes that.
+      #
+      # librsvg and Pillow are here for the same reason: the seat package skips
+      # its icon and box art tests without them.
+      - name: A filesystem that can share blocks, and the helpers the tests use
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq btrfs-progs librsvg2-bin python3-pil
+          truncate -s 512M /tmp/reflink.img
+          mkfs.btrfs -q /tmp/reflink.img
+          sudo mkdir -p /mnt/reflink
+          sudo mount -o loop /tmp/reflink.img /mnt/reflink
+          sudo chmod 0777 /mnt/reflink
+          echo "POLYSEAT_TEST_DIR=/mnt/reflink" >> "$GITHUB_ENV"
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt clean:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      - run: go vet ./...
+
+      - run: go build ./...
+
+      # Not run as root, even though one test asks for it and skips. Running the
+      # whole suite as root would hide the opposite mistake, which this project
+      # has already made once: a tree created 0700 as root looks perfectly
+      # readable to root and is unusable to the player it was for.
+      #
+      # `set -o pipefail` is not decoration. The default shell here is `bash -e`
+      # without it, so a pipe reports the status of `tee`, and a run whose tests
+      # failed would go green.
+      - name: go test
+        run: |
+          set -o pipefail
+          go test ./... -v 2>&1 | tee /tmp/test.log
+
+      # Printed rather than gated, from the log the run already produced rather
+      # than from a second run of the whole suite. A skip is not a failure, but
+      # a skip nobody sees is a test that quietly stopped existing.
+      - name: What skipped
+        if: always()
+        run: |
+          grep -E "^ *--- SKIP" -A1 /tmp/test.log || echo "nothing skipped"
+
+  shell:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # bash -n first, because a parse error makes everything shellcheck says
+      # about the same file beside the point.
+      - name: Parse every script
+        run: |
+          for f in host/*.sh; do
+            bash -n "$f"
+          done
+
+      # At warning and above. The scripts are clean at that level today, which
+      # was measured before this was written rather than hoped for, and the
+      # notes below it are style opinions this project does not share: single
+      # quotes around a command meant to be expanded on the other side of an
+      # `incus exec` are deliberate.
+      - name: shellcheck
+        run: shellcheck --severity=warning host/*.sh
