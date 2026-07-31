@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 26
+const Generation = 27
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -637,6 +637,29 @@ const protonStamp = protonDir + "/" + protonName + "/polyseat-release"
 // failed to build. The one case worth being loud about is a download whose
 // checksum does not match, because that is not a hiccup.
 func (p *Provisioner) stepProton(ctx context.Context) error {
+	if err := p.installProton(ctx); err != nil {
+		return err
+	}
+
+	// The default is set whether or not anything was installed just now. The
+	// common pass is the one that finds the current build already there, and a
+	// seat that came out of an older generation, or whose Steam was running the
+	// last time this ran, still needs its setting.
+	_, code, err := p.Client.Try(ctx, p.name(), "test", "-d", protonDir+"/"+protonName)
+	if err != nil {
+		return err
+	}
+
+	if code != 0 {
+		return nil
+	}
+
+	return p.stepSteamPlay(ctx)
+}
+
+// installProton puts the current release in the seat, or leaves what is already
+// there alone.
+func (p *Provisioner) installProton(ctx context.Context) error {
 	release, err := protonRelease(ctx, p.isaLevel(ctx))
 	if err != nil {
 		p.Log("! Proton CachyOS could not be looked up, the seat keeps Valve's Proton: %v", err)
@@ -652,7 +675,26 @@ func (p *Provisioner) stepProton(ctx context.Context) error {
 	if strings.TrimSpace(stamp) == release.tag {
 		p.Log("Proton CachyOS %s already installed", release.tag)
 
-		return nil
+		// The manifest is rewritten even so, and it is the one part of an
+		// installation cheap enough to keep rewriting. A seat built before the
+		// name was fixed carries the version in it, and this is what moves such
+		// a seat over without downloading a third of a gigabyte it already has.
+		//
+		// Only when Steam is not running, and the two are the same window on
+		// purpose. Renaming the tool is exactly what invalidates a setting that
+		// names the old one, so doing it while Steam holds config.vdf would
+		// leave the seat pointing at a tool that no longer exists, which reads
+		// as the default silently reverting to Valve's Proton.
+		running, err := p.steamRunning(ctx)
+		if err != nil || running {
+			return err
+		}
+
+		_, _, err = p.Client.Try(ctx, p.name(), "sh", "-c", fmt.Sprintf(
+			"cat > %s/%s/compatibilitytool.vdf <<'VDF'\n%s\nVDF\n",
+			protonDir, protonName, compatToolManifest(release.tag)))
+
+		return err
 	}
 
 	// Fetched here rather than in the seat, and before the archive rather than
@@ -698,6 +740,87 @@ func (p *Provisioner) stepProton(ctx context.Context) error {
 	return nil
 }
 
+// steamRunning reports whether Steam holds its configuration file open.
+//
+// Everything that changes what Steam has already read waits for this to be
+// false. Steam keeps config.vdf in memory and writes the whole of it out when
+// it exits, so a change made underneath it is not merely ignored, it is undone.
+func (p *Provisioner) steamRunning(ctx context.Context) (bool, error) {
+	_, code, err := p.Client.Try(ctx, p.name(), "pgrep", "-x", "steam")
+	if err != nil {
+		return false, err
+	}
+
+	return code == 0, nil
+}
+
+// steamConfigPath is where Steam keeps the setting for which compatibility tool
+// to run everything else with.
+const steamConfigPath = steamRoot + "/config/config.vdf"
+
+// stepSteamPlay makes Proton CachyOS the seat's default.
+//
+// Otherwise the tool is merely present, and every game still runs under Valve's
+// Proton until somebody walks through Steam's settings with a gamepad, which is
+// the one interaction this whole project exists to avoid.
+//
+// Only while Steam is not running, and that is not a nicety. Steam holds this
+// file in memory and writes the whole of it out when it exits, so an edit made
+// underneath a running Steam is not merely ignored, it is reverted along with
+// anything else that changed in between. Provisioning is a reliable moment for
+// it: the session has just been rebuilt and nothing has started Steam yet.
+func (p *Provisioner) stepSteamPlay(ctx context.Context) error {
+	running, err := p.steamRunning(ctx)
+	if err != nil {
+		return err
+	}
+
+	if running {
+		p.Log("Steam is running, so the default Proton stays as it is for now")
+
+		return nil
+	}
+
+	// A seat whose Steam has never started has no file, which is not a problem
+	// to report: it is the ordinary state of a seat being built, and the setting
+	// is written into a file Steam then fills in around.
+	existing, readErr := p.Client.ReadFile(p.name(), steamConfigPath)
+	if readErr != nil {
+		existing = nil
+	}
+
+	updated, changed, err := SetCompatTool(existing, protonName)
+	if err != nil {
+		p.Log("! Steam's configuration was left alone because it could not be read: %v", err)
+
+		return nil
+	}
+
+	if !changed {
+		return nil
+	}
+
+	if p.uid == 0 {
+		if err := p.readUID(ctx); err != nil {
+			return err
+		}
+	}
+
+	owner := strconv.FormatInt(p.uid, 10)
+
+	if _, err := p.run(ctx, "install", "-d", "-o", owner, "-g", owner, steamRoot+"/config"); err != nil {
+		return err
+	}
+
+	if err := p.Client.PushFile(p.name(), steamConfigPath, updated, 0o644, p.uid, p.uid); err != nil {
+		return err
+	}
+
+	p.Log("Proton CachyOS is now what this seat runs Windows games with")
+
+	return nil
+}
+
 // lastLine is what to quote from a shell script that failed: the message that
 // stopped it, rather than the whole of a download's progress.
 func lastLine(out string) string {
@@ -728,9 +851,52 @@ mkdir .polyseat-new
 tar -xJf proton.tar.xz -C .polyseat-new --strip-components=1
 rm -f proton.tar.xz
 printf '%%s\n' %[4]q > .polyseat-new/polyseat-release
+cat > .polyseat-new/compatibilitytool.vdf <<'VDF'
+%[6]s
+VDF
 rm -rf %[5]q
 mv .polyseat-new %[5]q
-`, protonDir, url, sum, tag, protonName)
+`, protonDir, url, sum, tag, protonName, compatToolManifest(tag))
+}
+
+// compatToolManifest is the file Steam identifies the tool by, written here
+// rather than kept as it comes.
+//
+// The name upstream puts in it carries the version and the instruction set, so
+// every update introduces a tool with a new identity. Steam records the chosen
+// compatibility tool by that identity, in config.vdf and in every per game
+// override, and all of those quietly stop pointing at anything the next time
+// this updates. A fixed name is what Valve's own proton_experimental does, for
+// the same reason: the identity is the channel, not the build.
+//
+// The version is kept where it belongs, in the name shown in the menu, so that
+// the seat still says which build it is running.
+func compatToolManifest(tag string) string {
+	return `"compatibilitytools"
+{
+  "compat_tools"
+  {
+    "` + protonName + `"
+    {
+      "install_path" "."
+      "display_name" "` + protonDisplayName(tag) + `"
+      "from_oslist"  "windows"
+      "to_oslist"    "linux"
+    }
+  }
+}`
+}
+
+// protonDisplayName turns a release tag into something worth reading in a menu.
+// "cachyos-11.0-20260703-slr" is the tag; the middle of it is the version.
+func protonDisplayName(tag string) string {
+	version := strings.TrimSuffix(strings.TrimPrefix(tag, "cachyos-"), "-slr")
+
+	if version == "" || strings.ContainsAny(version, `"\`) {
+		return "Proton CachyOS"
+	}
+
+	return "Proton CachyOS " + version
 }
 
 // protonChecksum reads the hash out of the published sha512sum file.

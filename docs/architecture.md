@@ -618,6 +618,37 @@ files it already opened, which is precisely what makes it worth avoiding: it
 would open the next one it needs some minutes later and find it gone, with
 nothing in any log connecting the two.
 
+**It is also made the seat's default**, because a compatibility tool that is
+merely present changes nothing: every game still runs under Valve's Proton until
+somebody walks through Steam's settings with a gamepad, which is the interaction
+this whole project exists to avoid. Steam records the choice in `config.vdf`,
+four blocks deep, and there is no command that sets it, so the file is edited.
+Edited rather than rewritten: that file also holds the account the seat is
+signed in as, so the change is one inserted span or one replaced value and
+everything the code does not understand comes out byte for byte as it went in.
+
+Somebody else's choice wins. A setting that names a tool which is not ours stays,
+because a seat where the player picked Proton Experimental on purpose is not a
+seat with a broken setting. What does get rewritten is a setting naming one of
+our own builds under an older, versioned name.
+
+That versioned name is the reason the tool's own manifest is rewritten too.
+Upstream names it after the version and the instruction set, so every update
+introduces a tool with a new identity and every setting that named the old one
+quietly stops pointing at anything. The name is fixed to `proton-cachyos`
+instead, which is what Valve's own `proton_experimental` does and for the same
+reason: the identity is the channel, not the build. The version moves to the
+display name, so the menu still says which build is running.
+
+Both of those wait for Steam not to be running, and it is the same window on
+purpose. Steam keeps `config.vdf` in memory and writes the whole of it out when
+it exits, so a change made underneath it is not ignored but undone. Renaming the
+tool is also exactly what invalidates a setting naming the old one, so doing
+that half while Steam holds the file would leave a seat pointing at a tool that
+no longer exists, which reads as the default silently reverting. Provisioning is
+the reliable moment for both: the session has just been rebuilt and nothing has
+started Steam yet.
+
 `/dev/ntsync` is passed into the seat for it. That is the kernel interface Wine
 uses for the synchronisation primitives Windows programs expect, Proton CachyOS
 is built around having it, and without it Proton falls back to esync and fsync.
