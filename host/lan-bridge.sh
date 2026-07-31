@@ -133,8 +133,12 @@ if [[ $MODE == check ]]; then
         [[ -n $list ]] && ok "$kind on $UPLINK: $list"
     done
 
-    list=$(seats_on bridged "$BRIDGE" | paste -sd' ')
-    [[ -n $list ]] && ok "bridged on $BRIDGE: $list"
+    # Only when the bridge is not the uplink itself, which it is once this has
+    # run, and reporting the same seats twice reads as two separate findings.
+    if [[ $BRIDGE != "$UPLINK" ]]; then
+        list=$(seats_on bridged "$BRIDGE" | paste -sd' ')
+        [[ -n $list ]] && ok "bridged on $BRIDGE: $list"
+    fi
 
     exit 0
 fi
@@ -164,14 +168,29 @@ stop_seats() {
     done
 }
 
+# start_seats says which seats to start and does not start them.
+#
+# Deliberately. incus start brings the container up and nothing else: the seat's
+# compositor and Sunshine are user units that are not enabled, and starting a
+# seat properly also writes the Moonlight app list, brings up the audio stack,
+# waits for Sunshine and reads back which encoder it got. That is the daemon's
+# start path and it is reached from the interface. This script ran incus start
+# once and left two seats that were up, on the network, and streaming nothing.
 start_seats() {
     local name
 
+    ((${#STOPPED[@]:-0})) || return 0
+
+    step "Start these seats from the Polyseat interface"
+
     for name in "${STOPPED[@]:-}"; do
         [[ -n $name ]] || continue
-        incus start "$name" >/dev/null 2>&1 && ok "$name started again" ||
-            warn "$name did not start again, start it from the interface"
+        echo "    $name"
     done
+
+    echo
+    echo "    Not done here on purpose: starting a seat is more than starting"
+    echo "    its container, and the daemon is the thing that knows the rest."
 
     STOPPED=()
 }
