@@ -726,3 +726,235 @@ func TestOpenRefusesAFilesystemWithoutReflinks(t *testing.T) {
 		t.Error("a pool was opened on a filesystem that cannot share blocks")
 	}
 }
+
+// external builds the host's side of the pool: a Steam library that lives
+// wherever its owner put it rather than under the pool root.
+func external(t *testing.T, updatable bool) Member {
+	t.Helper()
+
+	apps := filepath.Join(reflinkDir(t), "Steam", steamApps)
+
+	if err := os.MkdirAll(filepath.Join(apps, commonDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	return Member{Name: "host", Apps: apps, Owner: Keep, Updatable: updatable}
+}
+
+// TestTheHostReceivesFromThePool is the whole point of an external member: a
+// game installed in a seat has to turn up on the machine somebody is sitting
+// at, not only in the other seats. Before this the host was a source and
+// nothing else, so the only way to play a seat's game on the host was to
+// download it again.
+func TestTheHostReceivesFromThePool(t *testing.T) {
+	pool := openPool(t)
+	host := external(t, false)
+
+	install(t, pool.SeatApps("seat1"), "1562430", "DREDGE", "DREDGE", "1000", StateInstalled)
+
+	if _, err := pool.Sync([]Member{host, {Name: "seat1", Owner: Keep}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{ManifestName("1562430"), filepath.Join(commonDir, "DREDGE", "game.bin")} {
+		if _, err := os.Stat(filepath.Join(host.Apps, name)); err != nil {
+			t.Errorf("the host did not get %s: %v", name, err)
+		}
+	}
+
+	// The manifest is neutralised on the way in exactly as it is for a seat.
+	// Left alone, the host's Steam would be told the account that installed it
+	// in the seat owns this copy.
+	data, err := os.ReadFile(filepath.Join(host.Apps, ManifestName("1562430")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(data), "76561197960287930") {
+		t.Error("the installing account's id was copied into the host's manifest")
+	}
+
+	if !strings.Contains(string(data), "InstalledDepots") {
+		t.Error("the depot list did not survive, so Steam will download the game again")
+	}
+}
+
+// TestTheHostContributesToThePool is the direction that already worked, kept
+// working now that the host arrives as a member rather than as a source.
+func TestTheHostContributesToThePool(t *testing.T) {
+	pool := openPool(t)
+	host := external(t, false)
+
+	install(t, host.Apps, "440", "Team Fortress 2", "Team Fortress 2", "1000", StateInstalled)
+
+	if _, err := pool.Sync([]Member{host, {Name: "seat1", Owner: Keep}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(pool.SeatApps("seat1"), commonDir, "Team Fortress 2")); err != nil {
+		t.Errorf("a game installed on the host did not reach the seat: %v", err)
+	}
+}
+
+// TestUninstallingOnTheHostIsNotUndone. The host gets the same protection as a
+// seat: clearing space on your own machine must not be reversed a minute later
+// by the daemon that put it there.
+//
+// The game is one the host had itself, which is the case that only the harvest
+// pass can record. A title the pool handed over is marked on the way in, so a
+// test using one of those would pass with the recording removed and prove
+// nothing: the first version of this test did exactly that.
+func TestUninstallingOnTheHostIsNotUndone(t *testing.T) {
+	pool := openPool(t)
+	host := external(t, false)
+	all := []Member{host, {Name: "seat1", Owner: Keep}}
+
+	install(t, host.Apps, "440", "Team Fortress 2", "Team Fortress 2", "1000", StateInstalled)
+
+	if _, err := pool.Sync(all, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.RemoveAll(filepath.Join(host.Apps, commonDir, "Team Fortress 2")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Remove(filepath.Join(host.Apps, ManifestName("440"))); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := pool.Sync(all, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(report.Declined) != 1 || report.Declined[0].Seat != "host" {
+		t.Fatalf("the uninstall was not recorded as the host declining: %+v", report)
+	}
+
+	if _, err := pool.Sync(all, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(host.Apps, ManifestName("440"))); err == nil {
+		t.Error("the game the host uninstalled was put back")
+	}
+}
+
+// TestABusyHostIsNotUpdated. Replacing files under a running game corrupts an
+// install rather than improving one, and that is as true of the host as of a
+// seat.
+func TestABusyHostIsNotUpdated(t *testing.T) {
+	pool := openPool(t)
+	host := external(t, false)
+
+	install(t, host.Apps, "440", "Team Fortress 2", "Team Fortress 2", "1000", StateInstalled)
+	install(t, pool.SeatApps("seat1"), "440", "Team Fortress 2", "Team Fortress 2", "2000", StateInstalled)
+
+	report, err := pool.Sync([]Member{host, {Name: "seat1", Owner: Keep}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(report.Pending) != 1 || report.Pending[0].Seat != "host" {
+		t.Fatalf("the waiting update was not reported: %+v", report)
+	}
+
+	app, err := ReadApp(filepath.Join(host.Apps, ManifestName("440")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if app.BuildID != "1000" {
+		t.Errorf("the host's copy was replaced while it was busy, build is now %s", app.BuildID)
+	}
+
+	// Idle, and the same update goes through.
+	host.Updatable = true
+
+	if _, err := pool.Sync([]Member{host, {Name: "seat1", Owner: Keep}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	app, err = ReadApp(filepath.Join(host.Apps, ManifestName("440")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if app.BuildID != "2000" {
+		t.Errorf("an idle host was not updated, build is still %s", app.BuildID)
+	}
+}
+
+// TestTheHostIsLeftOutOfTheFolderSide. The launcher agnostic directory is
+// something the provisioner makes inside a seat. The host has no equivalent
+// place, and inventing one under somebody's home directory is not this
+// daemon's business.
+func TestTheHostIsLeftOutOfTheFolderSide(t *testing.T) {
+	pool := openPool(t)
+	host := external(t, true)
+
+	folder := filepath.Join(pool.SeatFolders("seat1"), "Some GOG Game")
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	write(t, filepath.Join(folder, "start.sh"), "#!/bin/sh\n", 0o755)
+
+	if _, err := pool.Sync([]Member{host, {Name: "seat1", Owner: Keep}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(host.Apps))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, entry := range entries {
+		if entry.Name() != steamApps {
+			t.Errorf("the host's Steam directory grew a %s that nobody asked for", entry.Name())
+		}
+	}
+
+	inv, err := pool.Inventory([]Member{host, {Name: "seat1", Owner: Keep}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, title := range inv.Titles {
+		if title.Kind != "folder" {
+			continue
+		}
+
+		for _, in := range title.In {
+			if in == "host" {
+				t.Error("the host is listed as having a shared folder it cannot have")
+			}
+		}
+	}
+}
+
+// TestEnsureLeavesAnExternalLibraryAlone. Ensure creates and chowns, which is
+// right for a directory the daemon owns and wrong for one it does not. A seat's
+// library is made to measure; the host's belongs to a person.
+func TestEnsureLeavesAnExternalLibraryAlone(t *testing.T) {
+	pool := openPool(t)
+
+	host := Member{
+		Name:  "host",
+		Apps:  filepath.Join(reflinkDir(t), "not-created-by-us"),
+		Owner: Keep,
+	}
+
+	if err := pool.Ensure(host); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	if _, err := os.Stat(host.Apps); err == nil {
+		t.Error("Ensure created a directory inside somebody else's home")
+	}
+
+	if _, err := os.Stat(pool.SeatRoot("host")); err == nil {
+		t.Error("Ensure made a seat directory for the host, which has its own library")
+	}
+}

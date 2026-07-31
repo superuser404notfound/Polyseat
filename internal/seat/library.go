@@ -47,6 +47,16 @@ type LibraryStatus struct {
 	// from on every pass.
 	Sources []string `json:"sources"`
 
+	// Receiving is the one of them that is also given games, so a title
+	// installed in a seat turns up on the host as well.
+	//
+	// Named rather than implied, because only one library can have it: the same
+	// game cloned into two folders of one Steam client is installed twice as
+	// far as that client is concerned. Somebody tracking a second library needs
+	// to be told which one it is rather than left to work it out from which
+	// games appear.
+	Receiving string `json:"receiving,omitempty"`
+
 	// Outside names the seats that exist and are not taking part.
 	//
 	// Reported rather than left out, because taking part is a per seat setting
@@ -142,7 +152,8 @@ func (m *Manager) openLibrary() {
 	m.log.Info("shared library ready", "dir", m.cfg.LibraryDir)
 }
 
-// members lists the seats taking part, with the host ownership their files need.
+// members lists everything taking part, with the host ownership each one's
+// files need.
 //
 // Works on seats that are switched off, which is the point of doing all of this
 // on the host filesystem: a game installed in one seat reaches the others
@@ -154,7 +165,7 @@ func (m *Manager) members() []library.Member {
 		return nil
 	}
 
-	var out []library.Member
+	out := m.hostMembers()
 
 	for _, s := range seats {
 		if !s.Library {
@@ -390,24 +401,38 @@ func (m *Manager) syncLibrary(ctx context.Context) {
 	}
 
 	// Written into each affected seat's own log, because that is where somebody
-	// looking at a seat will go to ask why a game turned up in it.
+	// looking at a seat will go to ask why a game turned up in it. The host has
+	// no such log and must not be given one: logf creates the runtime record it
+	// writes into, and a phantom seat called host would appear in the interface.
 	for _, move := range report.Harvested {
-		m.logf(move.Seat, "%s went into the shared library", move.Name)
+		m.moved(move.Seat, "%s went into the shared library", move.Name)
 	}
 
 	for _, move := range report.Delivered {
-		m.logf(move.Seat, "%s came from the shared library", move.Name)
+		m.moved(move.Seat, "%s came from the shared library", move.Name)
 	}
 
 	for _, move := range report.Declined {
-		m.logf(move.Seat, "%s was uninstalled here, the library will not offer it again", move.Name)
+		m.moved(move.Seat, "%s was uninstalled here, the library will not offer it again", move.Name)
 	}
 
 	for _, move := range report.Pending {
-		m.logf(move.Seat, "an update to %s is waiting, the seat is using the shared library right now", move.Name)
+		m.moved(move.Seat, "an update to %s is waiting, %s is using the shared library right now", move.Name, move.Seat)
 	}
 
 	m.notify()
+}
+
+// moved records one title changing hands, in the seat's own log or in the
+// daemon's when the host was the one it happened to.
+func (m *Manager) moved(name, format string, args ...any) {
+	if name == hostMember {
+		m.log.Info("library: " + fmt.Sprintf(format, args...))
+
+		return
+	}
+
+	m.logf(name, format, args...)
 }
 
 // ------------------------------------------------------------------ interface
@@ -425,11 +450,18 @@ func (m *Manager) Library() LibraryStatus {
 
 	sources := m.pool.Sources()
 
+	var receiving string
+
+	if hosts := m.hostMembers(); len(hosts) > 0 {
+		receiving = hosts[0].Apps
+	}
+
 	return LibraryStatus{
 		Available:  true,
 		Root:       m.pool.Root(),
 		Candidates: steamLibraries(m.pool.Root(), sources),
 		Sources:    sources,
+		Receiving:  receiving,
 		Outside:    m.outside(),
 		Inventory:  inv,
 	}
@@ -493,8 +525,13 @@ func (m *Manager) OfferToSeat(ctx context.Context, seat, appID string) error {
 		return fmt.Errorf("%w: %s", ErrNoLibrary, m.libraryErr)
 	}
 
-	if _, err := m.store.Get(seat); err != nil {
-		return err
+	// The host is a member with no seat record, so it is checked for by name
+	// rather than looked up. Without this the way back from an uninstall would
+	// exist for every seat and not for the machine somebody is sitting at.
+	if seat != hostMember {
+		if _, err := m.store.Get(seat); err != nil {
+			return err
+		}
 	}
 
 	m.syncMu.Lock()

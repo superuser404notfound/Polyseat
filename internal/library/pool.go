@@ -48,23 +48,47 @@ const settleTime = 2 * time.Minute
 // Logger receives a line per thing done.
 type Logger func(format string, args ...any)
 
-// Member is a seat as far as the library is concerned: a name, the host
-// ownership its files need, and whether its files may be replaced right now.
+// Member is one library the pool keeps in step: a name, the host ownership its
+// files need, and whether its files may be replaced right now.
+//
+// Usually a seat. It can also be the host's own Steam library, which is the
+// same thing seen from the other side: a directory holding installed games that
+// somebody plays out of. The only differences are where it lives and who owns
+// it, and both are fields.
 type Member struct {
 	Name  string
 	Owner Owner
 
-	// Updatable says the seat's copies can safely be replaced with a newer
+	// Updatable says the member's copies can safely be replaced with a newer
 	// build from the pool. The caller decides what safe means, because it is
-	// the one that knows whether a container is running and whether a client
-	// is playing out of that directory; overwriting a game under a running
-	// Steam corrupts an install rather than improving one.
+	// the one that knows whether a container is running and whether somebody is
+	// playing out of that directory; overwriting a game under a running Steam
+	// corrupts an install rather than improving one.
 	//
-	// A seat that is not updatable is left alone and the pending update is
+	// A member that is not updatable is left alone and the pending update is
 	// reported, so it shows up as something waiting rather than as nothing
 	// happening.
 	Updatable bool
+
+	// Apps is where the member's Steam library lives on the host. Empty means
+	// the seat layout under the pool root, which is where every seat's is.
+	//
+	// A member that sets it is external: the daemon did not create the
+	// directory, does not own it and never chowns it. It is somebody's real
+	// Steam library and the only thing that happens to it is that titles are
+	// cloned in.
+	Apps string
+
+	// Folders is the launcher agnostic directory. Only read for an external
+	// member, and empty there means it does not take part in that side at all.
+	// A seat gets one from the provisioner; the host has no equivalent place,
+	// so it shares Steam titles and nothing else.
+	Folders string
 }
+
+// External reports whether this member's library lives outside the pool root,
+// which is to say whether it belongs to somebody other than the daemon.
+func (m Member) External() bool { return m.Apps != "" }
 
 // Pool is the shared library on disk.
 type Pool struct {
@@ -183,8 +207,37 @@ func (p *Pool) SeatFolders(seat string) string {
 	return filepath.Join(p.SeatRoot(seat), sharedDir)
 }
 
+// apps and folders are where a member's copies actually live: under the pool
+// root for a seat, wherever its owner put it for an external member.
+//
+// folders comes back empty for an external member that named none, which is the
+// signal that it takes part in the Steam side only.
+func (p *Pool) apps(m Member) string {
+	if m.External() {
+		return m.Apps
+	}
+
+	return p.SeatApps(m.Name)
+}
+
+func (p *Pool) folders(m Member) string {
+	if m.External() {
+		return m.Folders
+	}
+
+	return p.SeatFolders(m.Name)
+}
+
 // Ensure creates a seat's library with the ownership the container needs.
+//
+// Does nothing for an external member. That directory already exists, it is not
+// the daemon's, and creating or chowning parts of somebody's own Steam library
+// is not a thing to do on the way to copying a game into it.
 func (p *Pool) Ensure(m Member) error {
+	if m.External() {
+		return nil
+	}
+
 	for _, dir := range []string{
 		p.SeatRoot(m.Name),
 		p.SeatApps(m.Name),
@@ -258,10 +311,25 @@ func (p *Pool) Sync(members []Member, log Logger) (Report, error) {
 
 	var report Report
 
+	// A tracked library that the caller also passed as a member is harvested
+	// below along with everything else, and doing it here as well would read the
+	// same directory twice per pass for no gain.
+	joined := map[string]bool{}
+
+	for _, m := range members {
+		if m.External() {
+			joined[m.Apps] = true
+		}
+	}
+
 	// Outside libraries first, so a game the host updated is already in the
 	// pool by the time the seats are looked at and reaches them in this pass
 	// rather than the next.
 	for _, source := range p.state.Sources {
+		if joined[source] {
+			continue
+		}
+
 		if err := p.harvestFrom(source, "host", p.own, &report, log); err != nil {
 			report.Problems = append(report.Problems, fmt.Sprintf("%s: %v", source, err))
 		}
@@ -308,9 +376,9 @@ func (p *Pool) Sync(members []Member, log Logger) (Report, error) {
 	return report, nil
 }
 
-// harvest takes finished installs out of a seat and into the pool.
+// harvest takes finished installs out of a member's library and into the pool.
 func (p *Pool) harvest(m Member, report *Report, log Logger) error {
-	apps, err := ReadApps(p.SeatApps(m.Name))
+	apps, err := ReadApps(p.apps(m))
 	if err != nil {
 		return err
 	}
@@ -321,7 +389,7 @@ func (p *Pool) harvest(m Member, report *Report, log Logger) error {
 		p.mark(m.Name, app.AppID, statusDelivered)
 	}
 
-	return p.harvestFrom(p.SeatApps(m.Name), m.Name, p.own, report, log)
+	return p.harvestFrom(p.apps(m), m.Name, p.own, report, log)
 }
 
 // harvestFrom takes finished installs out of any Steam library into the pool.
@@ -402,7 +470,12 @@ func (p *Pool) harvestFrom(steamapps, from string, owner Owner, report *Report, 
 // stands in for StateFlags, and the newest time inside the tree stands in for
 // buildid. Only ever forward, for the same reason.
 func (p *Pool) harvestFolders(m Member, report *Report, log Logger) error {
-	folders, err := ScanFolders(p.SeatFolders(m.Name))
+	dir := p.folders(m)
+	if dir == "" {
+		return nil
+	}
+
+	folders, err := ScanFolders(dir)
 	if err != nil {
 		return err
 	}
@@ -422,7 +495,7 @@ func (p *Pool) harvestFolders(m Member, report *Report, log Logger) error {
 		log("taking the folder %s from %s into the pool", folder.Name, m.Name)
 
 		result, err := Clone(
-			filepath.Join(p.SeatFolders(m.Name), folder.Name),
+			filepath.Join(dir, folder.Name),
 			filepath.Join(p.PoolFolders(), folder.Name),
 			p.own,
 		)
@@ -456,9 +529,14 @@ func (p *Pool) harvestFolders(m Member, report *Report, log Logger) error {
 
 // distributeFolders offers every shared folder in the pool to one seat.
 func (p *Pool) distributeFolders(m Member, report *Report, log Logger) error {
+	dir := p.folders(m)
+	if dir == "" {
+		return nil
+	}
+
 	here := map[string]Folder{}
 
-	folders, err := ScanFolders(p.SeatFolders(m.Name))
+	folders, err := ScanFolders(dir)
 	if err != nil {
 		return err
 	}
@@ -517,7 +595,7 @@ func (p *Pool) distributeFolders(m Member, report *Report, log Logger) error {
 
 		result, err := Clone(
 			filepath.Join(p.PoolFolders(), name),
-			filepath.Join(p.SeatFolders(m.Name), name),
+			filepath.Join(dir, name),
 			m.Owner,
 		)
 		if err != nil {
@@ -534,11 +612,11 @@ func (p *Pool) distributeFolders(m Member, report *Report, log Logger) error {
 	return nil
 }
 
-// distribute offers everything in the pool to one seat.
+// distribute offers everything in the pool to one member.
 func (p *Pool) distribute(m Member, pool []App, report *Report, log Logger) error {
 	present := map[string]App{}
 
-	apps, err := ReadApps(p.SeatApps(m.Name))
+	apps, err := ReadApps(p.apps(m))
 	if err != nil {
 		return err
 	}
@@ -600,12 +678,12 @@ func (p *Pool) distribute(m Member, pool []App, report *Report, log Logger) erro
 
 		log("giving %s (%s) to %s", app.Name, app.AppID, m.Name)
 
-		result, err := Clone(source, filepath.Join(p.SeatApps(m.Name), commonDir, app.InstallDir), m.Owner)
+		result, err := Clone(source, filepath.Join(p.apps(m), commonDir, app.InstallDir), m.Owner)
 		if err != nil {
 			return fmt.Errorf("clone %s: %w", app.Name, err)
 		}
 
-		if err := p.copyManifest(app.Manifest, filepath.Join(p.SeatApps(m.Name), ManifestName(app.AppID)), m.Owner); err != nil {
+		if err := p.copyManifest(app.Manifest, filepath.Join(p.apps(m), ManifestName(app.AppID)), m.Owner); err != nil {
 			return err
 		}
 
@@ -831,7 +909,7 @@ func (p *Pool) Inventory(members []Member) (Inventory, error) {
 	seatApps := map[string]map[string]string{}
 
 	for _, m := range members {
-		have, err := ReadApps(p.SeatApps(m.Name))
+		have, err := ReadApps(p.apps(m))
 		if err != nil {
 			continue
 		}
@@ -905,7 +983,12 @@ func (p *Pool) Inventory(members []Member) (Inventory, error) {
 		}
 
 		for _, m := range members {
-			mine, err := FolderAt(p.SeatFolders(m.Name), name)
+			dir := p.folders(m)
+			if dir == "" {
+				continue
+			}
+
+			mine, err := FolderAt(dir, name)
 
 			switch {
 			case err == nil:

@@ -332,10 +332,34 @@ streaming out of that seat. One `grep` over every `maps` file at once and two
 `find -lname` passes answer the same three questions in 14 ms on the same seat.
 
 **The host's own library is watched, not imported once.** An imported library is
-remembered and re-read on every pass, read only in both senses: the daemon takes
-from it and never writes into it, and a game uninstalled there stays in the pool.
-Without that, a game the host updates afterwards never reaches the seats and
-every one of them downloads that update for itself.
+remembered and re-read on every pass. Without that, a game the host updates
+afterwards never reaches the seats and every one of them downloads that update
+for itself.
+
+**The host is a member, not only a source.** It appears in the pool under the
+name `host`, which no seat may be called, and the traffic goes both ways: games
+it has are taken into the pool, and games installed in a seat are cloned into
+its Steam library. It used to be a source and nothing else, and the effect was
+that a game installed in a seat could only be played on the host by downloading
+it a second time, which is the exact cost this exists to avoid. Everything a
+seat gets applies to it unchanged: the manifest is neutralised on the way in so
+the host's Steam claims the copy for whoever is signed in there, uninstalling on
+the host is remembered as a refusal instead of being undone on the next pass,
+and an update waits while something is using the files. What answers that last
+question here is a walk of `/proc` in the daemon rather than a shell fragment in
+a container, restricted to processes belonging to the owner of the library,
+which is what keeps it cheap on a host that also runs every seat's processes.
+
+The daemon still never writes into the other libraries it watches. Only one can
+receive, because the same game cloned into two folders of one Steam client is
+installed twice as far as that client is concerned and it has no good way to
+decide which copy is real. The interface names the one that does.
+
+A title cloned in while the host's Steam is running is not noticed until it
+starts again. Steam reads the manifests in its library folder at startup;
+nothing tells it to look now, and the alternative, only ever cloning while Steam
+is closed, would mean a seat's new game never arrives on a machine somebody
+leaves Steam open on.
 
 ## Where a game installs by default
 

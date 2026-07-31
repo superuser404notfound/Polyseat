@@ -221,6 +221,14 @@ func ValidateName(name string) error {
 		return fmt.Errorf("seat0 is the name of the physical seat and cannot be used")
 	}
 
+	// The machine itself takes part in the shared library under this name, and
+	// its record of what it has been given is kept beside every seat's. A seat
+	// called host would inherit that record, and uninstalling a game on the host
+	// would then read as the seat having declined it.
+	if name == hostMember {
+		return fmt.Errorf("host is the name the machine itself uses in the shared library and cannot be used")
+	}
+
 	return nil
 }
 

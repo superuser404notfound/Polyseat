@@ -379,13 +379,29 @@ function renderLibrary() {
 
   const sources = library.sources || [];
 
+  // The machine itself is a member of the pool under the name "host", so it
+  // appears in the In column like any seat. Which of its libraries receives has
+  // to be said out loud: only one can, because the same game cloned into two
+  // folders of one Steam client is installed twice as far as that client is
+  // concerned.
+  const receiving = library.receiving || "";
+
   const tracking = sources.length
     ? Object.assign(document.createElement("p"), {
         className: "hint",
         textContent:
           "Also watching " +
           sources.join(", ") +
-          ", so a game updated there reaches the seats by itself.",
+          ", so a game updated there reaches the seats by itself." +
+          (receiving
+            ? " Games from the seats are cloned back into " +
+              receiving +
+              ", where this machine's Steam finds them. Steam picks up a title" +
+              " it did not install itself the next time it starts." +
+              (sources.length > 1
+                ? " The other watched libraries are read only."
+                : "")
+            : ""),
       })
     : null;
 
