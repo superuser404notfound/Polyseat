@@ -319,3 +319,66 @@ func TestAStreamThatStaysGoneEndsAfterTheGrace(t *testing.T) {
 		t.Error("the same end was reported twice")
 	}
 }
+
+// Both lines come from a real seat. The order systemd prints properties in is
+// not something to depend on, so the reversed case is here as well: read
+// positionally, a unit's state would become a timestamp, every seat would look
+// unknown, and the card would go dark on a machine that is working perfectly.
+func TestUnitShowIsReadByKeyRatherThanByPosition(t *testing.T) {
+	for name, tc := range map[string]struct {
+		out     string
+		state   string
+		started string
+	}{
+		"a running unit": {
+			"ActiveState=active\nExecMainStartTimestampMonotonic=307122230849\n",
+			"active", "307122230849",
+		},
+		"the same the other way round": {
+			"ExecMainStartTimestampMonotonic=307122230849\nActiveState=active\n",
+			"active", "307122230849",
+		},
+		// What a seat answers for a unit it does not have. Zero is not a time,
+		// and taken as one it would be a moment every seat shares.
+		"a unit that is not there": {
+			"ActiveState=inactive\nExecMainStartTimestampMonotonic=0\n",
+			"inactive", "",
+		},
+		"nothing at all": {"", "unknown", ""},
+		"noise":          {"Failed to connect to bus\n", "unknown", ""},
+	} {
+		state, started := parseUnitShow(tc.out)
+
+		if state != tc.state || started != tc.started {
+			t.Errorf("%s: got (%q, %q), want (%q, %q)", name, state, started, tc.state, tc.started)
+		}
+	}
+}
+
+// Skipping the journal read is only safe while the answer cannot have changed.
+// Getting this wrong is quiet: the interface would go on reporting the encoder
+// of a Sunshine that has since restarted, and that line is the one place a seat
+// says whether it fell back to software.
+func TestEncodersAreReadAgainWhenSunshineRestarted(t *testing.T) {
+	rt := &runtime{}
+
+	if rt.encodersOnRecord("100") {
+		t.Error("a seat nothing has been read from yet claimed to know its encoder")
+	}
+
+	rt.encoder, rt.codecs, rt.encodersFrom = "nvenc", []string{"H.264"}, "100"
+
+	if !rt.encodersOnRecord("100") {
+		t.Error("the same Sunshine is still running and the journal would be read again")
+	}
+
+	if rt.encodersOnRecord("200") {
+		t.Error("Sunshine restarted and the encoder on record was kept")
+	}
+
+	// systemd reporting no start time is not a reason to go back to reading a
+	// growing journal every ten seconds.
+	if !rt.encodersOnRecord("") {
+		t.Error("a missing start time sent it back to reading the journal every tick")
+	}
+}

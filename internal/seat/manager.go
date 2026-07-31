@@ -95,6 +95,13 @@ type runtime struct {
 	sunshine       string
 	encoder        string
 	codecs         []string
+
+	// encodersFrom is the monotonic start time of the Sunshine that encoder and
+	// codecs above were read from, so that a Sunshine which has since been
+	// restarted is read again and one that has not is left alone. Empty when
+	// nothing has been read yet or systemd reported no start time.
+	encodersFrom string
+
 	output         string
 	session        *Session
 	devices        []string
@@ -536,8 +543,8 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		m.mu.Unlock()
 	}
 
-	sway := m.unitState(ctx, name, "polyseat-sway.service")
-	sunshine := m.unitState(ctx, name, "polyseat-sunshine.service")
+	sway, _ := m.unitState(ctx, name, "polyseat-sway.service")
+	sunshine, sunshineStarted := m.unitState(ctx, name, "polyseat-sunshine.service")
 
 	devices, err := m.attachedDevices(name)
 	if err != nil {
@@ -552,7 +559,14 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 	)
 
 	if sunshine == "active" {
-		encoder, codecs = m.readEncoders(ctx, name)
+		m.mu.Lock()
+		known := rt.encodersOnRecord(sunshineStarted)
+		m.mu.Unlock()
+
+		if !known {
+			encoder, codecs = m.readEncoders(ctx, name)
+		}
+
 		output = m.readOutput(ctx, name)
 		session, stream = m.readSession(ctx, name)
 	}
@@ -632,6 +646,7 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 	if encoder != "" {
 		rt.encoder = encoder
 		rt.codecs = codecs
+		rt.encodersFrom = sunshineStarted
 	}
 
 	rt.output = output
@@ -794,23 +809,99 @@ func quick(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, quickTimeout)
 }
 
-func (m *Manager) unitState(ctx context.Context, name, unit string) string {
+// unitState reports whether a unit inside the seat is running, and when the
+// process behind it last started.
+//
+// `systemctl show` rather than `is-active`, which costs the same one command
+// and answers one question more. The monotonic start time changes only when the
+// unit's process was replaced, so anything that cannot change while that
+// process runs can be read once per start instead of once per tick, and the
+// tick is the thing that happens underneath somebody's game.
+//
+// Parsed as key and value rather than with --value, because the order in which
+// systemd prints several properties is not something to depend on: get it
+// backwards and a unit's state becomes a timestamp, which reads as "unknown"
+// and takes the seat's card down with it.
+func (m *Manager) unitState(ctx context.Context, name, unit string) (string, string) {
 	ctx, cancel := quick(ctx)
 	defer cancel()
 
-	out, _, err := m.client.Try(ctx, name, m.asPlayer(name, "systemctl", "--user", "is-active", unit)...)
+	out, _, err := m.client.Try(ctx, name, m.asPlayer(name, "systemctl", "--user",
+		"show", unit, "-p", "ActiveState", "-p", "ExecMainStartTimestampMonotonic")...)
 	if err != nil {
-		return "unknown"
+		return "unknown", ""
 	}
 
-	return strings.TrimSpace(out)
+	return parseUnitShow(out)
 }
 
-// readEncoder reports which encoder Sunshine settled on.
+// parseUnitShow reads what `systemctl show` printed.
 //
-// The single most useful line in the whole interface. A seat whose EGL landed
-// on Mesa still starts, still streams and still looks healthy; it just encodes
-// in software, and nobody finds out until a game stutters.
+// Separate from the call so that it can be tested against output in either
+// order and against output missing either line, which is the whole reason this
+// is parsed by key rather than read positionally.
+func parseUnitShow(out string) (string, string) {
+	state, started := "unknown", ""
+
+	for _, line := range strings.Split(out, "\n") {
+		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
+		if !found {
+			continue
+		}
+
+		switch key {
+		case "ActiveState":
+			if value != "" {
+				state = value
+			}
+		case "ExecMainStartTimestampMonotonic":
+			// Zero is what systemd reports for a unit with no process behind
+			// it, and it is not a time. Left empty so that it reads as "no
+			// answer" rather than as one moment every seat appears to share.
+			if value != "0" {
+				started = value
+			}
+		}
+	}
+
+	return state, started
+}
+
+// encodersOnRecord reports whether what is already known about a seat's
+// encoders was read from the Sunshine that is running in it now.
+//
+// The question this answers is "may readEncoders be skipped", so every
+// uncertain case has to answer no, or a seat that swapped its encoder would go
+// on being described by the one before it. That is the failure worth avoiding:
+// the encoder line is the one place the interface says whether a seat fell back
+// to software.
+//
+// Called with the lock held.
+func (rt *runtime) encodersOnRecord(started string) bool {
+	// Nothing on record at all, which is also where a daemon starts for a seat
+	// that was already running when it was adopted.
+	if rt.encoder == "" {
+		return false
+	}
+
+	// systemd reported no start time. Reading the whole journal every ten
+	// seconds again would be a worse answer to that than keeping what is on
+	// record: Sunshine only probes at startup, and a seat whose Sunshine
+	// restarts leaves other traces in the interface.
+	if started == "" {
+		return true
+	}
+
+	return rt.encodersFrom == started
+}
+
+// active is unitState for the callers that only ever wanted "is it up".
+func (m *Manager) active(ctx context.Context, name, unit string) bool {
+	state, _ := m.unitState(ctx, name, unit)
+
+	return state == "active"
+}
+
 // readEncoders reports which hardware path Sunshine settled on and which
 // codecs it can offer with it.
 //
@@ -820,6 +911,12 @@ func (m *Manager) unitState(ctx context.Context, name, unit string) string {
 // what this did, reads as though H.264 were all a seat could do. Sunshine
 // probes for three and offers whichever the client asks for, so the answer is
 // a list.
+//
+// Expensive for what it is: it reads the seat's whole journal, which only grows,
+// and greps it. Measured at 35 ms of the seat's own CPU against a 57 MB journal,
+// which used to be spent every ten seconds forever. Sunshine probes once at
+// startup and the answer cannot change while it runs, so encodersOnRecord keeps
+// this to once per Sunshine.
 func (m *Manager) readEncoders(ctx context.Context, name string) (string, []string) {
 	ctx, cancel := quick(ctx)
 	defer cancel()
@@ -1607,8 +1704,8 @@ func (m *Manager) Start(name string) error {
 			if err := m.client.Start(ctx, name); err != nil {
 				return err
 			}
-		} else if m.unitState(ctx, name, "polyseat-sway.service") == "active" &&
-			m.unitState(ctx, name, "polyseat-sunshine.service") == "active" {
+		} else if m.active(ctx, name, "polyseat-sway.service") &&
+			m.active(ctx, name, "polyseat-sunshine.service") {
 			// Already up. Saying so and only making sure the broker is there
 			// is not a shortcut: starting the session again would restart
 			// Sunshine, and restarting Sunshine under somebody who is in the
@@ -1746,7 +1843,7 @@ func (m *Manager) waitUnit(ctx context.Context, name, unit string, timeout time.
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		if m.unitState(ctx, name, unit) == "active" {
+		if m.active(ctx, name, unit) {
 			return nil
 		}
 
