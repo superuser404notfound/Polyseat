@@ -1286,6 +1286,16 @@ function facts(seat) {
 
   row("Shared library", seat.library ? "yes" : "no");
 
+  // Only worth a row where it is a choice. On a plain uplink every seat is
+  // isolated and saying so on every card would be repeating one fact about the
+  // machine once per seat.
+  if (state.host.uplink_bridged) {
+    row(
+      "Reaches this machine",
+      seat.isolated ? "no, isolated on a macvlan" : "yes, on " + state.host.uplink,
+    );
+  }
+
   if (!seat.built) {
     row("Not built yet", "Start builds it, which takes a few minutes");
   } else if (seat.stale) {
@@ -1607,10 +1617,55 @@ function openEditor(seat) {
   form.gateway.value = seat ? seat.gateway || "" : "";
   form.autostart.checked = seat ? seat.autostart : true;
   form.library.checked = seat ? seat.library : true;
+
+  // Stored the other way round: a seat records that it is isolated, the page
+  // asks whether it may talk to this machine. The default for a new seat is
+  // yes, which is the only reason anybody bridges the uplink.
+  form.host_access.checked = seat ? !seat.isolated : true;
+  describeHostAccess();
+
   form.pointer_speed.value = (seat && seat.pointer_speed) || DEFAULT_POINTER_SPEED;
   describePointerSpeed();
 
   el("editor").showModal();
+}
+
+// Says what the network checkbox actually does here, which depends on something
+// the seat cannot decide: whether the uplink is a bridge.
+//
+// On a plain interface every seat gets a macvlan and a macvlan cannot talk to
+// the interface it hangs off, so the box is true but powerless and saying so is
+// the only honest thing the page can do. Disabling it would suggest the setting
+// does not exist.
+function describeHostAccess() {
+  const host = (state && state.host) || {};
+  const note = el("editor-host-access-note");
+  const box = el("editor-form").host_access;
+
+  if (!host.uplink_bridged) {
+    box.disabled = true;
+    note.textContent =
+      "Not available: " +
+      (host.uplink || "the uplink") +
+      " is not a bridge, so every seat takes a macvlan from it and a macvlan " +
+      "cannot reach the interface it hangs off. Run host/lan-bridge.sh on the " +
+      "host to change that. Seats still reach each other and the rest of the " +
+      "network either way.";
+    return;
+  }
+
+  box.disabled = false;
+  note.textContent = box.checked
+    ? "This seat is a port on " +
+      host.uplink +
+      ", so it and this machine are on one network segment: they see each " +
+      "other's broadcasts and can play the same local multiplayer game. It " +
+      "also means the seat can reach whatever this machine is listening on."
+    : "This seat gets a macvlan on " +
+      host.uplink +
+      " instead. It keeps its own address, still reaches the rest of the " +
+      "network and the other seats, and cannot reach this machine or be " +
+      "reached by it. That was how every seat worked before.";
 }
 
 // The default the daemon uses for a seat that has never been given a number of
@@ -1641,6 +1696,7 @@ async function saveEditor(event) {
     gateway: form.gateway.value.trim(),
     autostart: form.autostart.checked,
     library: form.library.checked,
+    host_access: form.host_access.checked,
     pointer_speed: Number(form.pointer_speed.value),
   };
 
@@ -1698,6 +1754,7 @@ el("add").onclick = () => openEditor(null);
 el("editor-cancel").onclick = () => el("editor").close();
 el("editor-form").onsubmit = saveEditor;
 el("editor-form").pointer_speed.oninput = describePointerSpeed;
+el("editor-form").host_access.onchange = describeHostAccess;
 el("login-form").onsubmit = submitLogin;
 el("setup-form").onsubmit = submitSetup;
 el("password-form").onsubmit = submitPassword;

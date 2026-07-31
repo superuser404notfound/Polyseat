@@ -54,6 +54,23 @@ type Seat struct {
 	// A seat left without it keeps its games entirely to itself.
 	Library bool `json:"library"`
 
+	// Isolated keeps this seat and the host from reaching each other over the
+	// LAN, which is what every seat did before the uplink could be a bridge.
+	//
+	// Stored the negative way round so that the zero value is the behaviour
+	// somebody gets without asking: a seat can talk to the machine it runs on,
+	// which is what makes local multiplayer between the two possible at all and
+	// is why anybody bridges the uplink in the first place. Seats that already
+	// existed when this arrived are on a bridge and can already do it, so the
+	// zero value describes them correctly rather than promising a change on the
+	// next save.
+	//
+	// Only means anything while the uplink is a bridge. On a plain interface
+	// every seat gets a macvlan and is isolated whatever this says, because
+	// that is not a policy, it is what macvlan does. The interface says so
+	// rather than showing a control that does nothing.
+	Isolated bool `json:"isolated,omitempty"`
+
 	// PointerSpeed is how much of the screen the gamepad pointer crosses in a
 	// second at full deflection. Zero means the built-in default.
 	//

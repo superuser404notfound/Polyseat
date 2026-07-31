@@ -1641,12 +1641,9 @@ func (m *Manager) build(ctx context.Context, name string) error {
 		return err
 	}
 
-	uplink := m.cfg.Uplink
+	uplink := m.uplink()
 	if uplink == "" {
-		uplink, err = config.DefaultUplink()
-		if err != nil {
-			return fmt.Errorf("no uplink interface configured and none could be guessed: %w", err)
-		}
+		return fmt.Errorf("no uplink interface configured and none could be guessed")
 	}
 
 	secrets, err := m.ensureSecrets(name)
@@ -2037,6 +2034,15 @@ func (m *Manager) Update(name string, change func(*Seat)) error {
 		if err := m.applyLibrary(context.Background(), seat); err != nil {
 			m.logf(name, "! the shared library could not be %s: %v",
 				map[bool]string{true: "attached", false: "detached"}[seat.Library], err)
+		}
+	}
+
+	// The same again, and Incus swaps a running container's interface, so this
+	// takes effect while somebody is sitting in the seat rather than at the
+	// next provisioning run.
+	if seat.Isolated != before.Isolated {
+		if err := m.applyNetwork(context.Background(), seat); err != nil {
+			m.logf(name, "! the LAN interface could not be changed: %v", err)
 		}
 	}
 

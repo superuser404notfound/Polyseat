@@ -237,25 +237,18 @@ func (p *Provisioner) stepNetwork(ctx context.Context) error {
 	// the same segment as the seats: they see each other's broadcasts and can
 	// play the same game over the local network, which macvlan makes impossible
 	// no matter what is configured on either side. It also costs the isolation
-	// that macvlan was giving away for free, and docs/security.md says so.
-	nictype := "macvlan"
-	if isBridge(p.Uplink) {
-		nictype = "bridged"
+	// that macvlan was giving away for free, and docs/security.md says so. A
+	// seat that would rather keep it says so with Isolated and gets a macvlan
+	// on the bridge instead.
+	device := lanDevice(p.Uplink, p.lanAddress(), p.Seat.Isolated)
+
+	if _, err := p.Client.Configure(ctx, p.name(), nil, map[string]map[string]string{
+		lanDeviceName: device,
+	}); err != nil {
+		return fmt.Errorf("attach the %s interface to %s: %w", device["nictype"], p.Uplink, err)
 	}
 
-	_, err := p.Client.Configure(ctx, p.name(), nil, map[string]map[string]string{
-		"eth1": {
-			"type":    "nic",
-			"nictype": nictype,
-			"parent":  p.Uplink,
-			"name":    "eth1",
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("attach the %s interface to %s: %w", nictype, p.Uplink, err)
-	}
-
-	p.Log("the seat is on the LAN through %s as a %s interface", p.Uplink, nictype)
+	p.Log("the seat is on the LAN through %s as a %s interface", p.Uplink, device["nictype"])
 
 	// The LAN wins the default route, and it has to win it explicitly.
 	//
@@ -285,9 +278,8 @@ func (p *Provisioner) stepNetwork(ctx context.Context) error {
 		p.Log("address by DHCP")
 	}
 
-	err = p.Client.PushFile(p.name(), "/etc/systemd/network/50-eth1.network",
-		[]byte(network), 0o644, 0, 0)
-	if err != nil {
+	if err := p.Client.PushFile(p.name(), "/etc/systemd/network/50-eth1.network",
+		[]byte(network), 0o644, 0, 0); err != nil {
 		return err
 	}
 

@@ -335,6 +335,16 @@ type hostInfo struct {
 	// because deciding whether something is broken by reading a sentence is
 	// how a message becomes impossible to reword.
 	GPUVendor string `json:"gpu_vendor"`
+
+	// Uplink is the interface the seats reach the LAN through, and
+	// UplinkBridged says whether it is a bridge.
+	//
+	// Sent because one per seat setting means nothing without it: a seat can
+	// only reach this machine over the LAN if the uplink is a bridge, and on a
+	// plain interface every seat is isolated whatever anybody ticks. A checkbox
+	// that silently does nothing is worse than one that says why.
+	Uplink        string `json:"uplink"`
+	UplinkBridged bool   `json:"uplink_bridged"`
 }
 
 func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
@@ -354,9 +364,11 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 		Config:          s.manager.Config(),
 		Uplinks:         config.Uplinks(),
 		Host: hostInfo{
-			Hostname:  hostname,
-			GPU:       s.manager.GPU().String(),
-			GPUVendor: string(s.manager.GPU().Vendor),
+			Hostname:      hostname,
+			GPU:           s.manager.GPU().String(),
+			GPUVendor:     string(s.manager.GPU().Vendor),
+			Uplink:        s.manager.Uplink(),
+			UplinkBridged: s.manager.UplinkBridged(),
 		},
 		Warnings: s.warnings(),
 		Now:      time.Now(),
@@ -464,6 +476,12 @@ type seatRequest struct {
 	Gateway    *string `json:"gateway"`
 	Library    *bool   `json:"library"`
 
+	// HostAccess is the positive form of Seat.Isolated: ticked means the seat
+	// and this machine can reach each other on the LAN. Inverted here rather
+	// than in the page, so that the one place where the two polarities meet is
+	// this file and not a line of JavaScript.
+	HostAccess *bool `json:"host_access"`
+
 	PointerSpeed *float64 `json:"pointer_speed"`
 }
 
@@ -517,6 +535,11 @@ func (s *Server) createSeat(w http.ResponseWriter, r *http.Request) {
 		// seats keep whatever they had, which for seats built before M6 is off.
 		Library: value(req.Library, true),
 
+		// A new seat can reach the host unless somebody says otherwise, which
+		// is the whole reason for bridging the uplink. On a plain interface it
+		// is isolated regardless and the interface says so.
+		Isolated: !value(req.HostAccess, true),
+
 		// Zero rather than the default written out, so that a change to the
 		// default reaches every seat that never chose a number of its own.
 		PointerSpeed: value(req.PointerSpeed, 0),
@@ -564,6 +587,10 @@ func (s *Server) updateSeat(w http.ResponseWriter, r *http.Request) {
 
 		if req.Library != nil {
 			current.Library = *req.Library
+		}
+
+		if req.HostAccess != nil {
+			current.Isolated = !*req.HostAccess
 		}
 
 		if req.PointerSpeed != nil {

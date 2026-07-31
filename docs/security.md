@@ -318,6 +318,29 @@ you do not trust, and that was already the case before this existed.
 
 `sudo host/lan-bridge.sh --undo` puts the macvlan arrangement back.
 
+### Per seat, and the isolated state is still available
+
+Bridging the uplink is a decision about the machine; whether a particular seat
+takes part in it is a checkbox on that seat, on by default. A seat with it
+turned off gets a **macvlan on the bridge** rather than a port on it, and that
+restores exactly the old posture for that one seat. Measured on this machine:
+
+```
+isolated seat -> host (10.20.30.10)   blocked
+host -> isolated seat                 blocked
+isolated seat -> gateway              reachable
+isolated seat -> another seat         reachable
+```
+
+So a seat can be put back behind the line while the others stay on the segment,
+which is the arrangement to reach for when one seat is for somebody you would
+rather not have on the same network as this machine. It changes nothing else:
+the seat keeps its own address, its own Sunshine ports and its own view of the
+rest of the network.
+
+On a machine whose uplink is not a bridge the checkbox has nothing to do, and
+the interface says so rather than offering a control that does nothing.
+
 ### Seats reach the host on the management bridge
 
 `incusbr0` exists precisely so the host can talk to the seats, so the reverse
