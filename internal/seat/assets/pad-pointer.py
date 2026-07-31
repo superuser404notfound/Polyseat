@@ -19,15 +19,23 @@ fullscreen application in front means the controller belongs to it and the mode
 goes off; back on the desktop it goes on. That is what the Windows tools do from
 the foreground window, and sway can answer it exactly rather than by heuristic.
 
-Select and Start held together for a second still toggle it by hand, a chord
-because single buttons are taken: Guide opens Steam's overlay and everything
-else is a game input. Held rather than tapped, because Select and Start are
-ordinary buttons in a game and games do press both at once; a second is long
-enough that it cannot happen while somebody is playing, and short enough to
-still be a gesture rather than a wait. The pad buzzes when it happens, which is
-the only feedback there is: nothing appears on screen, and the pointer only
-shows itself once the stick is moved, so without it there is no way to tell a
-hold that was long enough from one that was not.
+Two of Select, Start and Guide, held together for a second, still toggle it by
+hand. A chord, because single buttons are all taken by the game. Held rather
+than tapped, because Select with Start is something a game can ask for outright;
+a second is long enough that it cannot happen while somebody is playing, and
+short enough to still be a gesture rather than a wait.
+
+Any two of the three rather than two named ones, because which of them arrive is
+the client's decision. Moonlight builds the Guide button out of Select and Start,
+tvOS having kept the real one for itself, so what reaches the seat is Start with
+Guide, or Select with Guide. Measured through an Apple TV: holding Select and
+Start on an Xbox controller arrives as BTN_START with BTN_MODE, and BTN_SELECT
+never appears at all. CHORD says the rest.
+
+The pad buzzes when it takes, which is the only feedback there is: nothing
+appears on screen, and the pointer only shows itself once the stick is moved, so
+without it there is no way to tell a hold that was long enough from one that was
+not.
 
 A toggle holds until the next time something goes fullscreen or stops being
 fullscreen, at which point the automatic answer takes over again. That way a
@@ -126,12 +134,25 @@ KEYS = {
     ecodes.BTN_DPAD_RIGHT: ecodes.KEY_RIGHT,
 }
 
-# The chord that turns the mode on and off, and how long it has to be held.
+# The chord that turns the mode on and off: any two of Select, Start and Guide,
+# held together for a second.
 #
-# Held, because both buttons are ordinary game inputs and pressing them together
-# is something a game can ask for. A tap was the first version and it meant a
-# player could flip the pointer on under their own hands in a windowed game.
-TOGGLE = (ecodes.BTN_SELECT, ecodes.BTN_START)
+# **Any two of the three, because the client decides which of them arrive.**
+# Moonlight builds the Guide button out of Select and Start, since tvOS keeps
+# the real one for itself, and what reaches the seat is then Start and Guide, or
+# Select and Guide, depending on which went down first. Measured in a seat:
+# holding Select and Start on an Xbox controller through an Apple TV arrives as
+# BTN_START with BTN_MODE and BTN_SELECT never appears at all. Naming two
+# particular buttons therefore names something the player cannot press.
+#
+# These three are the buttons no game plays with, so two of them is still a
+# chord nobody trips by accident.
+#
+# Held rather than tapped for the same reason it is a chord at all: a tap was
+# the first version, and Select with Start is something a game can ask for
+# outright, so a player could flip the pointer on under their own hands.
+CHORD = (ecodes.BTN_SELECT, ecodes.BTN_START, ecodes.BTN_MODE)
+CHORD_SIZE = 2
 HOLD = 1.0
 
 # The buzz that confirms it. Short and firm, and only for the switch by hand:
@@ -494,20 +515,23 @@ class Pointer:
 
 
 class Chord:
-    """Select and Start, held rather than tapped.
+    """Two of the system buttons, held rather than tapped.
 
-    Kept out of the loop and given its own state because the holding is the
-    whole of the protection: a chord that fires on the press is a chord a game
-    can trip, and both of these buttons are inputs a game may well ask for at
-    once.
+    Kept out of the loop and given its own state because it is the whole of the
+    protection: a chord that fires on the press is a chord a game can trip, and
+    Select with Start is an input a game may well ask for at once.
+
+    Counting rather than naming, because which of the three arrive is the
+    client's decision and not the player's. See CHORD.
 
     Nothing here reads a clock. The time comes in from the caller, which is
     what makes a second of holding something that can be tested rather than
     waited for.
     """
 
-    def __init__(self, buttons, hold):
-        self.buttons = buttons
+    def __init__(self, buttons, size, hold):
+        self.buttons = frozenset(buttons)
+        self.size = size
         self.hold = hold
 
         # When the chord became complete, or None while it is not complete and
@@ -523,7 +547,7 @@ class Chord:
 
     def update(self, held, fd, now):
         """A button of the chord went down or came up."""
-        if not all(button in held for button in self.buttons):
+        if len(self.buttons & set(held)) < self.size:
             self.forget()
         elif self.since is None and not self.fired:
             self.since, self.fd = now, fd
@@ -665,8 +689,8 @@ def main():
     rumble = Rumble()
     sway = Sway()
 
-    log("ready. The pointer follows what is in front, and Select with Start "
-        "held for a second overrides it until that changes")
+    log("ready. The pointer follows what is in front, and two of Select, Start "
+        "and Guide held for a second override it until that changes")
 
     ranges = {}
     by_fd = {}
@@ -711,7 +735,7 @@ def main():
         + ("" if setting is None else f", from this seat's setting of {setting:.2f}"))
 
     held = set()
-    chord = Chord(TOGGLE, HOLD)
+    chord = Chord(CHORD, CHORD_SIZE, HOLD)
 
     # Left stick points, right stick scrolls. That is the way round the
     # Windows tools do it and the way it is worth matching: the hand that
@@ -793,7 +817,7 @@ def main():
                     else:
                         held.discard(event.code)
 
-                    if event.code in TOGGLE:
+                    if event.code in CHORD:
                         chord.update(held, fd, time.monotonic())
                         continue
 

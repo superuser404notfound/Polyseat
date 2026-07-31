@@ -208,8 +208,8 @@ spec = importlib.util.spec_from_file_location("padpointer", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
-chord = module.Chord(module.TOGGLE, module.HOLD)
-buttons = {"select": module.TOGGLE[0], "start": module.TOGGLE[1]}
+chord = module.Chord(module.CHORD, module.CHORD_SIZE, module.HOLD)
+buttons = dict(zip(("select", "start", "guide"), module.CHORD))
 held, fired = set(), []
 
 # A step is a button and a moment. "select" presses it, "-select" lets go, and
@@ -309,12 +309,44 @@ func TestPointerChordCanBeUsedAgainAfterLettingGo(t *testing.T) {
 }
 
 // Half the chord is not the chord, however long it is held. Select on its own
-// is a game input like any other.
+// is a game input like any other, and so is Guide.
 func TestPointerChordIgnoresOneButtonOnItsOwn(t *testing.T) {
-	alone := `[["select",0.0],["",1.5],["",3.0],["",9.0]]`
+	for name, alone := range map[string]string{
+		"select": `[["select",0.0],["",1.5],["",3.0],["",9.0]]`,
+		"start":  `[["start",0.0],["",1.5],["",3.0],["",9.0]]`,
+		"guide":  `[["guide",0.0],["",1.5],["",3.0],["",9.0]]`,
+	} {
+		if fired := chordFires(t, alone); len(fired) != 0 {
+			t.Errorf("%s alone flipped the mode at %v", name, fired)
+		}
+	}
+}
 
-	if fired := chordFires(t, alone); len(fired) != 0 {
-		t.Errorf("one button flipped the mode at %v", fired)
+// What a real client actually sends, which is not what the player pressed.
+//
+// Recorded in a seat: an Xbox controller on an Apple TV, Select and Start held
+// together for two seconds. Moonlight builds the Guide button out of that pair
+// because tvOS keeps the real one, so BTN_SELECT never arrives and the seat
+// sees Start with Guide. A chord that named Select and Start could not be
+// pressed at all from there, which is exactly what happened.
+func TestPointerChordTakesWhatTheClientActuallySends(t *testing.T) {
+	// The timings are from the recording: 315 down, 316 down 20ms later, both
+	// up 1.95 seconds after that.
+	recorded := `[["start",0.00],["guide",0.02],["",0.50],["",1.00],["",1.50],
+		["-start",1.95],["-guide",1.95]]`
+
+	if fired := chordFires(t, recorded); len(fired) != 1 {
+		t.Errorf("Start with Guide flipped the mode %d times, want once: %v", len(fired), fired)
+	}
+}
+
+// The other order the same client produces: Select goes down first and keeps
+// its own code, and Guide arrives instead of Start.
+func TestPointerChordTakesSelectWithGuideToo(t *testing.T) {
+	recorded := `[["select",0.00],["guide",0.02],["",0.60],["",1.20],["-guide",1.60],["-select",1.61]]`
+
+	if fired := chordFires(t, recorded); len(fired) != 1 {
+		t.Errorf("Select with Guide flipped the mode %d times, want once: %v", len(fired), fired)
 	}
 }
 

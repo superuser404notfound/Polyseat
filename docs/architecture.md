@@ -682,16 +682,28 @@ every game unplayable, so the compositor is asked instead of guessed at: a
 fullscreen application in front means the controller belongs to it and the mode
 goes off, and back on the desktop it goes on. That is what the Windows tools do
 from the foreground window, and sway can answer it exactly rather than by
-heuristic. Select and Start held together for a second still override it by
-hand, a chord because single buttons are taken and held rather than tapped
-because both are ordinary game inputs that a game may well want at once; the pad
-buzzes when it takes, which is the only confirmation available, since nothing
-appears on screen and the pointer shows itself only once the stick moves.
-Sunshine's virtual pads carry force feedback back to the client and Moonlight
-passes it to the real controller, so the buzz reaches the hands that held the
-chord. The override holds until something goes fullscreen or stops being: that
-covers a windowed game, and it means a forgotten override cannot leave somebody
-holding a stick that does nothing. The gamepad is never
+heuristic. Two of Select, Start and Guide held together for a second still
+override it by hand, a chord because single buttons are taken and held rather
+than tapped because Select with Start is an input a game may well want outright;
+the pad buzzes when it takes, which is the only confirmation available, since
+nothing appears on screen and the pointer shows itself only once the stick
+moves. Sunshine's virtual pads carry force feedback back to the client and
+Moonlight passes it to the real controller, so the buzz reaches the hands that
+held the chord.
+
+**Any two of the three, because which of them arrive is the client's decision.**
+The first version of the hold named Select and Start, and through an Apple TV it
+could not be pressed at all: Moonlight builds the Guide button out of that pair,
+tvOS having kept the real one for itself, so what a recording in a seat shows is
+BTN_START with BTN_MODE held for 1.95 seconds and BTN_SELECT never arriving.
+Tapping the two had worked, which is what made this look like a change that
+broke a working chord rather than a chord that had never survived the client.
+Counting two of the three buttons no game plays with covers every order the
+client produces.
+
+The override holds until something goes fullscreen or stops being: that covers a
+windowed game, and it means a forgotten override cannot leave somebody holding a
+stick that does nothing. The gamepad is never
 grabbed, so games see it exactly as before. Left stick points and right stick
 scrolls, which is the way round the Windows tools do it and worth matching.
 
