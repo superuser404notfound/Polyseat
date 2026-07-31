@@ -351,13 +351,32 @@ ul.devices {
 ul.devices li {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.7rem;
   padding: 0.35rem 0;
   border-bottom: 1px solid var(--line);
   font-size: 0.88rem;
 }
 
-ul.devices li span { flex: 1; font-family: var(--mono); font-size: 0.82rem; }
+/* min-width because a flex item refuses to shrink below its own content by
+   default, and the content here is a filesystem path: one word as far as the
+   browser is concerned, with no space in it to break at. Without both of these
+   the row is as wide as the longest path, whatever the screen is. */
+ul.devices li span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+}
+
+/* The badge sits next to that path and is a label, not content: shrinking it is
+   never the right way to make room. */
+ul.devices li span.badge {
+  flex: 0 0 auto;
+  font-family: inherit;
+  font-size: 0.7rem;
+}
 
 form.pair {
   display: flex;
