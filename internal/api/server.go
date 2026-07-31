@@ -439,6 +439,23 @@ func (s *Server) warnings() []string {
 			"have a gamepad. Load the uhid module.")
 	}
 
+	// Said here rather than only in the readme, because whoever opens this page
+	// on an AMD machine has quite possibly not read the readme, and this is the
+	// one fact that changes what they should expect from the next ten minutes.
+	//
+	// It is a warning and not a note on purpose. The whole path was written and
+	// reasoned about without a card to run it on, so the honest thing to say is
+	// that this machine is the first, and to ask for what comes back. It goes
+	// away when somebody confirms it, which is a change to this line and not to
+	// the code it describes.
+	if s.manager.GPU().Vendor == seat.VendorAMD {
+		out = append(out, "This is an AMD machine, and Polyseat's AMD support "+
+			"has never been run on real hardware by its author. It is expected "+
+			"to work and it may well not. Whichever it turns out to be, please "+
+			"say so at github.com/superuser404notfound/Polyseat/issues, with "+
+			"the output of: sudo polyseatd -report")
+	}
+
 	return out
 }
 
