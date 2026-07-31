@@ -212,25 +212,41 @@ spec.loader.exec_module(module)
 
 chord = module.Chord(module.CHORD, module.CHORD_SIZE, module.HOLD)
 buttons = dict(zip(("select", "start", "guide"), module.CHORD))
-held, fired = set(), []
+held, fired, tapped = set(), [], []
 
 # A step is a button and a moment. "select" presses it, "-select" lets go, and
 # an empty name is the loop coming round with nothing to report, which is what
 # a held chord looks like from in here.
+labels = {code: name for name, code in buttons.items()}
+
 for name, when in json.loads(sys.argv[2]):
     if name:
         button = buttons[name.lstrip("-")]
         held.discard(button) if name.startswith("-") else held.add(button)
-        chord.update(held, 1, when)
+
+        alone = chord.update(held, 1, when)
+        if alone is not None:
+            tapped.append(labels[alone])
 
     if chord.due(when):
         fired.append(when)
 
-print(json.dumps(fired))
+print(json.dumps({"fired": fired, "tapped": tapped}))
 `
+
+// chordRun is what a replayed session produced: the moments the mode would
+// flip, and the buttons that turned out to be a press on their own.
+type chordRun struct {
+	Fired  []float64 `json:"fired"`
+	Tapped []string  `json:"tapped"`
+}
 
 // chordFires replays a session and reports the moments the mode would flip.
 func chordFires(t *testing.T, script string) []float64 {
+	return replayChord(t, script).Fired
+}
+
+func replayChord(t *testing.T, script string) chordRun {
 	t.Helper()
 
 	python, err := exec.LookPath("python3")
@@ -254,12 +270,12 @@ func chordFires(t *testing.T, script string) []float64 {
 		t.Fatal(err)
 	}
 
-	var fired []float64
-	if err := json.Unmarshal(out, &fired); err != nil {
+	var run chordRun
+	if err := json.Unmarshal(out, &run); err != nil {
 		t.Fatalf("the driver printed %q", out)
 	}
 
-	return fired
+	return run
 }
 
 // The point of the change: both buttons at once is something a game can ask
@@ -352,6 +368,37 @@ func TestPointerChordTakesSelectWithGuideToo(t *testing.T) {
 	}
 }
 
+// Start on its own is Enter, which is the binding that confirms a dialog when
+// there is no keyboard in the room.
+func TestPointerStartOnItsOwnIsAPress(t *testing.T) {
+	pressed := `[["start",0.0],["-start",0.2],["",0.5]]`
+
+	run := replayChord(t, pressed)
+	if len(run.Tapped) != 1 || run.Tapped[0] != "start" {
+		t.Errorf("pressing Start on its own gave %v, want one press of Start", run.Tapped)
+	}
+
+	if len(run.Fired) != 0 {
+		t.Errorf("pressing Start on its own also flipped the mode at %v", run.Fired)
+	}
+}
+
+// The reason Start acts on the way up. Every switch by hand holds it, and a key
+// sent while it is down would type an Enter into whatever is in front - a
+// dialog confirmed by somebody who was only reaching for the pointer.
+func TestPointerStartTypesNothingWhenItIsPartOfTheChord(t *testing.T) {
+	for name, script := range map[string]string{
+		"a chord that took":     `[["start",0.0],["select",0.05],["",1.2],["-start",1.5],["-select",1.6],["",2.0]]`,
+		"a chord let go early":  `[["start",0.0],["select",0.05],["-select",0.4],["-start",0.5],["",1.0]]`,
+		"the client's version":  `[["start",0.0],["guide",0.02],["",1.2],["-start",1.95],["-guide",1.95]]`,
+		"Start released second": `[["select",0.0],["start",0.05],["-select",0.3],["-start",0.6],["",1.0]]`,
+	} {
+		if run := replayChord(t, script); len(run.Tapped) != 0 {
+			t.Errorf("%s: typed %v, want nothing", name, run.Tapped)
+		}
+	}
+}
+
 // The driver for the button mapping: it asks the helper what each face button
 // does, by the label printed on the controller rather than by evdev's name for
 // it. That distinction is the whole point. evdev calls the X button BTN_NORTH
@@ -365,7 +412,7 @@ spec.loader.exec_module(module)
 
 e = module.ecodes
 face = {"A": e.BTN_SOUTH, "B": e.BTN_EAST, "X": e.BTN_NORTH, "Y": e.BTN_WEST,
-        "LB": e.BTN_TL, "RB": e.BTN_TR}
+        "LB": e.BTN_TL, "RB": e.BTN_TR, "Start": e.BTN_START}
 clicks = {e.BTN_LEFT: "left click", e.BTN_RIGHT: "right click",
           e.BTN_MIDDLE: "middle click"}
 keys = {e.KEY_ENTER: "Enter", e.KEY_ESC: "Escape",
@@ -377,6 +424,8 @@ for label, code in face.items():
         answer[label] = clicks[module.CLICKS[code]]
     elif code in module.KEYS:
         answer[label] = keys[module.KEYS[code]]
+    elif code in module.TAPS:
+        answer[label] = keys[module.TAPS[code]]
 
 print(json.dumps(answer))
 `
@@ -416,12 +465,13 @@ func buttonMapping(t *testing.T) map[string]string {
 // console convention already trains: A clicks, X right clicks, B goes back, Y
 // confirms.
 var padMapping = map[string]string{
-	"A":  "left click",
-	"X":  "right click",
-	"B":  "Escape",
-	"Y":  "Enter",
-	"LB": "Backspace",
-	"RB": "Tab",
+	"A":     "left click",
+	"X":     "right click",
+	"B":     "Escape",
+	"Y":     "Enter",
+	"LB":    "Backspace",
+	"RB":    "Tab",
+	"Start": "Enter",
 }
 
 func TestPointerUsesTheFamiliarButtonMapping(t *testing.T) {

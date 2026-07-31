@@ -42,6 +42,10 @@ fullscreen, at which point the automatic answer takes over again. That way a
 windowed game can be dealt with, and forgetting to switch back cannot leave
 somebody with a dead stick.
 
+Start on its own is Enter, and that is why it acts on the way up: while it is
+down it might be half a chord, and a key sent then would type into whatever is
+in front every time the pointer gets switched. TAPS says the rest.
+
 While the mode is off, this reads events and emits nothing.
 
 The gamepad is never grabbed. Games keep seeing it exactly as before, which is
@@ -168,6 +172,17 @@ KEYS = {
 CHORD = (ecodes.BTN_SELECT, ecodes.BTN_START, ecodes.BTN_MODE)
 CHORD_SIZE = 2
 HOLD = 1.0
+
+# Buttons of the chord that also do something on their own, and therefore act on
+# the way up rather than the way down.
+#
+# Enter on Start is what JoyXoff does, and without a keyboard it is the binding
+# that matters most: it is how a dialog gets confirmed. But Start is half the
+# chord, so the moment it goes down is also the moment somebody may be starting
+# to hold it, and a key sent then would type into whatever is in front every
+# time the pointer is switched. So it waits for the release, and only counts if
+# the button was pressed on its own and the chord did not take.
+TAPS = {ecodes.BTN_START: ecodes.KEY_ENTER}
 
 # The buzz that confirms it. Short and firm, and only for the switch by hand:
 # the automatic one follows what is on screen, which is feedback enough, and a
@@ -470,7 +485,7 @@ class Pointer:
         )
 
         self.keys = evdev.UInput(
-            {ecodes.EV_KEY: sorted(set(KEYS.values()))},
+            {ecodes.EV_KEY: sorted(set(KEYS.values()) | set(TAPS.values()))},
             name=f"polyseat:keys{tag}",
         )
 
@@ -510,6 +525,11 @@ class Pointer:
         self.keys.write(ecodes.EV_KEY, code, 1 if pressed else 0)
         self.keys.syn()
 
+    def tap(self, code):
+        """Press and let go, for a key that is sent on the way up."""
+        self.key(code, True)
+        self.key(code, False)
+
     def release_all(self):
         """Leave nothing held when the mode goes off.
 
@@ -522,7 +542,7 @@ class Pointer:
 
         self.mouse.syn()
 
-        for code in set(KEYS.values()):
+        for code in set(KEYS.values()) | set(TAPS.values()):
             self.keys.write(ecodes.EV_KEY, code, 0)
 
         self.keys.syn()
@@ -559,12 +579,47 @@ class Chord:
         # Which pad completed it, so the buzz goes back to the hands that did.
         self.fd = None
 
+        # The one button that is down, while it is the only one. It becomes a
+        # press on its own when it is let go, unless something joined it first.
+        self.alone = None
+
+        # Set while more than one of them has been down, and cleared only when
+        # everything is let go. Without it, releasing one button of a chord
+        # leaves the other looking like a fresh press on its own.
+        self.spoiled = False
+
     def update(self, held, fd, now):
-        """A button of the chord went down or came up."""
-        if len(self.buttons & set(held)) < self.size:
-            self.forget()
-        elif self.since is None and not self.fired:
-            self.since, self.fd = now, fd
+        """A button of the chord went down or came up.
+
+        Returns the button that turned out to be a press on its own, once it is
+        let go and it is clear that it was one: a chord button cannot act while
+        it is down, because that is exactly when it might be half a chord.
+        """
+        down = self.buttons & set(held)
+
+        if len(down) >= self.size:
+            # A chord: nothing that happens until everything is let go was a
+            # press on its own.
+            self.spoiled = True
+
+            if self.since is None and not self.fired:
+                self.since, self.fd = now, fd
+
+            return None
+
+        # Fewer than the chord needs, so no hold is in progress.
+        self.forget()
+
+        if down:
+            if not self.spoiled:
+                self.alone = next(iter(down))
+
+            return None
+
+        alone = None if self.spoiled else self.alone
+        self.spoiled, self.alone = False, None
+
+        return alone
 
     def due(self, now):
         """True exactly once, when the chord has been held long enough."""
@@ -832,7 +887,11 @@ def main():
                         held.discard(event.code)
 
                     if event.code in CHORD:
-                        chord.update(held, fd, time.monotonic())
+                        alone = chord.update(held, fd, time.monotonic())
+
+                        if active and alone in TAPS:
+                            pointer.tap(TAPS[alone])
+
                         continue
 
                     if not active:
