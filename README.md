@@ -31,11 +31,15 @@ input devices, shares the game library, and repairs what drifts.
 **1. Install it, once per machine:**
 
 ```
-git clone https://github.com/superuser404notfound/Polyseat.git
+git clone --branch v0.1.0 https://github.com/superuser404notfound/Polyseat.git
 cd Polyseat
 sudo host/install.sh
 sudo systemctl enable --now polyseatd
 ```
+
+A tag rather than `main`, because `main` is where the next version is being
+written and a machine that streams to other people is not the place to find out
+what changed today. Leave the `--branch` off to follow it anyway.
 
 That installs any missing packages, gives root the idmap range every container
 start needs, brings up Incus and initialises it if nobody has, builds the
@@ -43,7 +47,7 @@ daemon, places the input helpers under `/usr/local/lib/polyseat`, installs the
 udev rule that keeps seat devices off the host desktop, registers one systemd
 unit, and adds your account to the `input` group so the host-side tooling runs
 without root. It creates no seats, and it can be run again after an update
-without undoing anything.
+without undoing anything, which is what *Updating* further down is.
 
 Two things it reports rather than changes, because they are yours to decide:
 whether the filesystem holding the game library can share blocks, which it asks
@@ -192,12 +196,26 @@ host/check-hardening.sh     # console and device exposures
 journalctl -fu polyseatd
 ```
 
-**Updating.** Pull, run the installer again, and press the button the interface
-offers to bring every seat up to date:
+**Updating.** Check out the newer tag and run the installer again:
 
 ```
-git pull && sudo host/install.sh && sudo systemctl restart polyseatd
+git fetch --tags
+git checkout v0.1.0     # or whichever is newest
+sudo host/install.sh
 ```
+
+That rebuilds the daemon and restarts it if it was running, which is the step
+that makes an update take effect at all: building a new binary does not disturb
+the process using the old one. Seats that exist are not touched. If the new
+version builds them differently the interface names the ones that are behind and
+offers one button to bring them up to date, at a moment you pick rather than
+in the middle of somebody's game.
+
+Which version is actually serving is at the bottom of the interface, in
+`polyseatd -version`, and in the journal at every start. It is the tag it was
+built from, so a build from an untagged commit says so. Nothing asks GitHub
+whether there is a newer one yet; [`CHANGELOG.md`](CHANGELOG.md) is where the
+differences are written down.
 
 **Removing it** leaves your seats alone: `sudo host/install.sh --uninstall`
 takes out the daemon, its unit, the udev rule and the helpers, and touches
