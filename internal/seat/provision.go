@@ -89,6 +89,11 @@ type Step struct {
 //     collides with them. Steam in particular can no longer be installed
 //     afterwards, because lib32-mesa cannot be written. On AMD nothing is
 //     injected and the ordering costs nothing, so it is not made conditional.
+//   - Proton after the user, because the part of it that sets the seat's
+//     default writes into the player's home and needs their uid. Put before,
+//     it asks a container that has no such user yet, which fails the whole
+//     provisioning run on a seat being built for the first time. Existing
+//     seats never showed it: they already had the user.
 //   - The session last, because it needs the addresses of a running container
 //     to generate Sunshine's allowed origins.
 func Steps() []Step {
@@ -98,8 +103,8 @@ func Steps() []Step {
 		{"packages", (*Provisioner).stepPackages},
 		{"sunshine", (*Provisioner).stepSunshine},
 		{"steam", (*Provisioner).stepSteam},
-		{"proton", (*Provisioner).stepProton},
 		{"user", (*Provisioner).stepUser},
+		{"proton", (*Provisioner).stepProton},
 		{"flatpak", (*Provisioner).stepFlatpak},
 		{"gpu", (*Provisioner).stepGPU},
 		{"graphics userspace", (*Provisioner).stepGraphicsUserspace},

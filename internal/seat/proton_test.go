@@ -196,3 +196,31 @@ func TestProtonDetectsTheInstructionSetLevel(t *testing.T) {
 		t.Error("a cpuinfo with no flags line was treated as capable")
 	}
 }
+
+// The part of the Proton step that sets the seat's default writes into the
+// player's home and needs their uid. Ordered before the step that creates that
+// user, it asks a container which has no such user yet, and the whole
+// provisioning run of a seat being built for the first time fails on it. An
+// existing seat never shows it, because it already has the user, which is
+// exactly the kind of ordering that survives every test done on a machine that
+// has been running for a while.
+func TestProtonIsProvisionedAfterThereIsAUser(t *testing.T) {
+	user, proton := -1, -1
+
+	for i, step := range Steps() {
+		switch step.Name {
+		case "user":
+			user = i
+		case "proton":
+			proton = i
+		}
+	}
+
+	if user < 0 || proton < 0 {
+		t.Fatalf("the recipe no longer has both steps: user at %d, proton at %d", user, proton)
+	}
+
+	if proton < user {
+		t.Errorf("proton is step %d and the user is created at step %d", proton, user)
+	}
+}
