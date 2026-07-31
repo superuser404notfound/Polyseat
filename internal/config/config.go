@@ -55,6 +55,15 @@ type Config struct {
 	// the seat definitions along with it.
 	LibraryDir string `json:"library_dir"`
 
+	// UpdateCheck asks GitHub every six hours whether a newer Polyseat has been
+	// published, and puts a line in the interface when there is one. It never
+	// installs anything, and it sends nothing about this machine.
+	//
+	// On by default, and here as a switch because a daemon that talks to the
+	// internet on its own should be one somebody can tell to stop. Set to false
+	// and no request is made at all.
+	UpdateCheck bool `json:"update_check"`
+
 	// GPURenderNode picks the card the seats render and encode on, for example
 	// /dev/dri/renderD129. Empty means the daemon finds it itself, which is the
 	// right answer on a machine with one card.
@@ -78,6 +87,12 @@ func Default() Config {
 		Image:      "archlinux/current",
 		Python:     "/usr/bin/python3",
 		LibraryDir: "/srv/polyseat/library",
+
+		// True by default, and it works out as true for an existing
+		// installation too: Load starts from these defaults and lets the file
+		// overwrite what it names, so a configuration written before this
+		// setting existed leaves it on rather than off.
+		UpdateCheck: true,
 
 		// Empty on purpose: the daemon looks at the machine. See GPURenderNode.
 		GPURenderNode: "",

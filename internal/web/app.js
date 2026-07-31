@@ -110,6 +110,61 @@ function showError(message) {
   box.prepend(div);
 }
 
+// updateBanner says that a newer Polyseat has been published.
+//
+// It says it and stops there. No button, because installing means rebuilding
+// the daemon from a checkout and restarting it, which is host/update.sh and a
+// moment somebody picks: this machine may have two people playing on it, and a
+// daemon that can replace itself while they do is not a feature.
+//
+// The link goes to the release rather than repeating its notes here. What
+// changed is worth reading before updating, and worth reading in full.
+function updateBanner() {
+  const release = state.update;
+  if (!release) return [];
+
+  const div = document.createElement("div");
+  div.className = "notice";
+
+  const text = document.createElement("span");
+  text.textContent =
+    `Polyseat ${release.version} was published${describeAge(release.published)}. ` +
+    `This machine runs ${state.host.version || "an unknown version"}. ` +
+    "Updating is host/update.sh, or a checkout and host/install.sh by hand. ";
+
+  const link = document.createElement("a");
+  link.href = release.url;
+  link.target = "_blank";
+  link.rel = "noreferrer noopener";
+  link.textContent = "What changed";
+
+  div.replaceChildren(text, link);
+
+  return [div];
+}
+
+// describeAge turns a publication date into " 3 days ago", or into nothing at
+// all when the date is missing or unreadable.
+//
+// Separate and defensive because it is the only part of the banner that can
+// fail: the version and the link are strings the daemon read out of an answer
+// it had already checked, while this is arithmetic on a date that came from
+// somebody else's server.
+function describeAge(published) {
+  if (!published) return "";
+
+  const when = new Date(published);
+  if (Number.isNaN(when.getTime())) return "";
+
+  const days = Math.floor((Date.now() - when.getTime()) / 86400000);
+
+  if (days < 0) return "";
+  if (days < 1) return " today";
+  if (days === 1) return " yesterday";
+
+  return ` ${days} days ago`;
+}
+
 // staleBanner offers to bring every out of date seat up to date, as one action.
 //
 // The seats being behind is one situation, so dealing with it is one button. It
@@ -214,6 +269,7 @@ function render() {
   // The list is absent rather than empty when there is nothing to warn about,
   // and calling map on that is what silently broke the whole page once.
   el("warnings").replaceChildren(
+    ...updateBanner(),
     ...staleBanner(),
     ...(state.warnings || []).map((text) => {
       const div = document.createElement("div");

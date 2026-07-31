@@ -25,6 +25,7 @@ import (
 	"github.com/superuser404notfound/Polyseat/internal/config"
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
+	"github.com/superuser404notfound/Polyseat/internal/update"
 	"github.com/superuser404notfound/Polyseat/internal/version"
 )
 
@@ -121,9 +122,16 @@ func run(configPath, listenOverride string, logger *slog.Logger) error {
 	managerDone := make(chan error, 1)
 	go func() { managerDone <- manager.Run(ctx) }()
 
+	// On a goroutine of its own rather than on the manager's loop, and nothing
+	// waits for it on the way out. It owns no seat, holds nothing anybody is
+	// using, and a shutdown that waited for an HTTP request to GitHub to time
+	// out would make every restart slower for no gain.
+	updates := update.New(version.Version, cfg.UpdateCheck, logger)
+	go updates.Run(ctx)
+
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.New(manager, credentials, logger),
+		Handler:           api.New(manager, credentials, updates, logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{certificate},

@@ -22,6 +22,7 @@ import (
 	"github.com/superuser404notfound/Polyseat/internal/library"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
 	"github.com/superuser404notfound/Polyseat/internal/sunshine"
+	"github.com/superuser404notfound/Polyseat/internal/update"
 	"github.com/superuser404notfound/Polyseat/internal/version"
 	"github.com/superuser404notfound/Polyseat/internal/web"
 )
@@ -30,12 +31,13 @@ import (
 type Server struct {
 	manager *seat.Manager
 	auth    *auth.Store
+	updates *update.Checker
 	log     *slog.Logger
 }
 
 // New builds the HTTP handler.
-func New(manager *seat.Manager, credentials *auth.Store, logger *slog.Logger) http.Handler {
-	s := &Server{manager: manager, auth: credentials, log: logger}
+func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker, logger *slog.Logger) http.Handler {
+	s := &Server{manager: manager, auth: credentials, updates: updates, log: logger}
 
 	mux := http.NewServeMux()
 
@@ -318,8 +320,14 @@ type stateResponse struct {
 	Config   config.Config `json:"config"`
 	Uplinks  []string      `json:"uplinks"`
 	Host     hostInfo      `json:"host"`
-	Warnings []string      `json:"warnings"`
-	Now      time.Time     `json:"now"`
+
+	// Update is the published release this build does not have, null when
+	// there is none or when nothing was asked. Not omitted when it is null:
+	// a field that is sometimes absent is a field every caller has to guard
+	// twice, and this page has been broken once already by exactly that.
+	Update   *update.Release `json:"update"`
+	Warnings []string        `json:"warnings"`
+	Now      time.Time       `json:"now"`
 }
 
 type hostInfo struct {
@@ -383,6 +391,7 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 			Uplink:        s.manager.Uplink(),
 			UplinkBridged: s.manager.UplinkBridged(),
 		},
+		Update:   s.updates.Available(),
 		Warnings: s.warnings(),
 		Now:      time.Now(),
 	}

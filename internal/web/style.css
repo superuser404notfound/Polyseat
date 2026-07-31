@@ -410,6 +410,23 @@ form.pair input:nth-child(2) { flex: 1; min-width: 9rem; }
   color: var(--warn);
 }
 
+/* A new version is news, not a fault. Same shape as a warning so it sits in the
+   same column, in the accent colour so that a machine which is merely a few
+   weeks behind does not look like a machine with something wrong with it. */
+.notice {
+  border: 1px solid var(--accent);
+  border-left-width: 3px;
+  border-radius: 7px;
+  padding: 0.6rem 0.9rem;
+  margin-bottom: 1rem;
+  font-size: 0.88rem;
+  color: var(--accent);
+}
+
+.notice a {
+  color: inherit;
+}
+
 .empty {
   color: var(--dim);
   text-align: center;
