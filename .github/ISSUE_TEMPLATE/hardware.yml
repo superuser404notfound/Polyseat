@@ -1,0 +1,62 @@
+name: It ran, or did not, on this machine
+description: A report from hardware that is not the author's. Useful whether it worked or not, and most useful of all from an AMD card
+labels: [hardware]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One Arch host with an RTX 4080 has seen every line of this project. Every
+        machine that is not that one tells this project something it cannot find
+        out for itself.
+
+        **AMD especially.** That whole path was written and reasoned about
+        without a card to run it on, so the first person to try it is doing
+        something nobody has done, in either direction.
+
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: How did it go
+      options:
+        - It works
+        - It works, with something to say about it
+        - It half works
+        - It does not work
+    validations:
+      required: true
+
+  - type: textarea
+    id: report
+    attributes:
+      label: sudo polyseatd -report
+      description: |
+        The card, the driver, the distribution, the filesystem and the seats, in
+        one go.
+
+        **Read it before pasting.** It carries this machine's host name, its
+        seat names and their private addresses, and no password or key.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: encoder
+    attributes:
+      label: What the seat's card says the encoder is
+      description: |
+        The single most useful line for this question. `nvenc` or `vaapi` means
+        the hardware path came up; anything else means a seat that starts,
+        streams and looks perfectly healthy while encoding on the CPU.
+      placeholder: "vaapi (H.264, HEVC, AV1)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: |
+        What you had to do that the documentation did not mention, what looked
+        wrong, what the stream felt like. Rough notes are fine and are worth
+        more than nothing.

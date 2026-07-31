@@ -1,0 +1,58 @@
+name: Something is broken
+description: A seat that will not build, a stream that will not start, anything that behaves differently from what the documentation says
+labels: [bug]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The report below answers most of the first questions on its own, which
+        is why it is asked for first rather than last.
+
+  - type: textarea
+    id: report
+    attributes:
+      label: sudo polyseatd -report
+      description: |
+        Paste the whole output. It describes the machine in one go: version,
+        distribution, card and driver, Incus, whether the library filesystem can
+        really share blocks, the uplink, every seat, and the last 200 journal
+        lines.
+
+        **Read it before pasting.** It carries this machine's host name, its
+        seat names and their private addresses. It carries no password, key or
+        certificate. Take out anything you would rather not publish; saying that
+        you did is enough.
+
+        No daemon running, or none that will start? Say so here and paste
+        whatever `sudo polyseatd -report` still manages, which is most of it.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: seat
+    attributes:
+      label: What the seat's own log says
+      description: |
+        Optional, and often the answer. Open the seat's card in the web
+        interface and copy its log. That is where the input broker says which
+        device it gave to whom, and where provisioning says which step it was on
+        when it stopped.
+      render: text
+
+  - type: checkboxes
+    id: read
+    attributes:
+      label: Before opening this
+      options:
+        - label: I am running the newest release, or I have said above which one I am running and why
+        - label: I have read the Known limits in CHANGELOG.md, in case this is one of them

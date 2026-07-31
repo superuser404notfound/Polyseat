@@ -1,0 +1,12 @@
+# Blank issues stay on. A question that fits no template is still a question
+# worth having, and a form that refuses one teaches people to leave.
+blank_issues_enabled: true
+
+contact_links:
+  - name: A security problem
+    url: https://github.com/superuser404notfound/Polyseat/security/advisories/new
+    about: Report it privately instead. What counts as one, and what is already known and accepted, is in SECURITY.md.
+
+  - name: What this does and does not do
+    url: https://github.com/superuser404notfound/Polyseat/blob/main/README.md
+    about: Arch based hosts only, one wired interface, and a filesystem that can share blocks for the shared game library.

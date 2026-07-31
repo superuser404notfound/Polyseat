@@ -10,6 +10,20 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## Unreleased
+
+- **A seat record on disk says which layout it is in**, and a build refuses one
+  it does not understand rather than reading it anyway. Records written before
+  this field are the same layout by definition and keep working untouched. It is
+  here now because a field like this is worth nothing added later: it cannot say
+  anything about the records that came before it.
+- **The interface says so on an AMD machine**, since that path has never been
+  run on real hardware by its author and whoever opens the page has quite
+  possibly not read the readme.
+- `CONTRIBUTING.md`, `SECURITY.md` and issue forms that ask for
+  `sudo polyseatd -report` first. Security problems have a private channel now
+  rather than a public issue.
+
 ## 0.2.0
 
 Noticing that there is a newer version, and a way to take it.

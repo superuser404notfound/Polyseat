@@ -269,7 +269,15 @@ Architecture and the reasoning behind every decision:
 [`docs/architecture.md`](docs/architecture.md). What the isolation actually
 guarantees, measured rather than assumed: [`docs/security.md`](docs/security.md).
 Who installs what, and where the line between installer, daemon and interface
-runs: [`docs/installation.md`](docs/installation.md).
+runs: [`docs/installation.md`](docs/installation.md). What changed between
+versions: [`CHANGELOG.md`](CHANGELOG.md).
+
+**Running it on hardware that is not the author's is the most useful thing
+anybody can do for this project**, and reporting back either way is the point.
+How, and what the code and tests here look like:
+[`CONTRIBUTING.md`](CONTRIBUTING.md). Reporting a security problem privately,
+and what is already known and deliberately accepted:
+[`SECURITY.md`](SECURITY.md).
 
 ## Roadmap
 
