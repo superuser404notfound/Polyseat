@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -347,6 +349,112 @@ func TestPointerChordTakesSelectWithGuideToo(t *testing.T) {
 
 	if fired := chordFires(t, recorded); len(fired) != 1 {
 		t.Errorf("Select with Guide flipped the mode %d times, want once: %v", len(fired), fired)
+	}
+}
+
+// The driver for the button mapping: it asks the helper what each face button
+// does, by the label printed on the controller rather than by evdev's name for
+// it. That distinction is the whole point. evdev calls the X button BTN_NORTH
+// and the Y button BTN_WEST, which read like positions and are not.
+const mappingDriver = `
+import importlib.util, json, sys
+
+spec = importlib.util.spec_from_file_location("padpointer", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+e = module.ecodes
+face = {"A": e.BTN_SOUTH, "B": e.BTN_EAST, "X": e.BTN_NORTH, "Y": e.BTN_WEST,
+        "LB": e.BTN_TL, "RB": e.BTN_TR}
+clicks = {e.BTN_LEFT: "left click", e.BTN_RIGHT: "right click",
+          e.BTN_MIDDLE: "middle click"}
+keys = {e.KEY_ENTER: "Enter", e.KEY_ESC: "Escape",
+        e.KEY_BACKSPACE: "Backspace", e.KEY_TAB: "Tab"}
+
+answer = {}
+for label, code in face.items():
+    if code in module.CLICKS:
+        answer[label] = clicks[module.CLICKS[code]]
+    elif code in module.KEYS:
+        answer[label] = keys[module.KEYS[code]]
+
+print(json.dumps(answer))
+`
+
+// buttonMapping reports what the helper does with each labelled face button.
+func buttonMapping(t *testing.T) map[string]string {
+	t.Helper()
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("SKIPPED: no python3, so the helper's behaviour is unverified here")
+	}
+
+	path := filepath.Join(t.TempDir(), "pad-pointer.py")
+	if err := os.WriteFile(path, asset("assets/pad-pointer.py"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command(python, "-c", mappingDriver, path).Output()
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok && len(exit.Stderr) > 0 {
+			t.Skipf("SKIPPED: the helper could not be loaded here: %s", exit.Stderr)
+		}
+
+		t.Fatal(err)
+	}
+
+	var answer map[string]string
+	if err := json.Unmarshal(out, &answer); err != nil {
+		t.Fatalf("the driver printed %q", out)
+	}
+
+	return answer
+}
+
+// What the desktop pad-to-mouse tools do, JoyXoff among them, and what the
+// console convention already trains: A clicks, X right clicks, B goes back, Y
+// confirms.
+var padMapping = map[string]string{
+	"A":  "left click",
+	"X":  "right click",
+	"B":  "Escape",
+	"Y":  "Enter",
+	"LB": "Backspace",
+	"RB": "Tab",
+}
+
+func TestPointerUsesTheFamiliarButtonMapping(t *testing.T) {
+	got := buttonMapping(t)
+
+	for label, want := range padMapping {
+		if got[label] != want {
+			t.Errorf("%s does %q, want %q", label, got[label], want)
+		}
+	}
+}
+
+// The bug this is really here for. The mapping was right in the code and
+// backwards in the help text - Escape was on X and the terminal said it was on
+// Y - because evdev's BTN_NORTH is the X button and reads like it is not.
+// Nobody holding the controller can tell which of the two is wrong, so the two
+// are checked against each other.
+func TestPointerHelpTextAgreesWithTheButtons(t *testing.T) {
+	welcome := string(asset("assets/welcome.sh"))
+
+	for label, want := range padMapping {
+		line := regexp.MustCompile(`(?m)^\s*printf '\s+` + label + `\s\s+(.+?)\\n'`)
+
+		found := line.FindStringSubmatch(welcome)
+		if found == nil {
+			t.Errorf("the welcome text says nothing about %s", label)
+
+			continue
+		}
+
+		if got := strings.TrimSpace(found[1]); got != want {
+			t.Errorf("the welcome text says %s does %q, the helper does %q", label, got, want)
+		}
 	}
 }
 

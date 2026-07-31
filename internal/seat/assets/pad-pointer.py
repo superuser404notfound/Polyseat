@@ -117,17 +117,31 @@ KEYBOARD = "/usr/local/bin/polyseat-keyboard"
 
 # Buttons that click, and buttons that press a key. Deliberately small: this is
 # for getting through a login form and a launcher, not for replacing a keyboard.
+#
+# **The face buttons follow the desktop tools people already know**: A clicks, X
+# right clicks, B goes back, Y confirms. That is the arrangement JoyXoff and the
+# rest of the Windows pad-to-mouse tools use, and it is worth matching for the
+# same reason the sticks are: whoever picks up the controller has met it before.
+# B for Escape in particular is the console convention that every menu on the
+# machine already follows.
+#
+# **Mind the names.** evdev calls the X button BTN_NORTH and the Y button
+# BTN_WEST, which read like positions and are not: BTN_NORTH is the old BTN_X
+# and BTN_WEST the old BTN_Y. Checked against inputtino, which is what builds
+# the pad Sunshine hands to a seat - it writes BTN_NORTH for X and BTN_WEST for
+# Y. The first version of this file had Escape and Enter the right way round in
+# the code and the wrong way round in the help text, because of exactly this.
 CLICKS = {
-    ecodes.BTN_SOUTH: ecodes.BTN_LEFT,
-    ecodes.BTN_EAST: ecodes.BTN_RIGHT,
-    ecodes.BTN_THUMBR: ecodes.BTN_MIDDLE,
+    ecodes.BTN_SOUTH: ecodes.BTN_LEFT,     # A
+    ecodes.BTN_NORTH: ecodes.BTN_RIGHT,    # X
+    ecodes.BTN_THUMBR: ecodes.BTN_MIDDLE,  # R3
 }
 
 KEYS = {
-    ecodes.BTN_WEST: ecodes.KEY_ENTER,
-    ecodes.BTN_NORTH: ecodes.KEY_ESC,
-    ecodes.BTN_TL: ecodes.KEY_BACKSPACE,
-    ecodes.BTN_TR: ecodes.KEY_TAB,
+    ecodes.BTN_EAST: ecodes.KEY_ESC,       # B
+    ecodes.BTN_WEST: ecodes.KEY_ENTER,     # Y
+    ecodes.BTN_TL: ecodes.KEY_BACKSPACE,   # LB
+    ecodes.BTN_TR: ecodes.KEY_TAB,         # RB
     ecodes.BTN_DPAD_UP: ecodes.KEY_UP,
     ecodes.BTN_DPAD_DOWN: ecodes.KEY_DOWN,
     ecodes.BTN_DPAD_LEFT: ecodes.KEY_LEFT,
