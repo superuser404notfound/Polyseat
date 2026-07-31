@@ -268,6 +268,18 @@ func (m *Manager) Run(ctx context.Context) error {
 	sync := time.NewTicker(syncInterval)
 	defer sync.Stop()
 
+	// Proton has its own, much slower timer. It is a request to GitHub and an
+	// answer that changes about weekly, so asking on the sweep's ten seconds
+	// would be several thousand requests for every one that says anything.
+	proton := time.NewTicker(protonInterval)
+	defer proton.Stop()
+
+	// And once shortly after the daemon comes up, because a machine that is
+	// switched off in the evening and on again the next day would otherwise
+	// never reach the first tick.
+	first := time.NewTimer(2 * time.Minute)
+	defer first.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -287,6 +299,12 @@ func (m *Manager) Run(ctx context.Context) error {
 
 		case <-sync.C:
 			m.syncLibrary(ctx)
+
+		case <-first.C:
+			m.updateProton(ctx)
+
+		case <-proton.C:
+			m.updateProton(ctx)
 		}
 	}
 }

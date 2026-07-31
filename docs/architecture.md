@@ -587,6 +587,43 @@ have cost more than the rest together. Everything heavier stays one click away
 instead: Heroic alone is close to a gigabyte with its runtime, per seat, and a
 seat belonging to somebody who only plays on Steam should not carry it.
 
+**Proton CachyOS is one of the things every seat carries**, alongside the Proton
+that comes with Steam. It arrives the way Sunshine does, from the project's own
+GitHub release rather than from a repository, which keeps a seat on plain Arch
+from having to trust a second package source for one compatibility tool. The
+release publishes a baseline and an x86-64-v3 archive of the same version, and
+the seat is asked which one its processor can run: the whole feature set the
+level is defined by, not AVX2 alone, because a processor that has AVX2 and is
+missing one of the others would take the optimised build and die on an illegal
+instruction in every game.
+
+The archive is fetched by the seat rather than by the daemon. It is a third of
+a gigabyte, and the way the other downloads here work would hold the whole of it
+in the daemon's memory and then push a second copy through the Incus API. Its
+published sha512 is checked before anything is unpacked, the unpacking goes to a
+directory beside the target, and only a complete unpacking replaces what was
+there, so a download that dies half way through leaves the seat with the Proton
+it already had rather than a partial one Steam would list and offer anyway.
+None of it is fatal: a seat whose Proton could not be fetched still plays
+everything Valve's Proton plays, so a GitHub that is briefly unreachable is a
+line in the log rather than a seat that failed to build.
+
+**It updates itself**, because a build that exists to carry fixes early is worth
+nothing pinned to whatever was current on the day a seat was provisioned. The
+daemon looks for a newer release every six hours and shortly after it starts.
+The replacement is an unlink and a rename, so it waits for a seat with nobody
+streaming out of it and with nothing holding the directory open, asked with the
+same `/proc` probe the library uses. A game running under that Proton keeps the
+files it already opened, which is precisely what makes it worth avoiding: it
+would open the next one it needs some minutes later and find it gone, with
+nothing in any log connecting the two.
+
+`/dev/ntsync` is passed into the seat for it. That is the kernel interface Wine
+uses for the synchronisation primitives Windows programs expect, Proton CachyOS
+is built around having it, and without it Proton falls back to esync and fsync.
+Optional like the other host devices: a kernel too old to have it should cost a
+seat its fastest synchronisation, not its ability to start.
+
 ## The client with no keyboard and no mouse
 
 Which is most of them. A seat streams to an Apple TV, a phone, a television,

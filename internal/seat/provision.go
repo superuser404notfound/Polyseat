@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 25
+const Generation = 26
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -98,6 +98,7 @@ func Steps() []Step {
 		{"packages", (*Provisioner).stepPackages},
 		{"sunshine", (*Provisioner).stepSunshine},
 		{"steam", (*Provisioner).stepSteam},
+		{"proton", (*Provisioner).stepProton},
 		{"user", (*Provisioner).stepUser},
 		{"flatpak", (*Provisioner).stepFlatpak},
 		{"gpu", (*Provisioner).stepGPU},
@@ -601,6 +602,306 @@ func (p *Provisioner) stepSteam(ctx context.Context) error {
 	return err
 }
 
+// --------------------------------------------------------------------- proton
+
+// protonDir is where Steam looks for compatibility tools that did not come
+// with it. Steam scans several places; this is the system wide one, chosen over
+// a directory in the player's home so that the tool is there for whoever ends
+// up in the seat rather than tied to one home directory.
+const protonDir = "/usr/share/steam/compatibilitytools.d"
+
+// protonName is what the tool is called on disk. Fixed rather than taken from
+// the archive, whose top level directory carries the version and the instruction
+// set in its name, so that an upgrade replaces the previous build instead of
+// leaving Steam with a menu of every version this seat has ever seen.
+const protonName = "proton-cachyos"
+
+// protonStamp records which release is unpacked, written by us rather than read
+// out of the archive's own version file. What upstream puts in there is theirs
+// to change; the tag is what this step decided on and therefore what it should
+// compare against.
+const protonStamp = protonDir + "/" + protonName + "/polyseat-release"
+
+// stepProton adds Proton CachyOS to the seat.
+//
+// Steam ships its own Proton and that keeps working; this is the build most
+// people on this distribution would reach for, and without it the seat's
+// version list is Valve's and nothing else. It arrives the same way Sunshine
+// does, from the project's own release rather than from a repository, which
+// keeps a seat on plain Arch from having to trust a second package source for
+// one compatibility tool.
+//
+// Nothing here is fatal. A seat whose Proton could not be fetched still starts,
+// still streams and still plays everything Valve's Proton plays, so a GitHub
+// that is briefly unreachable is a line in the log rather than a seat that
+// failed to build. The one case worth being loud about is a download whose
+// checksum does not match, because that is not a hiccup.
+func (p *Provisioner) stepProton(ctx context.Context) error {
+	release, err := protonRelease(ctx, p.isaLevel(ctx))
+	if err != nil {
+		p.Log("! Proton CachyOS could not be looked up, the seat keeps Valve's Proton: %v", err)
+
+		return nil
+	}
+
+	stamp, _, err := p.Client.Try(ctx, p.name(), "cat", protonStamp)
+	if err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(stamp) == release.tag {
+		p.Log("Proton CachyOS %s already installed", release.tag)
+
+		return nil
+	}
+
+	// Fetched here rather than in the seat, and before the archive rather than
+	// after it: it is a few dozen bytes, and a release whose checksum cannot be
+	// read is one to walk away from before spending a third of a gigabyte on it.
+	sum, err := protonChecksum(ctx, release.sum)
+	if err != nil {
+		p.Log("! the Proton CachyOS checksum could not be read, nothing was installed: %v", err)
+
+		return nil
+	}
+
+	p.Log("installing Proton CachyOS %s (%d MB)", release.tag, release.size/1024/1024)
+
+	// Fetched by the seat rather than by the daemon. The archive is a third of
+	// a gigabyte, and the way every other download here works would read the
+	// whole of it into the daemon's memory and then push a second copy of it
+	// through the Incus API.
+	//
+	// Unpacked beside the target and moved into place, so that a download that
+	// dies half way through leaves the previous Proton where it was rather than
+	// a half unpacked directory Steam would offer anyway.
+	out, code, err := p.Client.Try(ctx, p.name(), "sh", "-c",
+		protonScript(release.url, sum, release.tag))
+	if err != nil {
+		return err
+	}
+
+	if code != 0 {
+		// Tidied up whatever is left, or the next run finds a stale archive and
+		// a half unpacked directory in the way of its own.
+		_, _, _ = p.Client.Try(ctx, p.name(), "sh", "-c",
+			"rm -rf "+protonDir+"/.polyseat-new "+protonDir+"/proton.tar.xz")
+
+		p.Log("! Proton CachyOS was not installed, the seat keeps Valve's Proton: %s",
+			strings.TrimSpace(lastLine(out)))
+
+		return nil
+	}
+
+	p.Log("Proton CachyOS %s is in the seat", release.tag)
+
+	return nil
+}
+
+// lastLine is what to quote from a shell script that failed: the message that
+// stopped it, rather than the whole of a download's progress.
+func lastLine(out string) string {
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+
+	return lines[len(lines)-1]
+}
+
+// protonScript fetches, verifies and unpacks one build inside the seat.
+//
+// The seat does the fetching. The archive is a third of a gigabyte, and the way
+// every other download in this file works would read the whole of it into the
+// daemon's memory and then push a second copy of it through the Incus API.
+//
+// Order is the point of the rest. The checksum is checked before anything is
+// unpacked, the unpacking goes to a directory beside the target, and only a
+// complete unpacking replaces what was there. A download that dies half way
+// through therefore leaves the seat with the Proton it already had rather than
+// with a partial one that Steam would list and offer anyway.
+func protonScript(url, sum, tag string) string {
+	return fmt.Sprintf(`set -e
+mkdir -p %[1]s
+cd %[1]s
+rm -rf .polyseat-new proton.tar.xz
+curl -fsSL --retry 2 -o proton.tar.xz %[2]q
+echo %[3]q'  proton.tar.xz' | sha512sum -c -
+mkdir .polyseat-new
+tar -xJf proton.tar.xz -C .polyseat-new --strip-components=1
+rm -f proton.tar.xz
+printf '%%s\n' %[4]q > .polyseat-new/polyseat-release
+rm -rf %[5]q
+mv .polyseat-new %[5]q
+`, protonDir, url, sum, tag, protonName)
+}
+
+// protonChecksum reads the hash out of the published sha512sum file.
+//
+// The file holds the hash and the name of what it belongs to, and only the hash
+// is wanted here, because the archive is saved under a name of this step's
+// choosing rather than the one upstream used.
+func protonChecksum(ctx context.Context, url string) (string, error) {
+	body, err := download(ctx, url)
+	if err != nil {
+		return "", err
+	}
+
+	return parseChecksum(string(body))
+}
+
+// parseChecksum takes the hash out of that file and refuses anything that is
+// not one.
+//
+// Separate from fetching it, and strict on purpose. What arrives here goes
+// straight into a shell command, and the thing a checksum most often turns into
+// when a release is malformed or a proxy interferes is an error page.
+func parseChecksum(body string) (string, error) {
+	hash, _, found := strings.Cut(strings.TrimSpace(body), " ")
+	if !found || len(hash) != 128 {
+		return "", fmt.Errorf("%q is not a sha512 checksum", strings.TrimSpace(body))
+	}
+
+	if strings.Trim(hash, "0123456789abcdefABCDEF") != "" {
+		return "", fmt.Errorf("%q is not a sha512 checksum", hash)
+	}
+
+	return hash, nil
+}
+
+// isaLevel reports which build of Proton this seat can run.
+//
+// x86-64-v3 is what the optimised build needs, and it is a set of features
+// rather than a single one. Asked of the seat rather than of the host because
+// the seat is where it runs, even though on one machine the answer is the same.
+// Anything unclear answers with the baseline build, which runs everywhere.
+func (p *Provisioner) isaLevel(ctx context.Context) string {
+	out, code, err := p.Client.Try(ctx, p.name(), "cat", "/proc/cpuinfo")
+	if err != nil || code != 0 {
+		return "x86_64"
+	}
+
+	if supportsV3(out) {
+		return "x86_64_v3"
+	}
+
+	return "x86_64"
+}
+
+// supportsV3 reads the answer out of /proc/cpuinfo.
+//
+// Separate from fetching it so that it can be tested against the real file from
+// a processor that has the whole set and one that does not, which is the only
+// way to find out that a shorter check passes something it should not.
+func supportsV3(cpuinfo string) bool {
+	flags := ""
+
+	for _, line := range strings.Split(cpuinfo, "\n") {
+		if rest, ok := strings.CutPrefix(line, "flags"); ok {
+			if _, value, found := strings.Cut(rest, ":"); found {
+				flags = " " + strings.TrimSpace(value) + " "
+
+				break
+			}
+		}
+	}
+
+	// The full set the level is defined by. A shorter check would pass on a
+	// processor that has AVX2 and is missing something else in the set, and the
+	// symptom of that is every game dying on an illegal instruction.
+	for _, want := range []string{
+		"avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "abm", "movbe", "xsave",
+	} {
+		if !strings.Contains(flags, " "+want+" ") {
+			return false
+		}
+	}
+
+	return true
+}
+
+// protonAsset is one build from a Proton CachyOS release.
+type protonAsset struct {
+	tag  string
+	url  string
+	sum  string
+	size int64
+}
+
+// protonRelease asks GitHub for the current Proton CachyOS and picks the build
+// for this instruction set.
+//
+// Resolved at provisioning time rather than pinned, for the same reason
+// Sunshine is: a pinned version rots, and the asset names carry the version.
+func protonRelease(ctx context.Context, isa string) (protonAsset, error) {
+	const api = "https://api.github.com/repos/CachyOS/proton-cachyos/releases/latest"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, api, nil)
+	if err != nil {
+		return protonAsset{}, err
+	}
+
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return protonAsset{}, fmt.Errorf("ask GitHub for the Proton CachyOS release: %w", err)
+	}
+
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return protonAsset{}, fmt.Errorf("the Proton CachyOS release could not be looked up: %s", resp.Status)
+	}
+
+	var release struct {
+		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name string `json:"name"`
+			Size int64  `json:"size"`
+			URL  string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return protonAsset{}, err
+	}
+
+	return pickProton(release.TagName, isa, release.Assets)
+}
+
+// pickProton chooses the archive and finds its published checksum.
+//
+// Separate from the request so that the choice can be tested against a real
+// release listing. Every release carries several architectures and two
+// instruction set levels of the same version, and picking by "contains x86_64"
+// would match the v3 build on a processor that cannot run it.
+func pickProton(tag, isa string, assets []struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+	URL  string `json:"browser_download_url"`
+},
+) (protonAsset, error) {
+	archive := "-" + isa + ".tar.xz"
+
+	for _, asset := range assets {
+		if !strings.HasSuffix(asset.Name, archive) {
+			continue
+		}
+
+		want := strings.TrimSuffix(asset.Name, ".tar.xz") + ".sha512sum"
+
+		for _, sum := range assets {
+			if sum.Name != want {
+				continue
+			}
+
+			return protonAsset{tag: tag, url: asset.URL, sum: sum.URL, size: asset.Size}, nil
+		}
+
+		return protonAsset{}, fmt.Errorf("%s carries no checksum, so it is not being installed", asset.Name)
+	}
+
+	return protonAsset{}, fmt.Errorf("release %s carries no %s build", tag, isa)
+}
+
 // ---------------------------------------------------------------------- user
 
 func (p *Provisioner) stepUser(ctx context.Context) error {
@@ -830,6 +1131,17 @@ func (p *Provisioner) stepGPU(ctx context.Context) error {
 		"uhid": {
 			"type": "unix-char", "source": "/dev/uhid",
 			"path": "/dev/uhid", "mode": "0666", "required": "false",
+		},
+
+		// What Wine uses for the synchronisation primitives Windows programs
+		// expect. Without it Proton falls back to esync and fsync, which is
+		// what it did before the kernel grew this, and Proton CachyOS is built
+		// around having it. required=false because the module is recent enough
+		// that a host may simply not have it, and a seat that will not start
+		// over a missing sync device would be a poor trade for it.
+		"ntsync": {
+			"type": "unix-char", "source": "/dev/ntsync",
+			"path": "/dev/ntsync", "mode": "0666", "required": "false",
 		},
 	}
 

@@ -219,13 +219,28 @@ func (m *Manager) members() []library.Member {
 // matches the target of a symlink with -lname without following it and without
 // a process per link, and -quit stops at the first one, which is why the two
 // patterns are asked separately rather than joined.
-const idleProbe = `
-grep -qE '` + LibraryMount + `|` + steamApps + `' /proc/[0-9]*/maps 2>/dev/null && exit 1
-for p in '` + LibraryMount + `/*' '` + steamApps + `/*'; do
+// A function rather than a constant because the same question is asked about
+// more than one directory now: the library before its files are replaced, and
+// the compatibility tool before it is replaced by a newer one.
+func idleProbeFor(paths ...string) string {
+	var patterns, globs []string
+
+	for _, path := range paths {
+		patterns = append(patterns, path)
+		globs = append(globs, "'"+path+"/*'")
+	}
+
+	return `
+grep -qE '` + strings.Join(patterns, "|") + `' /proc/[0-9]*/maps 2>/dev/null && exit 1
+for p in ` + strings.Join(globs, " ") + `; do
 	[ -n "$(find /proc/[0-9]*/fd /proc/[0-9]*/cwd -lname "$p" -print -quit 2>/dev/null)" ] && exit 1
 done
 exit 0
 `
+}
+
+// idleProbe is the library's own, which is the one the tests exercise.
+var idleProbe = idleProbeFor(LibraryMount, steamApps)
 
 // libraryIdle reports whether the seat's copies may be replaced right now.
 //
@@ -239,6 +254,13 @@ exit 0
 // Anything uncertain answers no: leaving a seat one patch behind for another
 // minute costs nothing, and the interface says an update is waiting.
 func (m *Manager) libraryIdle(name string) bool {
+	return m.nothingUsing(name, idleProbe)
+}
+
+// nothingUsing runs one of those probes against a seat and reports what it
+// found, with the states a container can be in that make the question either
+// trivial or unanswerable settled first.
+func (m *Manager) nothingUsing(name, probe string) bool {
 	status, err := m.client.Status(name)
 	if err != nil {
 		return false
@@ -257,7 +279,7 @@ func (m *Manager) libraryIdle(name string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, code, err := m.client.Try(ctx, name, "sh", "-c", idleProbe)
+	_, code, err := m.client.Try(ctx, name, "sh", "-c", probe)
 	if err != nil {
 		return false
 	}
