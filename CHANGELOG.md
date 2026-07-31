@@ -10,10 +10,18 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
-## Unreleased
+## 0.2.0
+
+Noticing that there is a newer version, and a way to take it.
 
 Seats are untouched by this one. Nothing in it changes how a seat is built, so
-updating to it is a rebuild and a restart of the daemon and no more.
+updating to it is a rebuild and a restart of the daemon and no more. Anybody on
+0.1.0 has to do that update by hand, since `host/update.sh` arrives with this
+version rather than before it:
+
+```
+git fetch --tags && git checkout v0.2.0 && sudo host/install.sh
+```
 
 - **The interface says when a newer Polyseat has been published.** One request
   to GitHub every six hours, a line at the top when there is something to say,
