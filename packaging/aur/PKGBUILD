@@ -8,10 +8,20 @@ arch=('x86_64')
 url="https://github.com/superuser404notfound/Polyseat"
 license=('GPL-3.0-or-later')
 
-# What the daemon talks to. Everything a seat needs is installed inside the
-# seat by the daemon itself, so none of that belongs here: a host running
-# Polyseat needs no Steam, no Sway and no Sunshine of its own.
-depends=('incus' 'bpftrace' 'python' 'systemd' 'iproute2' 'util-linux')
+# What the daemon talks to. Everything a seat needs is installed inside the seat
+# by the daemon itself, so none of that belongs here: a host running Polyseat
+# needs no Steam, no Sway and no Sunshine of its own.
+#
+# Three, and namcap says all three may not be needed. It is wrong about all
+# three, because it finds dependencies by reading ELF links and shebangs and
+# these are none of those: incus is a socket the daemon speaks to, bpftrace is
+# what the uhid observer runs, and python is what the input broker is written in.
+#
+# systemd, iproute2 and util-linux were listed here and are not any more. The
+# daemon calls systemctl, prepare.sh calls ip and both call findmnt, so they are
+# genuinely used, and all three are members of `base`, which every Arch
+# installation has. Listing them is noise that namcap flags and nobody acts on.
+depends=('incus' 'bpftrace' 'python')
 
 makedepends=('go' 'git')
 
