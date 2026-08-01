@@ -10,8 +10,21 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
-## Unreleased
+## 0.3.0
 
+Two ways in, and everything a stranger needs to install it and to tell us when
+it goes wrong.
+
+Seats are untouched by this one. Nothing in it changes how a seat is built, so
+updating is a rebuild and a restart of the daemon and no more.
+
+- **`sudo polyseatd -report` describes a whole installation in one go**, for a
+  bug report: version, distribution, card and driver, Incus, whether the library
+  filesystem can really share blocks, the uplink, every seat and which recipe
+  built it, and the last 200 journal lines. It runs without the daemon, which is
+  the point, because it is wanted most on a machine where the daemon will not
+  start. It reads a machine and changes nothing, and it opens no password, key
+  or certificate.
 - **A seat record on disk says which layout it is in**, and a build refuses one
   it does not understand rather than reading it anyway. Records written before
   this field are the same layout by definition and keep working untouched. It is
@@ -31,6 +44,10 @@ costs a few minutes per seat rather than a restart.
   installing. The checkout install runs it for you and is otherwise unchanged.
 - The daemon finds its input helpers under `/usr/local/lib` or `/usr/lib`
   without being told which, since the same binary is installed both ways.
+- Continuous integration on every push: build, vet, gofmt, the tests, and
+  `shellcheck` over the shell scripts. It makes itself a btrfs filesystem in a
+  loopback file first, because a runner's disk cannot share blocks and the
+  library tests would otherwise skip in silence and report green.
 - `host/test-package.sh` builds the package and installs it on a fresh virtual
   machine, the way `host/test-install.sh` does for the checkout. It also checks
   the three things a package must not do.
