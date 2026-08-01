@@ -10,6 +10,35 @@ cover as well, and what must not end up in it.
 belongs to the daemon, and the web interface does nothing at all except talk to
 the daemon.
 
+## The second line, inside the installer
+
+The host side is itself two halves, and they are separate files because only one
+of them can be packaged.
+
+**`host/prepare.sh` gets the machine ready.** Packages, the idmap range, Incus,
+the driver check, the filesystem probe, the uplink, the group. An Arch package
+may place files and pull in dependencies, and it may not run `incus admin init`,
+write to `/etc/subuid` or add an account to a group. So this half is a script,
+the package installs it as `polyseat-prepare`, and its post-install message asks
+for it. Everything about it is safe to run again: it checks before it changes,
+and an entry that already exists is left exactly as it is, including when it is
+narrower than the one it would have written.
+
+**`host/install.sh` places the files**, which is precisely what
+`packaging/aur/PKGBUILD` does instead. It runs `prepare.sh` first, with `set -e`
+in force, so a machine that cannot be made ready stops the install before a
+single file has been placed.
+
+The two paths differ in exactly one thing that is not a path: the checkout build
+puts the binary and helpers under `/usr/local`, where a file placed by hand
+belongs, and the package puts them under `/usr`, which is the only place it is
+allowed to write. The daemon is the same binary either way and looks in both,
+local first, which is the order a shell uses for the binary itself.
+
+Both are tested against a fresh virtual machine, because neither can be
+exercised on a machine that already has them: `host/test-install.sh` for the
+checkout, `host/test-package.sh` for the package.
+
 ## What the installer must cover
 
 Everything here is one-time, root-only host setup. Most of it was learned the

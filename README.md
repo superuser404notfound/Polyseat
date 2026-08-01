@@ -28,10 +28,19 @@ input devices, shares the game library, and repairs what drifts.
 | **Filesystem** | btrfs, or XFS created with `reflink=1`, **and only for the shared game library**. `ext4` cannot share blocks, and neither can tmpfs or a network filesystem. Seats still work on those; the shared library simply stays off and every seat downloads its own games. The installer tests it and says which it found. |
 | **Network** | One wired interface, so each seat is a host of its own on the LAN and can use the standard Sunshine ports. Seats take a macvlan from it, or a port on it where it is a bridge, which is what `host/lan-bridge.sh` makes it and what local multiplayer between the host and a seat needs. Wireless cannot do either: 802.11 carries one MAC address per association. |
 
-**1. Install it, once per machine:**
+**1. Install it, once per machine.** From the AUR:
 
 ```
-git clone --branch v0.1.0 https://github.com/superuser404notfound/Polyseat.git
+paru -S polyseat          # or your helper of choice
+sudo polyseat-prepare
+sudo systemctl enable --now polyseatd
+```
+
+Or from a checkout, which is the same thing in one command because the script
+is allowed to do what a package is not:
+
+```
+git clone --branch v0.2.0 https://github.com/superuser404notfound/Polyseat.git
 cd Polyseat
 sudo host/install.sh
 sudo systemctl enable --now polyseatd
@@ -41,12 +50,19 @@ A tag rather than `main`, because `main` is where the next version is being
 written and a machine that streams to other people is not the place to find out
 what changed today. Leave the `--branch` off to follow it anyway.
 
-That installs any missing packages, gives root the idmap range every container
-start needs, brings up Incus and initialises it if nobody has, builds the
-daemon, places the input helpers under `/usr/local/lib/polyseat`, installs the
-udev rule that keeps seat devices off the host desktop, registers one systemd
-unit, and adds your account to the `input` group so the host-side tooling runs
-without root. It creates no seats, and it can be run again after an update
+`polyseat-prepare` is the half a package may not do: the idmap range every
+container start needs, bringing Incus up and initialising it if nobody has,
+checking that the graphics driver really answers, and putting your account in
+the `input` group. It is the same script either way, it says what it finds, and
+it changes nothing that is already right. From a checkout `install.sh` runs it
+for you.
+
+The checkout install does everything in one go: missing packages, the idmap
+range, Incus, the driver check, the group, and then it builds the daemon and
+places the input helpers under `/usr/local/lib/polyseat`, the udev rule that
+keeps seat devices off the host desktop, and one systemd unit. The package puts
+the same files under `/usr` instead, which is why it is `polyseat-prepare` that
+does the rest. Neither creates a seat. Both can be run again after an update
 without undoing anything, which is what *Updating* further down is.
 
 Two things it reports rather than changes, because they are yours to decide:

@@ -23,6 +23,17 @@ costs a few minutes per seat rather than a restart.
 - `CONTRIBUTING.md`, `SECURITY.md` and issue forms that ask for
   `sudo polyseatd -report` first. Security problems have a private channel now
   rather than a public issue.
+- **Polyseat installs from the AUR.** `packaging/aur/PKGBUILD` builds it, and
+  the installer is now two halves because only one of them can be packaged: an
+  Arch package may place files and may not initialise Incus, write to
+  `/etc/subuid` or add an account to a group. That half is `host/prepare.sh`,
+  which the package installs as `polyseat-prepare` and asks for after
+  installing. The checkout install runs it for you and is otherwise unchanged.
+- The daemon finds its input helpers under `/usr/local/lib` or `/usr/lib`
+  without being told which, since the same binary is installed both ways.
+- `host/test-package.sh` builds the package and installs it on a fresh virtual
+  machine, the way `host/test-install.sh` does for the checkout. It also checks
+  the three things a package must not do.
 
 ## 0.2.0
 

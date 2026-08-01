@@ -5,13 +5,15 @@ where they belong; the rest are run by hand, when you want them.
 
 | | |
 |---|---|
-| `install.sh` | sets the machine up, builds and installs the daemon, and restarts it if it was already running. `--uninstall`, `--purge` and `--purge --library` take it back out |
+| `install.sh` | the checkout install: runs `prepare.sh`, then builds and places the daemon, and restarts it if it was already running. `--uninstall`, `--purge` and `--purge --library` take it back out |
+| `prepare.sh` | gets the machine ready and installs nothing: packages, the idmap range, Incus, the driver check, the group. The half a package may not do, so the package ships it as `polyseat-prepare` |
 | `update.sh` | moves the checkout to the newest release and hands over to `install.sh`. Refuses a checkout with uncommitted work, waits for nobody to be streaming. `--check`, `--now`, `--tag`, `--yes` |
 | `lan-bridge.sh` | turns the uplink into a bridge, which is what local multiplayer between the host and a seat needs. `--undo` puts it back |
 | `reset-machine.sh` | puts the machine back the way it was before Polyseat, keeping the game library |
 | `check-hardening.sh` | reports host-side exposures that no seat-side measure can close |
 | (`polyseatd -report`) | not in this directory, but this is where people look: one description of the whole installation, for a bug report. Runs without the daemon |
 | `test-install.sh` | runs `install.sh` against a fresh VM, which is the only way to test the parts that only a fresh machine reaches |
+| `test-package.sh` | the same for the other way in: builds the Arch package from this checkout, installs it on a fresh VM, runs `polyseat-prepare`, starts the daemon and removes it again |
 | `test-gpu-detect.sh` | checks the card detection against made up `/dev/dri` layouts |
 | `72-polyseat-hide.rules` | udev rule that keeps the seats' virtual devices off the host desktop, input and raw HID alike |
 | `polyseatd.service` | the one unit. The broker and observer units it replaced are removed by `install.sh` |

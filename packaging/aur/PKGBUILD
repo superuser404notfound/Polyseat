@@ -1,0 +1,95 @@
+# Maintainer: rooky <superuser404@tuta.com>
+
+pkgname=polyseat
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="Several people playing on one Linux PC at once, each in an isolated seat streamed to their own Moonlight client"
+arch=('x86_64')
+url="https://github.com/superuser404notfound/Polyseat"
+license=('GPL-3.0-or-later')
+
+# What the daemon talks to. Everything a seat needs is installed inside the
+# seat by the daemon itself, so none of that belongs here: a host running
+# Polyseat needs no Steam, no Sway and no Sunshine of its own.
+depends=('incus' 'bpftrace' 'python' 'systemd' 'iproute2' 'util-linux')
+
+makedepends=('go' 'git')
+
+optdepends=(
+  'nvidia-container-toolkit: required on NVIDIA hosts, mirrors the driver into each seat'
+  'nvidia-utils: required on NVIDIA hosts, carries the two libraries NVENC needs'
+  'lib32-nvidia-utils: on NVIDIA hosts, or 32 bit games will not find the GPU'
+)
+
+install=polyseat.install
+
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('7eb7c8fa207ffac76697ad2c52af2d3150049b11b83afba1165c8c6918cbe797')
+
+_src="Polyseat-$pkgver"
+
+build() {
+  cd "$_src"
+
+  export CGO_CPPFLAGS="${CPPFLAGS}"
+  export CGO_CFLAGS="${CFLAGS}"
+  export CGO_CXXFLAGS="${CXXFLAGS}"
+  export CGO_LDFLAGS="${LDFLAGS}"
+  export GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw"
+
+  # The version is stamped the same way host/install.sh stamps it, except that
+  # here it comes from pkgver rather than from git: a source tarball has no
+  # history to ask. Without this the daemon calls itself "dev", the interface
+  # shows that, and the update check refuses to run because a build that cannot
+  # name itself as a release cannot be compared with one.
+  go build -o polyseatd \
+    -ldflags "-linkmode=external -X github.com/superuser404notfound/Polyseat/internal/version.Version=v$pkgver" \
+    ./cmd/polyseatd
+}
+
+check() {
+  cd "$_src"
+
+  # The library tests want a filesystem that can share blocks and skip loudly
+  # without one, and a build directory is wherever makepkg happens to be. They
+  # are skipped here rather than faked; CI runs them against real btrfs.
+  go test ./... 2>&1
+}
+
+package() {
+  cd "$_src"
+
+  install -Dm755 polyseatd "$pkgdir/usr/bin/polyseatd"
+
+  # The machine half, as a command rather than as a script somebody has to find
+  # in a checkout they do not have. A package may place files and may not
+  # initialise Incus, write to /etc/subuid or put an account in a group, so this
+  # is what the post-install message asks people to run.
+  install -Dm755 host/prepare.sh "$pkgdir/usr/bin/polyseat-prepare"
+
+  # The input broker and its helpers. /usr/lib rather than /usr/local/lib, which
+  # is where a checkout install puts them; the daemon looks in both and prefers
+  # the local one, so a package and a checkout on one machine behave the way a
+  # shell would.
+  for helper in broker.py device_owner.py uhid_observer.py fakeudev.py; do
+    install -Dm755 "spike/m2-input-broker/$helper" "$pkgdir/usr/lib/polyseat/$helper"
+  done
+
+  # The unit ships pointing at /usr/local/bin, which is right for the checkout
+  # install that writes it there. A package owns /usr/bin.
+  sed 's|/usr/local/bin/polyseatd|/usr/bin/polyseatd|' host/polyseatd.service \
+    > "$srcdir/polyseatd.service"
+  install -Dm644 "$srcdir/polyseatd.service" "$pkgdir/usr/lib/systemd/system/polyseatd.service"
+
+  # The number in the name matters and is not cosmetic. At 70 it sorted before
+  # 70-uaccess.rules, which put the tag it had just stripped straight back on.
+  install -Dm644 host/72-polyseat-hide.rules \
+    "$pkgdir/usr/lib/udev/rules.d/72-polyseat-hide.rules"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+  for doc in README.md CHANGELOG.md SECURITY.md docs/architecture.md docs/security.md \
+             docs/installation.md docs/amd.md; do
+    install -Dm644 "$doc" "$pkgdir/usr/share/doc/$pkgname/$(basename "$doc")"
+  done
+}

@@ -1,0 +1,84 @@
+post_install() {
+    cat <<'EOF'
+
+Polyseat is installed. Two things are left, and a package is not allowed to do
+either of them for you.
+
+  1. Get the machine ready:
+
+       sudo polyseat-prepare
+
+     It writes the idmap range every container start needs, brings up Incus and
+     initialises it if nobody has, checks that the graphics driver answers, and
+     puts your account in the input group. It says what it finds either way and
+     changes nothing that is already right.
+
+  2. Start it and claim it:
+
+       sudo systemctl enable --now polyseatd
+
+     Then open https://<this machine>:47800. Nobody has claimed it yet, so the
+     page asks you to choose a password rather than to type one. Do that before
+     anybody else on the network does.
+
+Two things worth knowing before you build a seat:
+
+  * The shared game library needs a filesystem that can share blocks, which
+    means btrfs or XFS made with reflink=1. Seats work without one; the library
+    simply stays off, and polyseat-prepare says which you have.
+
+  * On an AMD card, you are the first. That path was written and reasoned about
+    without one to run it on. It is expected to work and it may well not, and
+    either answer is worth an issue with the output of: sudo polyseatd -report
+
+EOF
+}
+
+post_remove() {
+    if systemctl is-active --quiet polyseatd.service; then
+        cat <<'EOF'
+
+polyseatd is still running, from a binary that is no longer on disk. Removing a
+package does not stop a service, and this one is deliberately not stopped for
+you.
+
+  sudo systemctl stop polyseatd
+
+Your seats keep running either way. They are Incus containers and Incus owns
+them; the daemon supervises them and does not hold them up.
+
+EOF
+    fi
+
+    cat <<'EOF'
+
+Two things are deliberately left behind, because they are yours and not the
+package's:
+
+  /var/lib/polyseat   the seats, their pairings and the interface password
+  /srv/polyseat       the shared game library
+
+Your seats themselves are still there as Incus containers. `incus list` shows
+them. Install Polyseat again and it picks them up where they were.
+
+EOF
+}
+
+post_upgrade() {
+    cat <<'EOF'
+
+Polyseat is upgraded on disk. The process that is running is still the old one:
+replacing a binary does not disturb a process using it.
+
+  sudo systemctl restart polyseatd
+
+Seats keep running through that. Their containers are not stopped and are picked
+up again on the way back in, so nobody's game ends. What does happen is that
+each seat's input broker restarts with the daemon, so a controller can drop for
+a moment.
+
+If this version builds seats differently, the web interface names the seats that
+are behind and offers one button to bring them up to date, at a moment you pick.
+
+EOF
+}
