@@ -29,8 +29,11 @@ type Config struct {
 	// StateDir holds the seat definitions the daemon owns.
 	StateDir string `json:"state_dir"`
 
-	// HelperDir holds the input broker, the uhid observer and fakeudev.py,
-	// installed there by host/install.sh.
+	// HelperDir holds the input broker, the uhid observer and fakeudev.py.
+	//
+	// Empty means look for them, which is the normal case: a checkout install
+	// puts them under /usr/local/lib and a package puts them under /usr/lib,
+	// and the daemon is the same binary either way. See HelperDirs.
 	HelperDir string `json:"helper_dir"`
 
 	// Uplink is the host interface the seats get their macvlan from. Empty
@@ -80,9 +83,11 @@ type Config struct {
 // Default returns the configuration used when no file exists.
 func Default() Config {
 	return Config{
-		Listen:     ":47800",
-		StateDir:   "/var/lib/polyseat",
-		HelperDir:  "/usr/local/lib/polyseat",
+		Listen:   ":47800",
+		StateDir: "/var/lib/polyseat",
+		// Empty on purpose, and filled in by Load. See HelperDirs for why
+		// this cannot be one path.
+		HelperDir:  "",
 		Uplink:     "",
 		Image:      "archlinux/current",
 		Python:     "/usr/bin/python3",
@@ -109,6 +114,8 @@ func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			cfg.HelperDir = FindHelperDir(HelperDirs)
+
 			return cfg, nil
 		}
 
@@ -119,7 +126,44 @@ func Load(path string) (Config, error) {
 		return cfg, fmt.Errorf("%s: %w", path, err)
 	}
 
+	if cfg.HelperDir == "" {
+		cfg.HelperDir = FindHelperDir(HelperDirs)
+	}
+
 	return cfg, nil
+}
+
+// HelperDirs are where the input helpers may be, in the order they are tried.
+//
+// Two entries because there are two ways to install the same daemon, and the
+// same binary has to work under both. A checkout install puts them under
+// /usr/local, which is where a file placed by hand belongs; an Arch package may
+// not write there at all and puts them under /usr.
+//
+// Local first, so that somebody testing a change from a checkout on a machine
+// that also has the package gets the copy they just built. That is the same
+// order a shell would use for the binary itself, which makes it the answer
+// least likely to surprise anybody.
+var HelperDirs = []string{"/usr/local/lib/polyseat", "/usr/lib/polyseat"}
+
+// FindHelperDir picks the first candidate that actually holds the helpers.
+//
+// Tested for one of the files rather than for the directory. An uninstall
+// leaves empty directories behind more often than anybody expects, and a daemon
+// that picked one of those would report a broker that will not start rather
+// than a helper it could not find.
+//
+// Falls back to the first candidate when none of them has anything, so that the
+// error names the place a checkout install would have used, which is where
+// whoever is reading it will look first.
+func FindHelperDir(candidates []string) string {
+	for _, dir := range candidates {
+		if _, err := os.Stat(filepath.Join(dir, "broker.py")); err == nil {
+			return dir
+		}
+	}
+
+	return candidates[0]
 }
 
 // Save writes the configuration atomically.
