@@ -39,6 +39,12 @@ Both are tested against a fresh virtual machine, because neither can be
 exercised on a machine that already has them: `host/test-install.sh` for the
 checkout, `host/test-package.sh` for the package.
 
+**The package is not published**, so today the checkout is the only way anybody
+installs this. New AUR accounts cannot be registered at present and there is
+therefore no account to upload from. The split above is not waiting on that: it
+is what makes `polyseat-prepare` a command rather than a script in a checkout,
+and it was worth doing before the package existed.
+
 ## What the installer must cover
 
 Everything here is one-time, root-only host setup. Most of it was learned the

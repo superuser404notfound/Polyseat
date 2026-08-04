@@ -1,5 +1,19 @@
 # Packaging
 
+## Not published yet
+
+**Nothing here has ever been uploaded.** New AUR accounts cannot be registered
+at present, so there is no account to publish from, and everything below waits
+on that one step and on nothing else. The package itself is finished and
+`host/test-package.sh` builds and installs it on a fresh machine on every
+release, which is worth keeping up: the day registration opens, the upload is
+the only thing left to do.
+
+The README and `docs/installation.md` say the checkout is the only way in, and
+they should keep saying it until the package is actually there. A README that
+offers `paru -S polyseat` while nothing answers to that name is worse than one
+that offers nothing, because somebody will find something else under it.
+
 ## The AUR package
 
 [`aur/PKGBUILD`](aur/PKGBUILD) and [`aur/polyseat.install`](aur/polyseat.install)
@@ -28,7 +42,11 @@ The AUR is a git server that takes pushes over SSH and nothing else. Three of
 these four steps happen in a browser or in a terminal that asks questions, so
 they cannot be scripted.
 
-1. **An account**, at https://aur.archlinux.org/register.
+Step one is the one that is closed. The rest are written down because they do
+not change and because the day it opens is a bad day to work them out.
+
+1. **An account**, at https://aur.archlinux.org/register. **Registration is
+   closed at the moment**, which is why none of this has happened yet.
 
 2. **A key.** The passphrase question is why this is typed rather than run for
    you: a key without one is more convenient for a push every few weeks and less

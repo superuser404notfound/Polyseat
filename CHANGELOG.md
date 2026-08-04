@@ -10,6 +10,25 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## Unreleased
+
+- **A seat started right after boot could come up with no GPU at all.** The
+  card's device nodes are not made at boot; the driver makes them when something
+  first opens the card, and on a machine that autostarts seats twelve seconds in
+  that something is the container start itself. libnvidia-container mirrors the
+  host's `/dev/nvidia*` into the seat and mirrors what exists at the instant it
+  looks, so it lost a race it had started: `/dev/nvidiactl` was created two
+  milliseconds before `/dev/nvidia0`, and both seats on this machine got the
+  first and not the second. The daemon now makes sure the nodes are there before
+  it starts a container, and refuses to start one where they cannot be made.
+
+  Worth describing because of how it looked rather than what it was. The
+  container ran, every library was in place, and nothing said the card was
+  missing: `nvidia-smi` inside the seat answered "No devices found", Sway could
+  not make a renderer, and its unit restarted 272 times. It affects NVIDIA hosts
+  only. If a seat has ever come up without a picture after a reboot, this was
+  probably it, and stopping and starting that seat was the cure.
+
 ## 0.3.0
 
 Two ways in, and everything a stranger needs to install it and to tell us when
@@ -36,10 +55,15 @@ updating is a rebuild and a restart of the daemon and no more.
 - `CONTRIBUTING.md`, `SECURITY.md` and issue forms that ask for
   `sudo polyseatd -report` first. Security problems have a private channel now
   rather than a public issue.
-- **Polyseat installs from the AUR.** `packaging/aur/PKGBUILD` builds it, and
-  the installer is now two halves because only one of them can be packaged: an
-  Arch package may place files and may not initialise Incus, write to
-  `/etc/subuid` or add an account to a group. That half is `host/prepare.sh`,
+- **There is an Arch package**, in `packaging/aur/PKGBUILD`, built and tested
+  against a fresh machine on every release. It is **not published**: new AUR
+  accounts cannot be registered at present, so there is no account to upload it
+  from, and this entry said it installs from the AUR before that was known.
+  Nothing about the package is waiting on work. The installer is now two halves
+  because of it, and that half stands on its own: only one of them can be
+  packaged, since an Arch package may place files and may not initialise Incus,
+  write to `/etc/subuid` or add an account to a group. That half is
+  `host/prepare.sh`,
   which the package installs as `polyseat-prepare` and asks for after
   installing. The checkout install runs it for you and is otherwise unchanged.
 - The daemon finds its input helpers under `/usr/local/lib` or `/usr/lib`

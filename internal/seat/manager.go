@@ -1647,6 +1647,10 @@ func sweep(names []string, busy func(string) string, provision func(string) erro
 
 func (m *Manager) Provision(name string) error {
 	return m.operate(name, "provisioning", func(ctx context.Context) error {
+		if err := m.awaitGPU(ctx, name); err != nil {
+			return err
+		}
+
 		return m.build(ctx, name)
 	})
 }
@@ -1713,6 +1717,12 @@ func (m *Manager) Start(name string) error {
 
 	return m.operate(name, "starting", func(ctx context.Context) error {
 		m.setState(name, StateStarting)
+
+		// Before the container, because the container is handed the card as it
+		// starts and cannot be given it afterwards.
+		if err := m.awaitGPU(ctx, name); err != nil {
+			return err
+		}
 
 		// A seat nobody has built yet is built here, rather than being told to
 		// go and press the other button. Somebody who has just created a seat
