@@ -10,7 +10,13 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
-## Unreleased
+## 0.3.1
+
+One bug, on NVIDIA hosts, of the kind that is worth a release on its own
+because it only happens at boot and looks like anything but what it is.
+
+Seats are untouched by this one. Nothing in it changes how a seat is built, so
+updating is a rebuild and a restart of the daemon and no more.
 
 - **A seat started right after boot could come up with no GPU at all.** The
   card's device nodes are not made at boot; the driver makes them when something
