@@ -183,8 +183,12 @@ holding two of Select, Start and Guide for a second overrides that by hand - the
 pad buzzes to say it took. How fast it moves is a slider on the seat's card that
 takes effect while somebody is holding the controller.
 
-Confirmed on real hardware, most recently on 2026-07-31. The logs of each step
-live in [`spike/`](spike/) and record what works, what does not, and why.
+Everything above was confirmed on real hardware, on one machine: an Arch host
+with an RTX 4080, most recently on 2026-07-31. The logs of each step live in
+[`spike/`](spike/) and record what works, what does not, and why. Whether any of
+it holds on a machine that is not that one is the open question this project
+would most like answered, and
+[docs/amd.md](docs/amd.md) is where it is most open.
 
 ## Day to day
 
@@ -278,11 +282,8 @@ they were.
 It does not stop the daemon for you, and pacman says so on the way out. A
 removed package is a binary that is no longer on disk, not a process that has
 ended, so `sudo systemctl stop polyseatd` is yours to give when the seats are
-not in use. It also leaves `/etc/modules-load.d/polyseat.conf`, which loads
-`uhid` at boot: `polyseat-prepare` wrote that file rather than the package, so
-nothing owns it and pacman will not remove it. The removal message names it and
-gives the one line that does. The module itself stays loaded, because something
-else on the machine may be using it.
+not in use. The `uhid` module stays loaded too, because something else on the
+machine may be using it.
 
 **Taking the seats with it** is `host/install.sh --purge` from a checkout, which
 asks first and keeps the shared game library so the games do not have to be

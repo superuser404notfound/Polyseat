@@ -10,6 +10,59 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.3.5
+
+A review pass, and most of what it found had been true for a while without
+anybody meeting it. Nothing here changes how a seat is built.
+
+- **The interface told every package installation that the udev rule was
+  missing.** The rule that keeps seat input devices off the host desktop goes to
+  `/etc/udev/rules.d` from a checkout and `/usr/lib/udev/rules.d` from the
+  package, and the check looked only in `/etc`. So a package install carried a
+  permanent warning about a protection that was in place and working, and
+  advised running `host/install.sh`, which a package install does not have.
+  `polyseat-check-hardening` had the same fault and told people to copy a file
+  out of a checkout. Both now look where udev looks. A security warning that
+  cries wolf is worse than none, because the next one is not read either.
+
+  `test-package.sh` and `test-install.sh` each knew the right path for their own
+  half, which is why this survived: they checked where the file was, and never
+  what the daemon said about it.
+
+- **A daemon whose web interface died exited 0**, so `Restart=on-failure` never
+  fired and `systemctl status` said "inactive (dead)" rather than "failed". It
+  looked like somebody had stopped it on purpose. It now exits with the failure.
+
+- **Shutting down warned that the seat manager had not stopped in time**, on the
+  one path where it had stopped first. Its result had already been taken out of
+  a channel that holds one, so the wait afterwards sat for its full fifteen
+  seconds and then complained.
+
+- **`Unpair` and `ReloadApps` ignored what Sunshine answered.** A refusal
+  arrives as a status in the body with a 200 beside it, which `Pair` checks and
+  the other two decoded into a value nothing read. The interface could report a
+  device removed while it was still paired. `internal/sunshine` had no tests at
+  all and now has ten.
+
+- **The update banner could name the wrong version.** It read the version out of
+  whatever the checker currently offered, so a release published between
+  installing and restarting made it claim that newer one was installed and
+  waiting. The daemon now records what it actually installed.
+
+- **The interface ran `pacman` on every state request**, about a tenth of a
+  second each, to ask whether the package owns the running binary. That answer
+  cannot change without a restart, so it is asked once at startup.
+
+- **Reading the log of a seat that does not exist created a record for it**,
+  which meant a map that grew for as long as somebody kept asking.
+
+- **The `uhid` boot entry ships with Polyseat** instead of being written by
+  `polyseat-prepare` into `/etc`. `/usr/lib/modules-load.d` from the package and
+  `/usr/local/lib/modules-load.d` from a checkout, both of which systemd reads,
+  which means whichever installed it also removes it. The old copy in `/etc` is
+  taken out on the way past. That was the whole awkwardness 0.3.3 had to explain
+  in its removal message, and the message is shorter for it.
+
 ## 0.3.4
 
 The package standing on its own, which 0.3.3 assumed and did not arrange.
