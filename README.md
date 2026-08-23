@@ -1,32 +1,39 @@
 # Polyseat
 
 **Several people playing on one Linux PC at the same time.** Each in their own
-isolated session with their own Steam account, their own controller and their
-own screen, streamed to their own Moonlight client. The machine's regular
-desktop keeps running undisturbed while they play.
+session with their own Steam account, their own controller and their own screen,
+streamed to their own Moonlight client. The machine's regular desktop keeps
+running undisturbed while they play.
 
-A **seat** is an Incus system container with its own headless Sway, its own
-Sunshine instance, its own PipeWire and its own Steam account. One GPU serves
-all of them, through NVENC on NVIDIA and VA-API on AMD. Polyseat implements
-neither a compositor, nor an
-encoder, nor a streaming protocol: the heavy lifting is done by Incus,
-Sway/wlroots, Sunshine, PipeWire, udev and systemd, and Polyseat is the
-orchestrator on top. It builds seats, wires them up collision-free, assigns
-input devices, shares the game library, and repairs what drifts.
+A **seat** is a container with its own desktop, its own Steam account and its
+own Sunshine, streamed to one Moonlight client. One graphics card serves all of
+them. Polyseat implements neither a compositor, nor an encoder, nor a streaming
+protocol: Incus, Sway, Sunshine and PipeWire do that work, and Polyseat is the
+orchestrator on top. It builds the seats, wires them up collision-free, sends
+each person's input to the right one, shares the game library, and repairs what
+drifts.
 
 ![Polyseat: one PC runs the daemon, the input broker and the shared game library; each seat is a container with headless sway and Sunshine, streaming to its own Moonlight client](docs/overview.svg)
 
+## What the machine needs
+
+- **Arch, or something based on it.** The installer speaks `pacman` rather than
+  pretending to be portable.
+- **An NVIDIA or AMD card with a working driver.** NVIDIA also needs
+  `lib32-nvidia-utils`, or 32 bit games will not find the GPU. AMD needs only
+  `amdgpu` on the host. The installer refuses rather than warns if the driver
+  does not answer, because a seat without it comes up, streams in software and
+  looks perfectly healthy. The AMD path has **never been run on real hardware**:
+  [docs/amd.md](docs/amd.md) says what was verified and what was not.
+- **A wired network connection.** Each seat is a host of its own on the LAN, and
+  Wi-Fi cannot do that: it carries one MAC address per connection.
+- **btrfs, or XFS with `reflink=1`** — but only for the shared game library. On
+  ext4 the seats still work, the sharing simply stays off and every seat
+  downloads its own games.
+
+The packages Polyseat itself needs, the installer works out and installs.
+
 ## Getting started
-
-**What the machine needs:**
-
-| | |
-|---|---|
-| **Host** | Arch-based. The installer queries `pacman` rather than pretending to be portable. |
-| **Packages** | `incus`, `bpftrace` and `python`, plus `nvidia-container-toolkit` on NVIDIA. The installer works out which card is in the machine first and installs whichever of them are missing. A checkout install also needs `go`, because it builds the daemon; the package arrives built and does not. |
-| **GPU** | **NVIDIA**, with the driver installed and answering. `nvidia-utils` carries the two libraries NVENC needs, `libcuda.so.1` and `libnvidia-encode.so.1`, and the container toolkit injects them into every seat. `lib32-nvidia-utils` as well, or 32 bit games will not find the GPU. The `cuda` package is the toolkit and is **not** needed.<br><br>**AMD** works differently and is simpler: `amdgpu` on the host is the whole requirement, and Mesa goes into each seat as an ordinary package, so no host driver update can leave a seat behind. Encoding is VA-API, the only hardware path AMD has on Linux. **This path has never been run on real hardware**, see [docs/amd.md](docs/amd.md) for what was verified and what was not.<br><br>Either way the installer refuses rather than warns if the driver is missing, because a seat without it comes up, streams in software and looks perfectly healthy. |
-| **Filesystem** | btrfs, or XFS created with `reflink=1`, **and only for the shared game library**. `ext4` cannot share blocks, and neither can tmpfs or a network filesystem. Seats still work on those; the shared library simply stays off and every seat downloads its own games. The installer tests it and says which it found. |
-| **Network** | One wired interface, so each seat is a host of its own on the LAN and can use the standard Sunshine ports. Seats take a macvlan from it, or a port on it where it is a bridge, which is what `polyseat-lan-bridge` makes it and what local multiplayer between the host and a seat needs. Wireless cannot do either: 802.11 carries one MAC address per association. |
 
 **1. Install it, once per machine.**
 
@@ -37,157 +44,162 @@ sudo polyseat-prepare
 sudo systemctl enable --now polyseatd
 ```
 
-**Downloaded first and installed second, and that is not tidiness.** `pacman -U`
-on a URL wants a detached signature beside it, because `RemoteFileSigLevel`
-defaults to `Required`, and these packages are not signed. A file already on
-disk goes by `LocalFileSigLevel`, which Arch ships as `Optional`. Signing them
-would need a key that has to be published and trusted by hand, which is the same
-key a package repository would need, and neither exists yet.
+Downloaded first and installed second, because `pacman -U` on a URL wants a
+signature that these packages do not carry yet. The link has no version in it
+and never will: it is always the newest release, and `pacman -Qi polyseat` says
+which one arrived.
 
-That URL carries no version and never will: it is whatever the newest release
-is, and the version lives inside the file rather than in its name.
-`pacman -Qi polyseat` says which one arrived.
+`polyseat-prepare` is a separate command because a package is not allowed to do
+what it does: install the missing packages, bring Incus up, check the driver,
+and put your account in the `input` group. Both commands can be run again over
+themselves without undoing anything.
 
-**`polyseat-prepare` is its own command because a package may not be one.** It
-may place files, and it may not initialise Incus, write to `/etc/subuid` or put
-an account in a group. So that half is a command you run once: missing packages,
-the idmap range every container start needs, bringing Incus up and initialising
-it if nobody has, checking that the graphics driver really answers, loading the
-`uhid` module so the input observer has something to watch from the first boot
-onwards, and putting your account in the `input` group. It changes nothing that
-is already right and says what it found either way.
-
-The package itself places the daemon, the input helpers, the udev rule that
-keeps seat devices off the host desktop, and one systemd unit. It creates no
-seat, and both commands can be run again over themselves without undoing
-anything.
-
-Not the AUR. New accounts cannot be registered at present, so there is nothing
-to publish from, and `paru -S polyseat` finds nothing: anything that does turn
-up under that name is not this. It matters less than it sounds, because the AUR
-distributes recipes rather than packages, and installing from one means building
-it yourself.
-
-**To run a particular commit rather than a release**, which is what testing on
-unusual hardware usually means, build it from a checkout instead:
-[CONTRIBUTING.md](CONTRIBUTING.md) has that and the rest of what a working copy
-is for.
+Not in the AUR, and anything that turns up there under this name is not this.
+Who does what, and why it is split this way:
+[docs/installation.md](docs/installation.md). Building a particular commit from
+a checkout instead: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 **2. Open `https://<this machine>:47800` and choose a password.** Nobody has
 claimed the machine yet, so the page asks you to set one rather than to type
-one, the way Sunshine's own interface does. Do it before anybody else does:
-until it is set, whoever reaches the page can set it.
+one. Do it before anybody else does: until it is set, whoever reaches the page
+can set it. The browser will ask about the certificate once, exactly as
+Sunshine's own interface makes it ask.
 
 The interface answers on the whole network, so seats can be managed from the
-same phone that runs Moonlight. The certificate is self signed, so the browser
-asks once, exactly like Sunshine's own interface does. To keep it on this
-machine instead, set `listen` to `127.0.0.1:47800` in
-`/etc/polyseat/polyseatd.json`.
+same phone that runs Moonlight. To keep it on this machine only, set `listen`
+to `127.0.0.1:47800` in `/etc/polyseat/polyseatd.json`.
 
-**3. Add a seat and press provision.** The daemon downloads the image, installs
-the packages, repairs the NVIDIA userspace that the driver injection leaves
-incomplete (nothing to repair on AMD, where Mesa arrives as a package),
-generates the Sunshine configuration and starts the session. It takes a few
-minutes and the card shows each step as it happens.
+**3. Add a seat and press provision.** The daemon does the rest: image,
+packages, driver, Steam, desktop, session. It takes a few minutes and the card
+shows each step as it happens.
 
 **4. Pair a device.** Open *Devices and pairing* on the seat's card, point
 Moonlight at the address shown at the top of that card, and type the PIN
 Moonlight gives you into that field. The same panel lists what is already
-paired, can unpair it, and shows the seat's own Sunshine login for when you want
-to go there directly. Pairing happens here for every seat rather than in one
-Sunshine page per seat on a port of its own: the daemon owns each seat's
-Sunshine login and talks to it on your behalf.
+paired and can unpair it. Every seat is paired here, rather than in a Sunshine
+page of its own.
 
 That is all. Repeat 3 and 4 for the second person.
+
+## Updating
+
+The interface says when a newer version is out and offers two buttons: one
+installs it, one restarts the daemon. Installing is safe in the middle of
+somebody's game, because replacing the binary leaves the running process alone.
+The restart is what makes the new version take effect, and it is refused while
+somebody is streaming and says whose game it would have ended.
+
+By hand it is the same two steps:
+
+```
+curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
+sudo pacman -U polyseat-x86_64.pkg.tar.zst
+sudo systemctl restart polyseatd
+```
+
+**Seats are not touched by an update.** If a new version builds them
+differently, the interface names the ones that are behind and offers one button
+to bring them up to date, at a moment you pick rather than in the middle of
+somebody's game.
+
+That update button is the one thing in the interface that reaches root.
+`"web_update": false` in `/etc/polyseat/polyseatd.json` turns it off, and
+`"update_needs_password": true` makes it ask for the interface password when it
+is pressed. What it never does is let the browser say what to install: it takes
+the release the daemon found itself, from this project's own downloads, and
+checks it against the checksum that release states.
+
+The check for a new version is one request to GitHub every six hours, it sends
+nothing about the machine, and it installs nothing on its own.
+`"update_check": false` turns it off. [`CHANGELOG.md`](CHANGELOG.md) is where
+the differences between versions are written down, and the version actually
+serving is at the bottom of the interface.
+
+## Removing it
+
+```
+sudo systemctl stop polyseatd
+sudo pacman -Rns polyseat
+```
+
+**Your seats stay.** This takes out the daemon, its unit, the udev rule and the
+helpers, and touches neither the containers nor `/var/lib/polyseat`. Install it
+again and the seats come back as they were.
+
+Stopping the daemon first is yours to do, because removing a package does not
+end a process that is already running.
+
+**To take the seats with it**, use `host/install.sh --purge` from a checkout. It
+asks first, stops the daemon before touching anything, and keeps the shared game
+library so the games do not have to be downloaded again; `--library` removes
+that too. Incus and the other packages are not Polyseat's to remove and stay
+where they are.
 
 ## What it does
 
 **Seats are built in one click and play in parallel.** `polyseatd` takes a seat
-from nothing to a running session: container, network, driver userspace, Steam,
-desktop, input broker. It supervises the brokers, follows the Incus event stream
-instead of polling, and converges seats that were built by an older recipe, so a
-change to the recipe reaches the seats that already exist, with one button that
-brings every one of them up to date.
+from nothing to a running session: container, network, driver, Steam, desktop,
+input. It also brings seats that were built by an older version forward, with
+one button that updates every one of them.
 
 **Input goes exactly where it belongs.** Each client's keyboard, mouse and
 gamepad reach that client's session and nothing else. No crossover between
 seats, and the host desktop never sees any of them: a controller plugged in for
-seat 2 does not steer the host's Steam. Ownership is established structurally,
-from what the kernel says created a device, rather than from the name the device
-claims to have.
+seat 2 does not steer the host's Steam. Which seat a device belongs to comes
+from what the kernel says created it, not from the name the device claims.
 
 **A game installed once is playable in every seat**, without being downloaded
 again, and that includes the games that were already on the machine. Nothing has
-to be chosen for this to happen: the shared library is the only library a seat's
-Steam has, so signing in and pressing install puts the game where the other
-seats can reach it. Each seat keeps its own private, fully writable copy; the
-daemon replicates game directories between them with reflinks, so the copies
-share their blocks on disk. Taking this machine's 69 GB library into the pool
-took 0.8 seconds and cost 432 KB. The host's own Steam library is found and
-taken into the pool without being asked, as long as there is exactly one of them
-and it can share blocks with the pool; two of them is a choice with consequences
-and stays a question. It keeps working after an update, because that library is
-watched rather than imported once, and a seat that is behind is brought forward
-as soon as nothing in it is using the shared files.
+to be chosen for it: the shared library is the only library a seat's Steam has,
+so signing in and pressing install is enough. Each seat keeps its own fully
+writable copy, and the copies share their blocks on disk, so taking this
+machine's 69 GB library into the pool took 0.8 seconds and 432 KB. It keeps
+working after a game updates, and a seat that is behind is brought forward as
+soon as nothing in it is using the files.
 
 **Launchers other than Steam work too.** Each seat has a `shared/` directory
 where one folder is one game; point Heroic, Lutris or Bottles at it and the game
 appears in the other seats by itself.
 
-**Every seat carries Proton CachyOS** alongside Valve's own, from the project's
-GitHub releases rather than from a package repository, so a seat stays a plain
-Arch container that trusts no extra source. It is set as the seat's default
-compatibility tool, it keeps itself up to date, and it waits for a seat that is
-neither streaming nor holding the files open before it replaces anything.
+**Every seat carries Proton CachyOS** alongside Valve's own, set as the default,
+keeping itself up to date, and waiting for a seat that is neither streaming nor
+using the files before it replaces anything.
 
-**A seat can be on the same network segment as the host, or behind a line.**
-Seats are hosts of their own on the LAN either way. `polyseat-lan-bridge` turns
-the uplink into a bridge, which is what local multiplayer between the host and a
-seat needs, since those games find each other by broadcasting and a macvlan
-cannot hear its own parent. Whether a particular seat takes part in that is a
-checkbox on its card: turned off it goes back behind the line, reaching the
-gateway and the other seats but not this machine, and this machine not reaching
-it.
+**A seat can share the network with the host, or stay behind a line.** Local
+multiplayer between the host and a seat needs the first, which is what
+`polyseat-lan-bridge` sets up; whether a particular seat takes part is a
+checkbox on its card. Turned off, the seat reaches the gateway and the other
+seats, but not this machine, and this machine not it.
 
 **A seat is something you can sit down in front of.** Connecting lands on a
-desktop with an application launcher, a bar and a file manager, not on a bare
-terminal. Moonlight's app list is generated from what the seat really has, with
-box art, so Steam Big Picture, any installed launcher and the installed games
-themselves are one pick away before a stream even starts. The desktop's own
-launcher is generated from the same scan, so a game is in both menus without
-anybody making a shortcut for it. Software goes in from either end with no
-password and no root: the player types `flatpak install ...` in the seat, or
-somebody installs it into that seat from the Polyseat web interface and watches
-the progress bar. **AppImages count as software here too**, which matters
-because a good many emulators are published that way and no other: paste the
-address into the web interface, or download the file inside the seat with
-Firefox and leave it in `~/Downloads`, and either way it lands in
-`~/Applications` and appears in both menus by itself.
+desktop with a launcher, a bar and a file manager, not on a bare terminal.
+Moonlight's app list is generated from what the seat really has, with box art,
+so Steam Big Picture and the installed games are one pick away before a stream
+even starts. Software goes in from either end, with no password and no root: the
+player types `flatpak install ...` in the seat, or somebody installs it into
+that seat from the web interface and watches the progress bar. **AppImages count
+too**, which matters because many emulators are published that way and no other:
+paste the address into the web interface, or drop the file in `~/Downloads`
+inside the seat, and it appears in both menus by itself.
 
-**Every client gets the picture it asked for.** The seat's output is virtual, so
-it simply becomes the size the client wants, at the refresh rate the client
-wants. The framerate is capped from outside rather than by turning vsync on,
-which is what RTSS does on Windows: the games stay uncapped and pay no vsync
-latency, and one setting covers native games, Proton, flatpak launchers and
+**Every client gets the picture it asked for.** The seat's screen is virtual, so
+it simply becomes the size and refresh rate the client wants. The framerate is
+capped from outside rather than by turning vsync on, so games stay uncapped and
+pay no vsync latency, and one setting covers native games, Proton, flatpaks and
 emulators alike. Measured in a seat: 14866 fps uncapped becomes 60.00 fps with a
 60 Hz client, at 0.03 ms of frametime jitter against 0.40 ms for vsync alone.
 
 **A controller is enough.** Streaming from an Apple TV or a phone means no
-keyboard and no mouse, and neither Moonlight nor Steam can supply them for a
-launcher's login form. So the seat carries both: an on-screen keyboard, and a
-pointer driven by the gamepad, left stick to move and right stick to scroll,
-with the buttons where the desktop pad tools put them: A clicks, X right clicks,
-B is Escape, Y and a short press of Start are Enter. It turns itself on when the
-desktop is in front and hands the controller back to a fullscreen game, and
-holding two of Select, Start and Guide for a second overrides that by hand - the
-pad buzzes to say it took. How fast it moves is a slider on the seat's card that
-takes effect while somebody is holding the controller.
+keyboard and no mouse, so the seat carries both: an on-screen keyboard, and a
+pointer driven by the gamepad, left stick to move and right stick to scroll. It
+turns itself on when the desktop is in front and hands the controller back to a
+fullscreen game; holding two of Select, Start and Guide for a second overrides
+that by hand, and the pad buzzes to say it took.
 
 Everything above was confirmed on real hardware, on one machine: an Arch host
 with an RTX 4080, most recently on 2026-07-31. The logs of each step live in
-[`spike/`](spike/) and record what works, what does not, and why. Whether any of
-it holds on a machine that is not that one is the open question this project
-would most like answered, and
+[`spike/`](spike/). Whether any of it holds on a machine that is not that one is
+the open question this project would most like answered, and
 [docs/amd.md](docs/amd.md) is where it is most open.
 
 ## Day to day
@@ -196,9 +208,9 @@ would most like answered, and
 what they picked, at what size and framerate, from which address, and since
 when.
 
-**Reading what happened.** Each seat card carries its own log, and the useful
-lines in it come from the input broker. It says for every device whether its
-owner was verified structurally, correlated, or merely claimed by name:
+**Each seat card carries its own log.** Two lines in it are worth watching. The
+input broker says, for every device, whether its owner was really established or
+only claimed:
 
 ```
 + event29    Keyboard passthrough (seat2)
@@ -206,11 +218,9 @@ owner was verified structurally, correlated, or merely claimed by name:
 ! event260   refused: name claims (seat1) but the kernel says 'seat2' created it
 ```
 
-The other line worth watching is the encoder. A seat whose EGL landed on
-software rendering still starts, still streams and still looks healthy; it just
-encodes on the CPU. The card shows `nvenc` or `vaapi` and the codecs it can
-offer when it is right, and says so plainly when it is not. Which card the
-whole machine was built for is in the header, beside the host name.
+The other is the encoder. A seat that ended up encoding on the CPU still starts,
+still streams and still looks healthy, so the card shows `nvenc` or `vaapi` when
+it is right and says so plainly when it is not.
 
 For the host itself:
 
@@ -221,77 +231,12 @@ journalctl -fu polyseatd
 ```
 
 **`polyseatd -report` is what to put in a bug report.** Version, distribution,
-kernel, card and driver, Incus, whether the library filesystem can really share
-blocks, the uplink and whether it is a bridge, every seat and which recipe built
-it, and the last 200 journal lines. It runs without the daemon, which is the
-point: it is wanted most on a machine where the daemon will not start. It reads
-and changes nothing, and it opens no password, key or certificate. It does carry
-this machine's host name, its seat names and their private addresses, and it
-says so at the top, so read it before pasting it somewhere public.
-
-**Updating.** The interface says when a newer version has been published, and
-where this was installed from the package it offers to do it: one button
-installs, a second one restarts, and the second is refused while somebody is
-streaming and says whose game it would have ended. Installing is safe while
-people play, because replacing the binary leaves the running process alone.
-
-That button reaches root on this machine, which is the one thing in the
-interface that does. `"web_update": false` in `/etc/polyseat/polyseatd.json`
-turns it off, and `"update_needs_password": true` makes it ask for the interface
-password at the moment it is pressed. What it never does, on any setting, is let
-the browser say what to install: it installs the release the daemon itself
-found, from this project's own downloads, and checks it against the checksum the
-release states. [`docs/security.md`](docs/security.md) has what that is worth
-and what it is not.
-
-**By hand**, which is the same two steps the buttons are, and the same
-unversioned URL:
-
-```
-curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
-sudo pacman -U polyseat-x86_64.pkg.tar.zst
-sudo systemctl restart polyseatd
-```
-
-**The restart is what makes an update take effect**, and it is separate from
-installing on purpose. Replacing a binary does not disturb the process already
-using it, so the new version waits on disk while the old one goes on serving.
-That is what lets an update be installed in the middle of somebody's game and
-finished afterwards.
-
-**Seats are not touched.** If a new version builds them differently, the
-interface names the ones that are behind and offers one button to bring them up
-to date, at a moment you pick rather than in the middle of somebody's game.
-
-Which version is actually serving is at the bottom of the interface, in
-`polyseatd -version`, and in the journal at every start. It is the tag it was
-built from, so a build from an untagged commit says so and is told about no
-updates: there is nothing sensible to compare it with.
-
-The check itself is one request to GitHub every six hours, it sends nothing
-about the machine, and it never installs anything. `"update_check": false` in
-`/etc/polyseat/polyseatd.json` turns it off.
-[`CHANGELOG.md`](CHANGELOG.md) is where the differences between versions are
-written down.
-
-**Removing it** leaves your seats alone: `sudo pacman -Rns polyseat` takes out
-the daemon, its unit, the udev rule and the helpers, and touches neither the
-containers nor `/var/lib/polyseat`. Install it again and the seats come back as
-they were.
-
-It does not stop the daemon for you, and pacman says so on the way out. A
-removed package is a binary that is no longer on disk, not a process that has
-ended, so `sudo systemctl stop polyseatd` is yours to give when the seats are
-not in use. The `uhid` module stays loaded too, because something else on the
-machine may be using it.
-
-**Taking the seats with it** is `host/install.sh --purge` from a checkout, which
-asks first and keeps the shared game library so the games do not have to be
-downloaded again; `--library` removes that too. It stops the daemon before
-touching anything it owns, which is the point of having it: deleting a container
-while the daemon is still reading inside it leaves Incus with a stop that never
-finishes. Nothing removes the packages or Incus, which are not Polyseat's to
-remove.
+kernel, card and driver, Incus, the filesystem, the network, every seat, and the
+last 200 journal lines. It runs without the daemon, which is the point: it is
+wanted most on a machine where the daemon will not start. It reads and changes
+nothing and opens no password or key, but it does carry this machine's host
+name, its seat names and their private addresses, and says so at the top. Read
+it before pasting it somewhere public.
 
 ## What it does not do
 
@@ -305,8 +250,7 @@ behind full copies: the daemon says so plainly instead.
 Architecture and the reasoning behind every decision:
 [`docs/architecture.md`](docs/architecture.md). What the isolation actually
 guarantees, measured rather than assumed:
-[`docs/security.md`](docs/security.md). Who installs what, and where the line
-between installer, daemon and interface runs:
+[`docs/security.md`](docs/security.md). Who installs what:
 [`docs/installation.md`](docs/installation.md). What changed between versions:
 [`CHANGELOG.md`](CHANGELOG.md).
 
