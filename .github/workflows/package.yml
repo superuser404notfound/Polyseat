@@ -38,8 +38,15 @@ jobs:
     steps:
       # base-devel carries makepkg and the compilers and none of these. git is
       # for actions/checkout, which prefers it, and github-cli is what uploads.
+      # The first four are what base-devel lacks: git for actions/checkout, which
+      # prefers it, and github-cli to upload with. The rest are the PKGBUILD's
+      # checkdepends, installed by hand because --nodeps below means makepkg
+      # will not do it, and check() runs the real Python helpers.
       - name: What base-devel does not carry
-        run: pacman -Syu --noconfirm --needed go git github-cli namcap
+        run: |
+          pacman -Syu --noconfirm --needed \
+            go git github-cli namcap \
+            python-pillow librsvg python-evdev
 
       - uses: actions/checkout@v4
 

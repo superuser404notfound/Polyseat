@@ -25,6 +25,14 @@ depends=('incus' 'bpftrace' 'python')
 
 makedepends=('go' 'git')
 
+# What check() needs, which is not what the daemon needs. The seat tests run the
+# real Python helpers rather than a stand-in: boxart.py imports Pillow, the icon
+# tests shell out to rsvg-convert, and the gamepad pointer tests import evdev at
+# the top of the helper. Without these, makepkg fails in check() on a machine
+# that has everything the package actually requires, which is a bad way to meet
+# a project.
+checkdepends=('python-pillow' 'librsvg' 'python-evdev')
+
 optdepends=(
   'nvidia-container-toolkit: required on NVIDIA hosts, mirrors the driver into each seat'
   'nvidia-utils: required on NVIDIA hosts, carries the two libraries NVENC needs'
