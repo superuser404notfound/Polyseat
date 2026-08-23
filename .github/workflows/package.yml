@@ -88,6 +88,10 @@ jobs:
 
       - name: Attach it to the release
         working-directory: packaging/aur
+        # Named, because the default in a container is sh and the tests below
+        # are bash. It worked only because Arch points /bin/sh at bash, which is
+        # not a thing to rely on in a file that runs somewhere else one day.
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           # Named rather than left to be worked out. Inside a container gh
@@ -101,20 +105,38 @@ jobs:
           pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)
           tag="v$pkgver"
 
+          # Named rather than globbed. makepkg in this container has debug in
+          # its default OPTIONS and therefore builds polyseat-debug-* beside the
+          # real one, and a release page offering two files where one of them is
+          # not installable is worse than one offering neither. The debug
+          # package is not published: nothing links it, and split DWARF for a Go
+          # binary is not what a bug report here is short of.
+          pkg=$(echo polyseat-"$pkgver"-*-x86_64.pkg.tar.zst)
+          stable=polyseat-x86_64.pkg.tar.zst
+
+          if [[ ! -f $pkg ]]; then
+            echo "::error::no package for $pkgver was built"
+            exit 1
+          fi
+
           if ! gh release view "$tag" >/dev/null 2>&1; then
             echo "::error::no release $tag to attach this to. Publish it first;"
             echo "::error::packaging/README.md has the order."
             exit 1
           fi
 
-          # A published release does not change under people. This workflow
-          # fires on any push that touches the PKGBUILD or this file, and the
-          # PKGBUILD names the version before the bump for exactly one commit,
-          # so a release commit rebuilds the *previous* version and used to
-          # replace its package with a fresh build of the same source. That is
-          # wrong twice over: --clobber deletes before it uploads, so the
-          # download URL 404s for a moment, and the bytes anybody already has
-          # stop matching the bytes anybody gets next. It happened to v0.3.2.
+          # A published release does not change under people.
+          #
+          # This fires on any push that touches the PKGBUILD or this file, and
+          # the PKGBUILD names the version before the bump for exactly one
+          # commit, so a release commit rebuilds the *previous* version. Without
+          # this it replaced that version's package with a fresh build of the
+          # same source, which is wrong twice over: --clobber deletes before it
+          # uploads, so the download URL 404s for a moment, and the bytes
+          # anybody already had stop matching the bytes anybody gets next. It
+          # happened to v0.3.2, and then to v0.3.3 by the first version of this
+          # very guard, which read $pkg one line before it was assigned and so
+          # compared every asset against the empty string.
           #
           # Rebuilding is still possible and has to be asked for by hand.
           if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qxF "$pkg"; then
@@ -125,19 +147,6 @@ jobs:
             fi
 
             echo "::warning::replacing the package on $tag, which was asked for"
-          fi
-
-          # Named rather than globbed. makepkg in this container has debug in
-          # its default OPTIONS and therefore builds polyseat-debug-* beside
-          # the real one, and a release page offering two files where one of
-          # them is not installable is worse than one offering neither. The
-          # debug package is not published: nothing links it, and split DWARF
-          # for a Go binary is not what a bug report here is short of.
-          pkg=$(echo polyseat-"$pkgver"-*-x86_64.pkg.tar.zst)
-
-          if [[ ! -f $pkg ]]; then
-            echo "::error::no package for $pkgver was built"
-            exit 1
           fi
 
           # Twice, under two names, and the second one is the point.
@@ -153,7 +162,6 @@ jobs:
           # somebody downloading two releases needs in order to tell them apart.
           gh release upload "$tag" "$pkg" --clobber
 
-          stable=polyseat-x86_64.pkg.tar.zst
           cp -- "$pkg" "$stable"
           gh release upload "$tag" "$stable" --clobber
 
