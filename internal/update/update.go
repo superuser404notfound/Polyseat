@@ -61,6 +61,30 @@ type Release struct {
 	// Published is when it appeared, so that a banner can say "yesterday"
 	// rather than only a version number.
 	Published time.Time `json:"published"`
+
+	// Package is the Arch package attached to this release, or nil when there
+	// is none. Nil is a real answer and not a fault: releases before 0.3.2 have
+	// no package because the workflow that builds one did not exist yet, and a
+	// machine looking at one of those can still be told there is a new version
+	// while being unable to install it from here.
+	Package *Asset `json:"package,omitempty"`
+}
+
+// Asset is the one file this daemon knows how to install.
+type Asset struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+
+	// Digest as GitHub states it, "sha256:" and sixty four hex characters.
+	//
+	// Worth being exact about what checking this buys, because it is less than
+	// it looks: the digest and the file come from the same party over the same
+	// connection, so it catches a download that arrived wrong and not one that
+	// was meant to be wrong. Real tamper evidence needs a key that does not
+	// live on GitHub. The claim here is "intact", not "authentic".
+	Digest string `json:"digest"`
+
+	Size int64 `json:"size"`
 }
 
 // Checker holds what the last look at GitHub found.
@@ -204,6 +228,14 @@ func fetch(ctx context.Context, api string) (*Release, error) {
 		PublishedAt time.Time `json:"published_at"`
 		Draft       bool      `json:"draft"`
 		Prerelease  bool      `json:"prerelease"`
+
+		Assets []struct {
+			Name   string `json:"name"`
+			URL    string `json:"browser_download_url"`
+			Digest string `json:"digest"`
+			Size   int64  `json:"size"`
+			State  string `json:"state"`
+		} `json:"assets"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -221,11 +253,35 @@ func fetch(ctx context.Context, api string) (*Release, error) {
 		return nil, fmt.Errorf("the latest release has no tag")
 	}
 
-	return &Release{
+	rel := &Release{
 		Version:   body.TagName,
 		URL:       body.HTMLURL,
 		Published: body.PublishedAt,
-	}, nil
+	}
+
+	for _, a := range body.Assets {
+		// "uploaded" is the only state a finished asset has. GitHub also has
+		// "starter" for one that is still arriving, and a release read in that
+		// window would otherwise offer a file that is not all there yet.
+		if a.State != "uploaded" {
+			continue
+		}
+
+		// The name is matched rather than the content type, because the debug
+		// package is the same type and is not the thing to install. Named
+		// against the tag so that a stray file left on an old release cannot be
+		// picked up as this one's package.
+		want := "polyseat-" + strings.TrimPrefix(body.TagName, "v") + "-"
+		if !strings.HasPrefix(a.Name, want) || !strings.HasSuffix(a.Name, "-x86_64.pkg.tar.zst") {
+			continue
+		}
+
+		rel.Package = &Asset{Name: a.Name, URL: a.URL, Digest: a.Digest, Size: a.Size}
+
+		break
+	}
+
+	return rel, nil
 }
 
 // version is a tag broken into its three numbers.

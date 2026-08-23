@@ -6,6 +6,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/superuser404notfound/Polyseat/internal/auth"
@@ -33,6 +35,39 @@ type Server struct {
 	auth    *auth.Store
 	updates *update.Checker
 	log     *slog.Logger
+
+	// updater is the state of an update started from the interface.
+	//
+	// Kept here rather than in the manager because the manager owns seats and
+	// this is the daemon updating itself. One at a time, which busy enforces: a
+	// second pacman while the first is running would fail on the database lock
+	// anyway, and failing in a place that can explain itself is better.
+	updaterMu  sync.Mutex
+	updaterOn  bool
+	updaterLog []string
+	updaterErr string
+}
+
+// updaterState is what the page needs to decide what to show.
+type updaterState struct {
+	// Enabled is the web_update setting, and Managed is whether pacman owns
+	// this installation. Both are reported rather than folded into one flag,
+	// because the two impossible cases want different sentences: one is a
+	// choice somebody made and the other is how this was installed.
+	Enabled bool `json:"enabled"`
+	Managed bool `json:"managed"`
+
+	// NeedsPassword is the update_needs_password setting, so the page knows to
+	// ask before it posts rather than posting and being turned away.
+	NeedsPassword bool `json:"needs_password"`
+
+	Running bool     `json:"running"`
+	Log     []string `json:"log"`
+	Error   string   `json:"error"`
+
+	// Streaming is who is playing right now, so the page can refuse the restart
+	// and say whose game it would have ended.
+	Streaming []string `json:"streaming"`
 }
 
 // New builds the HTTP handler.
@@ -54,6 +89,8 @@ func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker
 	guarded.HandleFunc("POST /api/password", s.changePassword)
 	guarded.HandleFunc("POST /api/seats", s.createSeat)
 	guarded.HandleFunc("POST /api/provision-stale", s.provisionStale)
+	guarded.HandleFunc("POST /api/update", s.applyUpdate)
+	guarded.HandleFunc("POST /api/restart", s.restart)
 	guarded.HandleFunc("PATCH /api/seats/{name}", s.updateSeat)
 	guarded.HandleFunc("DELETE /api/seats/{name}", s.deleteSeat)
 	guarded.HandleFunc("GET /api/seats/{name}/log", s.seatLog)
@@ -325,9 +362,11 @@ type stateResponse struct {
 	// there is none or when nothing was asked. Not omitted when it is null:
 	// a field that is sometimes absent is a field every caller has to guard
 	// twice, and this page has been broken once already by exactly that.
-	Update   *update.Release `json:"update"`
-	Warnings []string        `json:"warnings"`
-	Now      time.Time       `json:"now"`
+	Update  *update.Release `json:"update"`
+	Updater updaterState    `json:"updater"`
+
+	Warnings []string  `json:"warnings"`
+	Now      time.Time `json:"now"`
 }
 
 type hostInfo struct {
@@ -392,6 +431,7 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 			UplinkBridged: s.manager.UplinkBridged(),
 		},
 		Update:   s.updates.Available(),
+		Updater:  s.updaterState(),
 		Warnings: s.warnings(),
 		Now:      time.Now(),
 	}
@@ -1141,4 +1181,245 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 func fail(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+// ------------------------------------------------------------------- updating
+
+// updaterState answers what the page needs without doing anything.
+func (s *Server) updaterState() updaterState {
+	s.updaterMu.Lock()
+	defer s.updaterMu.Unlock()
+
+	out := updaterState{
+		Enabled:       s.manager.Config().WebUpdate,
+		NeedsPassword: s.manager.Config().UpdateNeedsPassword,
+		Managed:       update.Managed(),
+		Running:       s.updaterOn,
+		Log:           append([]string{}, s.updaterLog...),
+		Error:         s.updaterErr,
+		Streaming:     s.manager.Streaming(),
+	}
+
+	if out.Streaming == nil {
+		out.Streaming = []string{}
+	}
+
+	return out
+}
+
+// confirmed checks the password again, when the setting says to.
+//
+// Rate limited through the same counter as the login form, and not a second one
+// of its own. Two independent limiters guarding one secret means an attacker
+// gets both budgets, and this endpoint would be the cheaper of the two to spend
+// because it needs no user name.
+//
+// The session is still required: this is guarded like every other handler here,
+// so a password alone reaches nothing. It is a second question, not a second
+// door.
+func (s *Server) confirmed(r *http.Request) error {
+	return confirmPassword(s.auth, s.manager.Config().UpdateNeedsPassword, r)
+}
+
+// confirmPassword is the check itself, apart from the server that calls it.
+//
+// A function of a store, a setting and a request, so that what it accepts and
+// refuses can be checked without a seat manager and an Incus behind it. That is
+// not a tidying: this is the guard between a session and running pacman as
+// root, and a guard nobody has watched fail has not been tested.
+func confirmPassword(store *auth.Store, needed bool, r *http.Request) error {
+	if !needed {
+		return nil
+	}
+
+	source := auth.Source(r)
+
+	if ok, wait := store.Allow(source); !ok {
+		// Not counted as a failure. This attempt was never tested against the
+		// password, and counting it would let a locked out address extend its
+		// own lockout by continuing to knock, which punishes nobody who matters.
+		return fmt.Errorf("too many attempts, wait %d seconds", int(wait.Seconds())+1)
+	}
+
+	// Recorded here rather than left to the caller. The first version of this
+	// left it to the handler and the guard was defenceless anywhere else: Allow
+	// counts nothing on its own, so a hundred wrong passwords in a row were
+	// never slowed down. Found by the test that tries exactly that.
+	wrong := func() error {
+		store.Failed(source)
+
+		return errors.New("wrong password")
+	}
+
+	var req struct {
+		Password string `json:"password"`
+	}
+
+	// A body that will not parse is a wrong password rather than a bad request.
+	// The distinction would only ever tell somebody guessing which of the two
+	// they got wrong.
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return wrong()
+	}
+
+	// A missing field, a JSON null and an empty string all arrive here as "",
+	// and all three are refused by Check rather than by a guard above it. There
+	// was a guard above it, and breaking it on purpose changed nothing: an
+	// empty password cannot be set in the first place, because SetPassword
+	// enforces MinPasswordLength, so no stored hash can ever match one. A check
+	// that cannot fail reads as protection while providing none.
+	if !store.Check(store.Username(), req.Password) {
+		return wrong()
+	}
+
+	store.Succeeded(source)
+
+	return nil
+}
+
+// applyUpdate installs the release the daemon found, and nothing else.
+//
+// The request body is not read and there is no parameter to read: which release
+// this is comes from the checker, and the file and address come from that
+// release. That is what keeps a stolen session from turning into a machine
+// installing somebody's own package, and it is the property to preserve if this
+// handler ever grows an argument.
+func (s *Server) applyUpdate(w http.ResponseWriter, r *http.Request) {
+	if !s.manager.Config().WebUpdate {
+		fail(w, http.StatusForbidden, errors.New(`updating from the interface is off. Set "web_update": true in /etc/polyseat/polyseatd.json, or use host/update.sh`))
+
+		return
+	}
+
+	// Asked before anything is looked up, so that a wrong password learns
+	// nothing about the machine it was aimed at.
+	if err := s.confirmed(r); err != nil {
+		// Counted inside confirmPassword, not here, or one wrong password would
+		// spend two of the attempts an address is allowed.
+		s.log.Warn("an update was asked for with the wrong password",
+			"source", auth.Source(r))
+		fail(w, http.StatusUnauthorized, err)
+
+		return
+	}
+
+	rel := s.updates.Available()
+	if rel == nil {
+		fail(w, http.StatusConflict, errors.New("there is no newer release to install"))
+
+		return
+	}
+
+	if rel.Package == nil {
+		fail(w, http.StatusConflict, fmt.Errorf("%s has no package attached to it, so it cannot be installed from here", rel.Version))
+
+		return
+	}
+
+	if !update.Managed() {
+		fail(w, http.StatusConflict, errors.New("this Polyseat was not installed from the package, so pacman has nothing to replace. Use host/update.sh in the checkout it was built from"))
+
+		return
+	}
+
+	s.updaterMu.Lock()
+
+	if s.updaterOn {
+		s.updaterMu.Unlock()
+		fail(w, http.StatusConflict, errors.New("an update is already running"))
+
+		return
+	}
+
+	s.updaterOn = true
+	s.updaterErr = ""
+	s.updaterLog = nil
+	s.updaterMu.Unlock()
+
+	s.manager.Notify()
+
+	// Detached from the request on purpose. A seven megabyte download and a
+	// pacman transaction outlast a phone locking its screen, and an update that
+	// stopped halfway because somebody put their phone in their pocket would be
+	// the worst possible way for this to fail.
+	go s.runUpdate(rel)
+
+	writeJSON(w, http.StatusAccepted, map[string]any{"version": rel.Version})
+}
+
+// runUpdate does the work and records what happened for the page to read.
+func (s *Server) runUpdate(rel *update.Release) {
+	s.log.Info("installing a newer Polyseat from the interface",
+		"version", rel.Version, "package", rel.Package.Name)
+
+	progress := func(line string) {
+		s.updaterMu.Lock()
+		s.updaterLog = append(s.updaterLog, line)
+		s.updaterMu.Unlock()
+
+		s.log.Info("update", "line", line)
+		s.manager.Notify()
+	}
+
+	// Not the request's context, which ends when the browser goes away, and a
+	// generous ceiling rather than none: this reaches the network and runs
+	// pacman, and both can hang rather than fail.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+
+	err := update.Apply(ctx, rel, progress)
+
+	s.updaterMu.Lock()
+	s.updaterOn = false
+
+	if err != nil {
+		s.updaterErr = err.Error()
+	}
+
+	s.updaterMu.Unlock()
+
+	if err != nil {
+		s.log.Error("the update failed", "error", err)
+	} else {
+		s.log.Info("the new version is on disk. It serves after a restart",
+			"version", rel.Version)
+	}
+
+	s.manager.Notify()
+}
+
+// restart schedules a restart of the daemon, refusing while somebody plays.
+//
+// Separate from the update on purpose. Replacing the binary leaves the running
+// process alone, so the new version sits on disk until this is asked for, and
+// the moment is somebody's to choose. This is also the one thing the interface
+// does better than host/update.sh, which has to work out whether anybody is
+// streaming: the interface already knows.
+func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
+	if !s.manager.Config().WebUpdate {
+		fail(w, http.StatusForbidden, errors.New(`restarting from the interface is off. Set "web_update": true in /etc/polyseat/polyseatd.json`))
+
+		return
+	}
+
+	// force is the only parameter either of these handlers takes, and it says
+	// "yes, end their game", which is a thing somebody may legitimately mean on
+	// their own machine. It cannot name what to install or what to run.
+	if r.URL.Query().Get("force") != "true" {
+		if busy := s.manager.Streaming(); len(busy) > 0 {
+			fail(w, http.StatusConflict, fmt.Errorf("somebody is streaming on %s. Restarting now would drop their controller", strings.Join(busy, ", ")))
+
+			return
+		}
+	}
+
+	if err := update.Restart(); err != nil {
+		fail(w, http.StatusInternalServerError, err)
+
+		return
+	}
+
+	s.log.Info("a restart was asked for from the interface")
+
+	writeJSON(w, http.StatusAccepted, map[string]any{"restarting": true})
 }

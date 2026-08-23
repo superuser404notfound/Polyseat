@@ -370,6 +370,30 @@ func (m *Manager) startObserver() {
 	m.observer.Start()
 }
 
+// Streaming names the seats somebody is connected to right now, sorted.
+//
+// "unclear" counts as streaming here, deliberately, and for the same reason it
+// counts when the app list is refreshed: a seat that did not answer must hold a
+// restart back exactly as firmly as one that answered yes. The cost of being
+// wrong in one direction is a restart somebody waits for, and in the other it
+// is a controller dropping in the middle of a game.
+func (m *Manager) Streaming() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var out []string
+
+	for name, rt := range m.rt {
+		if rt.streaming || rt.unclear {
+			out = append(out, name)
+		}
+	}
+
+	sort.Strings(out)
+
+	return out
+}
+
 // ObserverState reports how the host wide uhid observer is doing. Without it
 // gamepads cannot be attributed to a seat structurally, only by name, so the
 // interface has to be able to say when it is down.
@@ -441,6 +465,14 @@ func (m *Manager) Subscribe() (<-chan struct{}, func()) {
 		close(ch)
 	}
 }
+
+// Notify pushes a change to every subscriber, for something the manager does
+// not itself own.
+//
+// The interface streams changes from one place, and an update of the daemon is
+// a change the page has to redraw for while being nothing to do with seats. The
+// alternative was a second event stream for one event.
+func (m *Manager) Notify() { m.notify() }
 
 func (m *Manager) notify() {
 	m.subsMu.Lock()

@@ -67,6 +67,35 @@ type Config struct {
 	// and no request is made at all.
 	UpdateCheck bool `json:"update_check"`
 
+	// WebUpdate lets the interface install a newer release and restart the
+	// daemon, rather than only saying that one exists.
+	//
+	// On by default, and the switch is here because this is the one thing the
+	// interface does that ends on the host rather than inside a seat. With it
+	// on, the interface password reaches root on this machine: pacman runs
+	// install scripts as root and the binary it places is what systemd starts.
+	// Set to false and the interface goes back to saying a version exists and
+	// nothing more, which is what host/update.sh is for.
+	//
+	// What the switch does not change, because it is what makes the feature
+	// defensible at all: the browser never names what to install. It asks for
+	// "the release the daemon found", and the version, the file and the address
+	// all come from the daemon's own pinned view of GitHub.
+	WebUpdate bool `json:"web_update"`
+
+	// UpdateNeedsPassword asks for the interface password again before
+	// installing, the way a bank asks before a transfer and not before showing
+	// a balance.
+	//
+	// Off by default, because nothing else in this interface asks twice and a
+	// session that can delete somebody's seat is already a session worth
+	// protecting. On, it is worth exactly one thing and it is a real thing: a
+	// page left open on an unlocked phone cannot be turned into a root
+	// installation by somebody who picks it up. It is not a second factor and
+	// does not pretend to be one; it is the same secret asked at the moment it
+	// matters.
+	UpdateNeedsPassword bool `json:"update_needs_password"`
+
 	// GPURenderNode picks the card the seats render and encode on, for example
 	// /dev/dri/renderD129. Empty means the daemon finds it itself, which is the
 	// right answer on a machine with one card.
@@ -98,6 +127,7 @@ func Default() Config {
 		// overwrite what it names, so a configuration written before this
 		// setting existed leaves it on rather than off.
 		UpdateCheck: true,
+		WebUpdate:   true,
 
 		// Empty on purpose: the daemon looks at the machine. See GPURenderNode.
 		GPURenderNode: "",

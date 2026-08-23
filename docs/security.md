@@ -455,8 +455,10 @@ Once a minute after it starts and once every six hours after that, one GET to
 `api.github.com` for this project's latest release. It carries no identifier, no
 host name and nothing about the machine beyond what any HTTP request carries,
 which is an address and a user agent, and the answer is a version number that
-goes into a line in the interface. **Nothing is ever downloaded or installed by
-it**: updating is `host/update.sh`, run by somebody who chose the moment.
+goes into a line in the interface. **The check itself downloads and installs
+nothing.** What it finds can now be installed by pressing a button in the
+interface, which is the section below and is a separate decision with its own
+switch.
 
 What it does give away is that a machine at that address runs something which
 watches this repository, to GitHub and to anybody who can see the connection.
@@ -466,6 +468,75 @@ no request is made at all.
 Seats make their own requests for their own reasons, and those are not affected
 by this setting: Sunshine and Proton CachyOS come from GitHub releases, box art
 comes from Steam, and a seat installs its own software.
+
+### The interface can install a newer Polyseat, as root
+
+**This is the one thing the interface does that ends on the host rather than
+inside a seat**, and it is the largest single change to what the interface
+password is worth. It is on by default. `"web_update": false` in
+`/etc/polyseat/polyseatd.json` turns it off and puts updating back where it was,
+which is `host/update.sh`.
+
+Everything else the password reaches ends in a container. Somebody with it can
+already install an AppImage from any address they type, which is remote code
+execution and is accepted under its own heading above, on the reasoning that it
+lands inside an unprivileged container the threat model already treats as
+untrusted. This does not: `pacman` runs install scripts as root and the binary
+it places is what systemd starts as root.
+
+So the honest statement is that **the interface password stops being a key to
+the seats and becomes a key to the machine.** It is written here as its own
+heading rather than folded into a feature list because that is what it is.
+
+Two things make it smaller than it sounds and neither makes it nothing. The
+daemon already runs as root and already writes files this host executes, so this
+is a supported route rather than the first route. And the interface is TLS only,
+password protected, and rate limited on failed attempts. One thing makes it
+larger: the interface answers on the whole network by default, which is accepted
+under its own heading above, and that reasoning was written when the worst case
+was somebody else's seat being deleted.
+
+**What holds even if the rest fails: the browser never says what to install.**
+The request carries no address, no version and no file. It says "install the
+release the daemon found", and the version, the file name and the address all
+come from the daemon's own pinned view of GitHub. `latestAPI` and the download
+prefix are constants in the binary, and an asset URL that does not begin at this
+project's own downloads on github.com is refused before anything is fetched. The
+worst an attacker with a valid session can do is make this machine install a
+genuine Polyseat release sooner than its owner meant to. That property is the
+whole design, and it is what to preserve if that handler ever grows an argument.
+
+**The download is checked against the digest the release states**, and that is
+worth exactly what it is worth and no more. The digest and the file come from
+the same party over the same connection, so it catches a download that arrived
+wrong and not one that was meant to arrive wrong. It is not tamper evidence and
+is not described as any. Real tamper evidence needs a signing key that does not
+live on GitHub, which is the same key a package repository would need; if that
+ever exists, this gets stronger for free.
+
+**Asking for the password again is available and off by default.**
+`"update_needs_password": true` makes the interface ask for the interface
+password at the moment the button is pressed, the way a bank asks before a
+transfer and not before a balance. It is worth one specific thing: a page left
+open on an unlocked phone cannot be turned into a root installation by somebody
+who picks it up. It is not a second factor and is not one; it is the same secret
+asked at the moment it matters. It shares the login form's rate limiter rather
+than having one of its own, because two budgets guarding one secret means an
+attacker gets both, and this is the cheaper one to spend since it needs no user
+name.
+
+**The restart is separate and is refused while anybody is streaming.** Replacing
+the binary leaves the running process exactly as it was, so installing is safe
+at any moment and the new version simply waits. Restarting takes every seat's
+input broker with it, so it is a second button, and the interface knows who is
+playing and says whose game it would have ended. `?force=true` overrides that
+and is the only argument either handler takes: it says "yes, end their game",
+which is a thing somebody may legitimately mean about their own machine, and it
+still cannot name what to install.
+
+**Only where pacman owns the installation.** A checkout install has nothing for
+pacman to replace, and the interface says so rather than offering a button that
+would half work.
 
 ### The kernel console
 

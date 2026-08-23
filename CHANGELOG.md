@@ -10,6 +10,42 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## Unreleased
+
+- **Updating is a button in the interface**, where Polyseat was installed from
+  the package. One button installs and a second restarts, and they are two
+  because replacing the binary leaves the running process untouched: installing
+  is safe in the middle of somebody's game and restarting is not. The restart is
+  refused while anybody is streaming and names them, which is the one thing this
+  does better than `host/update.sh`, since that script has to work out what this
+  page already shows.
+
+  **It reaches root on the host**, which nothing else in the interface does, and
+  that is written up under its own heading in `docs/security.md` rather than
+  folded into a feature list. `"web_update": false` turns it off.
+  `"update_needs_password": true` makes it ask for the interface password at the
+  moment the button is pressed, which is off by default and worth one specific
+  thing: a page left open on an unlocked phone cannot be turned into a root
+  installation by somebody who picks it up.
+
+  The browser never says what to install. The request carries no address, no
+  version and no file, and every one of those comes from the daemon's own pinned
+  view of GitHub. An asset outside this project's own downloads is refused
+  before anything is fetched, and what arrives is checked against the checksum
+  the release states, which catches a download that went wrong and not one that
+  was meant to.
+
+- **The built package is attached to every release**, so installing is
+  `pacman -U` on a file rather than a clone and a build, removing is
+  `pacman -Rns`, and upgrading is the same `pacman -U` again. Not the AUR, where
+  accounts still cannot be registered, and it matters less than it sounds: the
+  AUR distributes recipes, and installing from one means building it yourself,
+  which `host/install.sh` already does and does better.
+
+- **CI parses the interface.** Sixty kilobytes of JavaScript were checked by
+  nothing: a typo in it fails no build, no test and no vet, only somebody's
+  browser, as a blank page with the reason in a console nobody has open.
+
 ## 0.3.2
 
 One bug, on hosts where uhid is a module rather than built in, which is most of

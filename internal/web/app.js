@@ -110,12 +110,21 @@ function showError(message) {
   box.prepend(div);
 }
 
-// updateBanner says that a newer Polyseat has been published.
+// updateBanner says that a newer Polyseat has been published, and offers to
+// install it where that is possible.
 //
-// It says it and stops there. No button, because installing means rebuilding
-// the daemon from a checkout and restarting it, which is host/update.sh and a
-// moment somebody picks: this machine may have two people playing on it, and a
-// daemon that can replace itself while they do is not a feature.
+// It used to say it and stop there, because installing meant rebuilding the
+// daemon from a checkout. A package install is a file and a pacman transaction,
+// which is something the daemon can do for itself.
+//
+// The install and the restart are two buttons and not one, and that is the
+// whole design rather than an omission. Replacing the binary leaves the running
+// process exactly as it was, so the first button is safe at any moment, even
+// with two people playing. The second one ends every seat's input broker for a
+// moment, so it is offered separately and refused while anybody is streaming.
+// This is the one thing the interface does better than host/update.sh: that
+// script has to work out whether somebody is playing, and this page already
+// knows and already says so on every card.
 //
 // The link goes to the release rather than repeating its notes here. What
 // changed is worth reading before updating, and worth reading in full.
@@ -123,14 +132,15 @@ function updateBanner() {
   const release = state.update;
   if (!release) return [];
 
+  const updater = state.updater || {};
+
   const div = document.createElement("div");
   div.className = "notice";
 
   const text = document.createElement("span");
   text.textContent =
     `Polyseat ${release.version} was published${describeAge(release.published)}. ` +
-    `This machine runs ${state.host.version || "an unknown version"}. ` +
-    "Updating is host/update.sh, or a checkout and host/install.sh by hand. ";
+    `This machine runs ${state.host.version || "an unknown version"}. `;
 
   const link = document.createElement("a");
   link.href = release.url;
@@ -138,7 +148,113 @@ function updateBanner() {
   link.rel = "noreferrer noopener";
   link.textContent = "What changed";
 
-  div.replaceChildren(text, link);
+  // While it runs, the lines the daemon reported, newest last. Shown rather
+  // than a spinner because the slow part is a download and people reasonably
+  // want to know it is moving.
+  if (updater.running) {
+    const log = document.createElement("div");
+    log.className = "muted";
+    log.textContent = (updater.log || []).join(" · ") || "starting";
+    div.replaceChildren(text, link, log);
+
+    return [div];
+  }
+
+  if (updater.error) {
+    div.className = "warning";
+    const failed = document.createElement("div");
+    failed.textContent = "The update failed: " + updater.error;
+    div.replaceChildren(text, link, failed);
+
+    return [div];
+  }
+
+  // Installed and waiting for a restart. The version on disk is the new one and
+  // the version serving is still the old one, which is exactly what the two
+  // buttons are for, so this says so rather than looking like nothing happened.
+  if ((updater.log || []).length) {
+    const done = document.createElement("span");
+    done.textContent =
+      ` ${release.version} is installed and takes effect when the daemon restarts. `;
+
+    const streaming = updater.streaming || [];
+    const button = document.createElement("button");
+
+    if (streaming.length) {
+      button.disabled = true;
+      button.textContent = "Restart when nobody is playing";
+      button.title =
+        streaming.length === 1
+          ? `${streaming[0]} is streaming right now`
+          : `${streaming.join(", ")} are streaming right now`;
+    } else {
+      button.textContent = "Restart now";
+      button.onclick = () => {
+        button.disabled = true;
+        run(async () => {
+          await api("POST", "/api/restart");
+          await refresh();
+        });
+      };
+    }
+
+    div.replaceChildren(text, link, done, button);
+
+    return [div];
+  }
+
+  // The three reasons there is no button, each with its own sentence. One is a
+  // setting somebody chose, one is how this was installed, and one is a release
+  // that has no package: telling them apart is the difference between knowing
+  // what to do and wondering what is broken.
+  let why = "";
+
+  if (!updater.enabled) {
+    why = 'Updating from here is off ("web_update" in polyseatd.json). Use host/update.sh. ';
+  } else if (!updater.managed) {
+    why =
+      "This Polyseat was installed from a checkout rather than from the package, " +
+      "so pacman has nothing to replace. Use host/update.sh. ";
+  } else if (!release.package) {
+    why = "That release has no package attached to it, so it cannot be installed from here. ";
+  }
+
+  if (why) {
+    const note = document.createElement("span");
+    note.textContent = why;
+    div.replaceChildren(text, note, link);
+
+    return [div];
+  }
+
+  const button = document.createElement("button");
+  button.textContent = "Install it";
+  button.onclick = () => {
+    // Asked here rather than posted and refused, so that the one setting that
+    // exists to make somebody stop and think actually makes them stop and
+    // think. prompt() and not a field on the page: it cannot be filled in by
+    // something that is already on the page, and there is nowhere for a browser
+    // to have remembered it.
+    let password;
+
+    if (updater.needs_password) {
+      password = window.prompt(
+        `Installing ${release.version} runs pacman as root on this machine. ` +
+          "Type the interface password to confirm.",
+      );
+
+      // Cancelled, which is a decision and not a failure. No error, no request.
+      if (password === null) return;
+    }
+
+    button.disabled = true;
+    run(async () => {
+      await api("POST", "/api/update", password === undefined ? undefined : { password });
+      await refresh();
+    });
+  };
+
+  div.replaceChildren(text, link, button);
 
   return [div];
 }

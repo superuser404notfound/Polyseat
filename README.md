@@ -236,8 +236,23 @@ and changes nothing, and it opens no password, key or certificate. It does carry
 this machine's host name, its seat names and their private addresses, and it
 says so at the top, so read it before pasting it somewhere public.
 
-**Updating.** The interface says when a newer version has been published. Taking
-it depends on which way it went in.
+**Updating.** The interface says when a newer version has been published, and
+where this was installed from the package it offers to do it: one button
+installs, a second one restarts, and the second is refused while somebody is
+streaming and says whose game it would have ended. Installing is safe while
+people play, because replacing the binary leaves the running process alone.
+
+That button reaches root on this machine, which is the one thing in the
+interface that does. `"web_update": false` in `/etc/polyseat/polyseatd.json`
+turns it off, and `"update_needs_password": true` makes it ask for the interface
+password at the moment it is pressed. What it never does, on any setting, is let
+the browser say what to install: it installs the release the daemon itself
+found, from this project's own downloads, and checks it against the checksum the
+release states. [`docs/security.md`](docs/security.md) has what that is worth
+and what it is not.
+
+By hand, and this is the whole of it where the interface is off or where this
+came from a checkout.
 
 From the package, the new one over the old one and then a restart at a moment
 you choose:

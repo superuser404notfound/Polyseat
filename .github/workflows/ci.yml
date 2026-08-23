@@ -99,6 +99,24 @@ jobs:
         run: |
           grep -E "^ *--- SKIP" -A1 /tmp/test.log || echo "nothing skipped"
 
+  # The interface is 60 KB of JavaScript that nothing else here reads. A typo in
+  # it does not fail a build, does not fail a test and does not fail vet: it
+  # fails in somebody's browser, as a blank page with the reason in a console
+  # nobody has open. --check parses without running, which is all that is wanted
+  # and all that is safe to do to a file on a runner.
+  web:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse the interface
+        run: |
+          for f in internal/web/*.js; do
+            node --check "$f"
+            echo "ok $f"
+          done
+
   shell:
     runs-on: ubuntu-latest
 
