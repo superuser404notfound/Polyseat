@@ -31,7 +31,7 @@ input devices, shares the game library, and repairs what drifts.
 **1. Install it, once per machine.** From a checkout:
 
 ```
-git clone --branch v0.3.1 https://github.com/superuser404notfound/Polyseat.git
+git clone --branch v0.3.2 https://github.com/superuser404notfound/Polyseat.git
 cd Polyseat
 sudo host/install.sh
 sudo systemctl enable --now polyseatd
@@ -235,7 +235,7 @@ By hand is the same thing and stays supported:
 
 ```
 git fetch --tags
-git checkout v0.3.1
+git checkout v0.3.2
 sudo host/install.sh
 ```
 

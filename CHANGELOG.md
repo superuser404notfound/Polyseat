@@ -10,6 +10,54 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.3.2
+
+One bug, on hosts where uhid is a module rather than built in, which is most of
+them. Like the one before it, it happens at boot and looks like anything but
+what it is.
+
+Seats are untouched by this one. Nothing in it changes how a seat is built, so
+updating is a rebuild and a restart of the daemon and no more.
+
+- **The uhid observer restarted every thirty seconds, forever, on a machine
+  where nothing had yet used a gamepad.** The observer attaches a kprobe to
+  `uhid_dev_create2` so that a pad can be attributed to the container that
+  created it as a fact rather than a guess. A kprobe attaches to a symbol the
+  running kernel has, and where uhid is a module its symbols do not exist until
+  it is loaded. Nothing loads it in time: `/dev/uhid` is a static node declared
+  in `modules.devname` and created at boot by systemd-tmpfiles, and the module
+  is autoloaded only when something first opens that node, which is the first
+  seat that runs a gamepad. So the daemon starts seconds into boot, finds no
+  symbol, and retries until somebody happens to plug in a pad.
+
+  `host/prepare.sh` now loads uhid and writes `/etc/modules-load.d/polyseat.conf`
+  so that it is loaded at the next boot too, which is the boot that matters.
+  `sudo host/install.sh` is enough to pick this up.
+
+  Worth describing because of how well it hides. The node exists either way, so
+  every check passed and everything looked correctly installed, and the one
+  place that would have said otherwise, the warning that reads "load the uhid
+  module", tests for the node and therefore could never fire on the machine it
+  was written for. Found on CachyOS 7.2.0, where `CONFIG_UHID=m`. It was never
+  seen on the development machine because bluez had already loaded uhid there
+  for HID over GATT.
+
+  Nothing was broken while this was happening. Gamepads worked; the broker fell
+  back to attributing them by name, which is the documented fallback and a
+  heuristic rather than a fact.
+
+- **A supervised helper can now be given up on.** `supervise.Failed` has existed
+  and been documented since the daemon was written, and was set nowhere, so the
+  supervisor could not stop trying. A helper may now name the exits that will
+  still be true in thirty seconds, and the observer names the one that means
+  this kernel has no symbol to watch. It says so once, in the log and in the
+  interface, and stops. Brokers are unchanged and still retry everything, which
+  is right for them: most ways a broker dies are ways it might not die next
+  time.
+
+  The interface now tells "gave up" and "not running" apart, because they want
+  different sentences and the first one names a cause and a command.
+
 ## 0.3.1
 
 One bug, on NVIDIA hosts, of the kind that is worth a release on its own
