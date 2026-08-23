@@ -47,6 +47,15 @@ more, and existing seats are untouched.
   AUR distributes recipes, and installing from one means building it yourself,
   which `host/install.sh` already does and does better.
 
+  Downloaded first and installed second, which is two commands rather than
+  one because the packages carry no signature: `pacman -U` on a URL applies
+  `RemoteFileSigLevel`, which is `Required` by default and looks for a `.sig`
+  that is not there, while a file already on disk applies `LocalFileSigLevel`,
+  which Arch ships as `Optional`. Signing them is the fix and needs a key that
+  is published and trusted by hand, which is the same key a package repository
+  would need. The daemon's own update button is unaffected: it downloads the
+  file before it installs it, so it was always taking the local path.
+
   The install URL carries no version and never will. Each release gets the
   package twice, once under the name makepkg gave it and once under a name that
   does not change, because `releases/latest/download/` only works as a permanent

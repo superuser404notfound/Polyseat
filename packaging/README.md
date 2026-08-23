@@ -13,8 +13,16 @@ prepares the machine in the same run.
 somebody actually wants is one `pacman -U` away:
 
 ```
-sudo pacman -U https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
+curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
+sudo pacman -U polyseat-x86_64.pkg.tar.zst
 ```
+
+Two commands rather than one because the packages carry no signature. `pacman
+-U` on a URL applies `RemoteFileSigLevel`, which is `Required` by default and
+looks for a `.sig` that is not there; a file already on disk applies
+`LocalFileSigLevel`, which Arch ships as `Optional`. Signing them is the fix and
+it needs a key that is published and trusted by hand, which is the same key a
+package repository would need.
 
 That URL carries no version and never has to be edited. Each release gets the
 package twice: once under the name makepkg gave it, which is what tells two

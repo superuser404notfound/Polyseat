@@ -21,6 +21,11 @@ on:
       - packaging/aur/polyseat.install
       - .github/workflows/package.yml
   workflow_dispatch:
+    inputs:
+      rebuild:
+        description: Rebuild and replace the package on a release that already has one
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -100,6 +105,26 @@ jobs:
             echo "::error::no release $tag to attach this to. Publish it first;"
             echo "::error::packaging/README.md has the order."
             exit 1
+          fi
+
+          # A published release does not change under people. This workflow
+          # fires on any push that touches the PKGBUILD or this file, and the
+          # PKGBUILD names the version before the bump for exactly one commit,
+          # so a release commit rebuilds the *previous* version and used to
+          # replace its package with a fresh build of the same source. That is
+          # wrong twice over: --clobber deletes before it uploads, so the
+          # download URL 404s for a moment, and the bytes anybody already has
+          # stop matching the bytes anybody gets next. It happened to v0.3.2.
+          #
+          # Rebuilding is still possible and has to be asked for by hand.
+          if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qxF "$pkg"; then
+            if [[ "${{ inputs.rebuild }}" != "true" ]]; then
+              echo "::notice::$tag already carries $pkg, so it is left alone."
+              echo "::notice::Run this workflow by hand with rebuild if that is really wanted."
+              exit 0
+            fi
+
+            echo "::warning::replacing the package on $tag, which was asked for"
           fi
 
           # Named rather than globbed. makepkg in this container has debug in

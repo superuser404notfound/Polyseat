@@ -29,15 +29,24 @@ input devices, shares the game library, and repairs what drifts.
 | **Network** | One wired interface, so each seat is a host of its own on the LAN and can use the standard Sunshine ports. Seats take a macvlan from it, or a port on it where it is a bridge, which is what `host/lan-bridge.sh` makes it and what local multiplayer between the host and a seat needs. Wireless cannot do either: 802.11 carries one MAC address per association. |
 
 **1. Install it, once per machine.** There are two ways in and the package is
-the shorter one. That URL is not versioned and does not need to be: it is
-whatever the newest release is, and the version lives inside the file rather
-than in its name.
+the shorter one:
 
 ```
-sudo pacman -U https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
+curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
+sudo pacman -U polyseat-x86_64.pkg.tar.zst
 sudo polyseat-prepare
 sudo systemctl enable --now polyseatd
 ```
+
+**Downloaded first and installed second, and that is not tidiness.** `pacman -U`
+on a URL wants a detached signature beside it, because `RemoteFileSigLevel`
+defaults to `Required`, and these packages are not signed. A file already on
+disk goes by `LocalFileSigLevel`, which Arch ships as `Optional`. Signing them
+would need a key that has to be published and trusted by hand, which is the same
+key a package repository would need, and neither exists yet.
+
+That URL carries no version and never will: it is whatever the newest release
+is, and the version lives inside the file rather than in its name.
 
 Or from a checkout, which does both halves in one go and is what to use to run a
 particular commit rather than a release, which is what testing on unusual
@@ -259,7 +268,8 @@ and what it is not.
 the same unversioned URL:
 
 ```
-sudo pacman -U https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
+curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
+sudo pacman -U polyseat-x86_64.pkg.tar.zst
 sudo systemctl restart polyseatd
 ```
 
