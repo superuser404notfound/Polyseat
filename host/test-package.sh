@@ -27,6 +27,11 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd -- "$HERE/.." && pwd)"
 TESTUSER=tester
 
+# The password this run claims the machine with. Eight characters at least, or
+# the interface refuses it, which would look like a broken test rather than a
+# working guard.
+WEBPASS=a-good-long-password
+
 pass=0
 fail=0
 
@@ -121,7 +126,7 @@ ok "built $(basename "$PKG")"
 # earliest entries in the archive, and the later ones passed by luck of timing.
 contents=$(tar tf "$PKG" 2>/dev/null)
 
-for want in usr/bin/polyseatd usr/bin/polyseat-prepare \
+for want in usr/bin/polyseatd usr/bin/polyseat-prepare usr/bin/polyseat-uninstall \
             usr/lib/polyseat/broker.py usr/lib/polyseat/uhid_observer.py \
             usr/lib/systemd/system/polyseatd.service \
             usr/lib/udev/rules.d/72-polyseat-hide.rules; do
@@ -186,6 +191,7 @@ vm bash -c "id $TESTUSER >/dev/null 2>&1 || useradd -m $TESTUSER"
 vm bash -c 'pacman -R --noconfirm polyseat >/dev/null 2>&1 || true'
 vm bash -c 'systemctl stop polyseatd >/dev/null 2>&1 || true'
 vm bash -c 'rm -rf /var/lib/polyseat /etc/polyseat'
+vm bash -c 'rm -rf /etc/systemd/system/polyseatd.service.d'
 vm bash -c "gpasswd -d $TESTUSER input >/dev/null 2>&1 || true"
 vm bash -c "sed -i '/^root:/d' /etc/subuid /etc/subgid 2>/dev/null || true"
 vm bash -c 'incus profile device remove default root >/dev/null 2>&1 || true'
@@ -205,6 +211,7 @@ check "the package installs" \
 
 check "polyseatd is in /usr/bin"          vm test -x /usr/bin/polyseatd
 check "polyseat-prepare is in /usr/bin"   vm test -x /usr/bin/polyseat-prepare
+check "polyseat-uninstall is too"        vm test -x /usr/bin/polyseat-uninstall
 check "the helpers are in /usr/lib"       vm test -f /usr/lib/polyseat/broker.py
 check "the unit is registered"            vm systemctl cat polyseatd.service
 
@@ -230,36 +237,121 @@ check "it did NOT write the idmap range"  vm bash -c '! grep -q "^root:" /etc/su
 check "it did NOT initialise Incus"       vm bash -c '! test -d /var/lib/incus/storage-pools/default'
 check "it did NOT touch the group"        vm bash -c "! id -nG $TESTUSER | tr ' ' '\n' | grep -qx input"
 
-# -------------------------------------------------------------- preparing it
+# ------------------------------------------------ the daemon before it is ready
 
-step "polyseat-prepare"
+step "The daemon on a machine that is not ready yet"
 
-# No GPU in a virtual machine, which is the one thing a test machine cannot
-# have. The variable is the same escape hatch the installer offers.
-if sudo incus exec "$VM" --env POLYSEAT_ALLOW_NO_GPU=1 --env SUDO_USER=$TESTUSER \
-    -- polyseat-prepare >/dev/null 2>&1; then
-    ok "it ran from the package, with no checkout anywhere on the machine"
+# The case this used not to survive, and the ordinary one for anybody who has
+# just installed the package: there is no Incus to talk to, because Incus is one
+# of the things preparing the machine installs. The daemon exited on that, and
+# systemd brought it back every five seconds, so the interface that exists to
+# explain exactly this was the one thing that never came up.
+#
+# The drop-in is a test arrangement rather than part of any install. There is no
+# GPU in a virtual machine, and the daemon hands its own environment to the
+# script it runs, which is the same door polyseat-prepare leaves open for a
+# person at a terminal.
+vm mkdir -p /etc/systemd/system/polyseatd.service.d
+vm bash -c 'printf "[Service]\nEnvironment=POLYSEAT_ALLOW_NO_GPU=1\n" > /etc/systemd/system/polyseatd.service.d/no-gpu.conf'
+vm systemctl daemon-reload
+
+vm systemctl enable --now polyseatd >/dev/null 2>&1 || true
+sleep 6
+
+check "it stays up without an Incus"      vm systemctl is-active --quiet polyseatd
+check "it did not fail and restart"       vm bash -c '[ "$(systemctl show -p NRestarts --value polyseatd)" = "0" ]'
+check "the interface answers on 47800"    vm bash -c 'curl -sk -o /dev/null https://127.0.0.1:47800/'
+check "and says the machine is not ready" vm bash -c 'curl -sk https://127.0.0.1:47800/api/session | grep -q "\"ready\":false"'
+check "nobody has claimed it yet"         vm bash -c 'curl -sk https://127.0.0.1:47800/api/session | grep -q "\"setup\":true"'
+
+# Still true of the machine itself: a package may place files and may not do any
+# of this, and neither may a daemon that nobody has pressed the button on.
+check "it did NOT write the idmap range"  vm bash -c '! grep -q "^root:" /etc/subuid'
+check "it did NOT touch the group"        vm bash -c "! id -nG $TESTUSER | tr ' ' '\n' | grep -qx input"
+
+# ------------------------------------------------ preparing it from the browser
+
+step "Preparing it from the interface"
+
+# Exactly what a browser does and over the same HTTPS: claim the machine, then
+# press the button. The cookie jar is the session, and the account name is what
+# the browser puts in the one field that panel has.
+check "the machine can be claimed" vm bash -c "curl -sk -c /root/jar -X POST -H 'Content-Type: application/json' -d '{\"username\":\"$TESTUSER\",\"password\":\"$WEBPASS\",\"confirm\":\"$WEBPASS\"}' https://127.0.0.1:47800/api/setup | grep -q username"
+
+check "and preparing it is accepted" vm bash -c "curl -sk -b /root/jar -X POST -H 'Content-Type: application/json' -d '{\"account\":\"$TESTUSER\"}' https://127.0.0.1:47800/api/prepare | grep -q running"
+
+note "waiting for it, which installs packages"
+
+state=""
+for _ in $(seq 1 90); do
+    state=$(vm bash -c 'curl -sk -b /root/jar https://127.0.0.1:47800/api/state' 2>/dev/null || true)
+    grep -q '"done":true' <<<"$state" && break
+    grep -qE '"error":"[^"]+"' <<<"$state" && break
+    sleep 10
+done
+
+if grep -q '"done":true' <<<"$state"; then
+    ok "it finished without an error"
 else
-    bad "polyseat-prepare failed"
-    sudo incus exec "$VM" --env POLYSEAT_ALLOW_NO_GPU=1 --env SUDO_USER=$TESTUSER \
-        -- polyseat-prepare 2>&1 | tail -15
+    bad "preparing from the interface did not finish"
+    # The log the page would have shown, which is the only account of what
+    # happened: the script runs under the daemon and not under this shell.
+    vm bash -c 'curl -sk -b /root/jar https://127.0.0.1:47800/api/state' | tr ',' '\n' | tail -25
 fi
 
 check "root has an idmap range"           vm grep -q '^root:' /etc/subuid
 check "and a gid range"                   vm grep -q '^root:' /etc/subgid
 check "incus.socket is up"                vm test -S /var/lib/incus/unix.socket
 check "incus is initialised"              vm bash -c 'incus storage list --format csv | grep -q .'
+
+# The one thing sudo answers by itself and a daemon cannot: whose account. It
+# came out of the browser, through POLYSEAT_INPUT_USER, into usermod.
 check "$TESTUSER is in the input group"   vm bash -c "id -nG $TESTUSER | tr ' ' '\n' | grep -qx input"
+
+# ---------------------------------------------- and it comes back by itself
+
+step "It restarts into the real interface on its own"
+
+# The last thing preparing does is bring Incus up, and the daemon is watching for
+# exactly that. Nobody has to press anything else, which is the difference
+# between a machine that is ready and a machine somebody has to be told how to
+# finish.
+for _ in $(seq 1 15); do
+    vm bash -c 'curl -sk https://127.0.0.1:47800/api/session | grep -q "\"ready\":true"' && break
+    sleep 5
+done
+
+check "the interface is the ordinary one" vm bash -c 'curl -sk https://127.0.0.1:47800/api/session | grep -q "\"ready\":true"'
+check "the daemon is running"             vm systemctl is-active --quiet polyseatd
+check "and did not end up failed"         vm bash -c '! systemctl is-failed --quiet polyseatd'
+
+# The password was chosen while the machine was not ready, and it is the same
+# machine afterwards. Somebody who had to choose it twice would rightly wonder
+# what else that restart threw away.
+check "the password survived the restart" vm bash -c "curl -sk -c /root/jar -X POST -H 'Content-Type: application/json' -d '{\"username\":\"$TESTUSER\",\"password\":\"$WEBPASS\"}' https://127.0.0.1:47800/api/login | grep -q username"
+
+# -------------------------------------------------------------- preparing it
+
+step "polyseat-prepare from a terminal"
+
+# The other way in, over a machine that is already prepared, which tests two
+# things at once: that the command works from a package with no checkout
+# anywhere on the machine, and that everything it does is safe to do again.
+if sudo incus exec "$VM" --env POLYSEAT_ALLOW_NO_GPU=1 --env SUDO_USER=$TESTUSER \
+    -- polyseat-prepare >/dev/null 2>&1; then
+    ok "it ran again over a machine that was already ready"
+else
+    bad "polyseat-prepare failed"
+    sudo incus exec "$VM" --env POLYSEAT_ALLOW_NO_GPU=1 --env SUDO_USER=$TESTUSER \
+        -- polyseat-prepare 2>&1 | tail -15
+fi
+
+check "still one idmap entry, not two"    vm bash -c "[ \$(grep -cE '^root:' /etc/subuid) -eq 1 ]"
 
 # ---------------------------------------------------------- does it run
 
 step "Does a working daemon come out of it"
 
-vm systemctl enable --now polyseatd >/dev/null 2>&1 || true
-sleep 6
-
-check "the unit is active"                vm systemctl is-active --quiet polyseatd
-check "it did not fail and restart"       vm bash -c '[ "$(systemctl show -p NRestarts --value polyseatd)" = "0" ]'
 check "it is the unit from the package"   vm bash -c '[ "$(systemctl show -p FragmentPath --value polyseatd)" = "/usr/lib/systemd/system/polyseatd.service" ]'
 
 # The point of the whole exercise. The daemon is told nothing about where its
@@ -275,23 +367,45 @@ fi
 check "the interface answers on 47800" \
     vm bash -c 'curl -sk -o /dev/null https://127.0.0.1:47800/'
 
-check "and it wants a password set"  \
-    vm bash -c 'curl -sk https://127.0.0.1:47800/api/session | grep -q "\"setup\":true"'
-
 # ------------------------------------------------------------- removing it
 
-step "pacman -R"
+step "Removing it from the interface"
 
-check "the package removes"               vm bash -c 'pacman -R --noconfirm polyseat'
+# The other end of the same argument. A machine that can be installed and
+# prepared without a terminal and only removed with one has not been made much
+# easier to live with.
+check "the removal is accepted" vm bash -c "curl -sk -b /root/jar -X POST -H 'Content-Type: application/json' -d '{\"password\":\"$WEBPASS\"}' https://127.0.0.1:47800/api/uninstall | grep -q removing"
+
+note "it stops the daemon first, so the interface goes with it"
+
+for _ in $(seq 1 30); do
+    vm bash -c '! test -e /usr/bin/polyseatd' && break
+    sleep 2
+done
+
+check "the daemon was stopped"            vm bash -c '! systemctl is-active --quiet polyseatd'
+check "the package is gone"               vm bash -c '! pacman -Qq polyseat >/dev/null 2>&1'
 check "the binary is gone"                vm bash -c '! test -e /usr/bin/polyseatd'
 check "the helpers are gone"              vm bash -c '! test -e /usr/lib/polyseat'
 check "the unit is gone"                  vm bash -c '! test -e /usr/lib/systemd/system/polyseatd.service'
 check "the udev rule is gone"             vm bash -c '! test -e /usr/lib/udev/rules.d/72-polyseat-hide.rules'
 
-# Left behind on purpose, and it is worth a test because the opposite would be
-# somebody's seats and pairings deleted by an uninstall.
+# It removed the file it was running from, which is why it copies itself to /tmp
+# and hands over before it starts.
+check "polyseat-uninstall is gone"        vm bash -c '! test -e /usr/bin/polyseat-uninstall'
+check "and left no copy behind"           vm bash -c '! ls /tmp/polyseat-uninstall.* >/dev/null 2>&1'
+
+# The promise the whole file makes, and the reason the package is removed with -R
+# and not -Rs: on a machine where pacman pulled Incus in as a dependency, the s
+# would take somebody's container manager away with Polyseat.
+check "it did not take Incus with it"     vm pacman -Qq incus
+check "nor bpftrace"                      vm pacman -Qq bpftrace
+
+# Left behind on purpose, and worth a test because the opposite would be
+# somebody's seats and pairings deleted by a button that did not offer to.
 check "the daemon state is kept"          vm test -d /var/lib/polyseat
 check "the idmap range is kept"           vm grep -q '^root:' /etc/subuid
+check "the group membership is kept"      vm bash -c "id -nG $TESTUSER | tr ' ' '\n' | grep -qx input"
 
 step "Result"
 printf '  %d passed, %d failed\n\n' "$pass" "$fail"

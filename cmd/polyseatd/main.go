@@ -24,6 +24,7 @@ import (
 	"github.com/superuser404notfound/Polyseat/internal/auth"
 	"github.com/superuser404notfound/Polyseat/internal/config"
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
+	"github.com/superuser404notfound/Polyseat/internal/prepare"
 	"github.com/superuser404notfound/Polyseat/internal/report"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
 	"github.com/superuser404notfound/Polyseat/internal/update"
@@ -101,22 +102,10 @@ func run(configPath, listenOverride string, logger *slog.Logger) error {
 		}
 	}
 
-	client, err := incusx.Connect()
-	if err != nil {
-		return err
-	}
-
-	defer client.Close()
-
-	if incusVersion, err := client.ServerVersion(); err == nil {
-		logger.Info("connected to Incus", "version", incusVersion)
-	}
-
-	store, err := seat.OpenStore(cfg.StateDir)
-	if err != nil {
-		return err
-	}
-
+	// The password and the certificate come before Incus, because they are
+	// needed either way. A machine that cannot reach Incus still serves a page,
+	// that page still has to be claimed by whoever gets there first, and it
+	// still speaks TLS.
 	credentials, err := auth.Open(cfg.StateDir)
 	if err != nil {
 		return err
@@ -135,13 +124,8 @@ func run(configPath, listenOverride string, logger *slog.Logger) error {
 		return fmt.Errorf("prepare the TLS certificate: %w", err)
 	}
 
-	manager := seat.NewManager(cfg, client, store, logger)
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	managerDone := make(chan error, 1)
-	go func() { managerDone <- manager.Run(ctx) }()
 
 	// On a goroutine of its own rather than on the manager's loop, and nothing
 	// waits for it on the way out. It owns no seat, holds nothing anybody is
@@ -150,9 +134,42 @@ func run(configPath, listenOverride string, logger *slog.Logger) error {
 	updates := update.New(version.Version, cfg.UpdateCheck, logger)
 	go updates.Run(ctx)
 
+	// Shared by both interfaces below, so that "one run at a time" survives the
+	// restart from one into the other.
+	preparer := &prepare.Runner{}
+
+	client, err := incusx.Connect()
+	if err != nil {
+		// Not a reason to exit any more, and this is the whole point of the
+		// setup interface. On a machine that has just installed the package
+		// this is the ordinary case rather than a fault: Incus is one of the
+		// things polyseat-prepare installs, so there is no socket yet. Exiting
+		// meant systemd restarted the daemon every five seconds and the
+		// interface that exists to explain exactly this never came up.
+		return serveSetup(ctx, cfg, certificate,
+			api.NewSetup(cfg, credentials, updates, preparer, err, logger),
+			preparer, err, logger)
+	}
+
+	defer client.Close()
+
+	if incusVersion, err := client.ServerVersion(); err == nil {
+		logger.Info("connected to Incus", "version", incusVersion)
+	}
+
+	store, err := seat.OpenStore(cfg.StateDir)
+	if err != nil {
+		return err
+	}
+
+	manager := seat.NewManager(cfg, client, store, logger)
+
+	managerDone := make(chan error, 1)
+	go func() { managerDone <- manager.Run(ctx) }()
+
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.New(manager, credentials, updates, logger),
+		Handler:           api.New(manager, credentials, updates, preparer, logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{certificate},
@@ -227,4 +244,132 @@ func run(configPath, listenOverride string, logger *slog.Logger) error {
 	}
 
 	return failure
+}
+
+// serveSetup runs the interface a machine gets when Incus cannot be reached.
+//
+// Everything here is the ordinary path with the seats taken out: the same
+// address, the same certificate, the same password, and a handler that offers
+// preparing the machine instead of managing seats. What it does not do is exit,
+// which is what this used to do and what made the problem invisible.
+func serveSetup(ctx context.Context, cfg config.Config, certificate tls.Certificate, handler http.Handler, preparer *prepare.Runner, reason error, logger *slog.Logger) error {
+	logger.Error("Incus is not answering, so no seat can run on this machine yet",
+		"error", reason)
+	logger.Info("serving the interface that gets this machine ready instead",
+		"address", "https://"+cfg.Listen,
+		"prepare", "the page has a button, or run: sudo polyseat-prepare")
+
+	server := &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{certificate},
+			MinVersion:   tls.VersionTLS12,
+		},
+	}
+
+	serverDone := make(chan error, 1)
+
+	go func() {
+		err := server.ListenAndServeTLS("", "")
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+
+		serverDone <- err
+	}()
+
+	go watchForIncus(ctx, preparer, logger)
+
+	var failure error
+
+	select {
+	case <-ctx.Done():
+		logger.Info("shutting down")
+	case err := <-serverDone:
+		if err != nil {
+			logger.Error("the web interface stopped", "error", err)
+			failure = err
+		}
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_ = server.Shutdown(shutdownCtx)
+
+	return failure
+}
+
+// incusPoll is how often the setup interface looks to see whether Incus has
+// turned up. Not urgent: the two things that make it appear are somebody
+// pressing the button on the page, which takes minutes, and a boot where the
+// socket was not ready yet, which takes seconds and only happens once.
+const incusPoll = 15 * time.Second
+
+// watchForIncus restarts the daemon once there is an Incus to talk to.
+//
+// The daemon reaches Incus at startup or not at all: the manager, the store and
+// every seat hang off that connection, so a daemon that came up without one
+// cannot grow the rest of itself afterwards without becoming two daemons in one
+// binary. A restart is the honest way across, and it costs nothing here because
+// there is nothing running to interrupt.
+//
+// This is also what makes preparing the machine from the page finish by itself.
+// The last thing prepare.sh does is bring Incus up, so within a poll of it
+// succeeding the daemon comes back as the real one, and the page it was pressed
+// from reloads into the interface it was always meant to be.
+func watchForIncus(ctx context.Context, preparer *prepare.Runner, logger *slog.Logger) {
+	tick := time.NewTicker(incusPoll)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-tick.C:
+			// Not in the middle of preparing the machine. Incus comes up
+			// several steps before that script is finished, and a restart here
+			// would take the daemon's whole control group with it, pacman
+			// included: KillMode=mixed means everything still running gets a
+			// SIGKILL. A pacman killed halfway leaves a lock and a partly
+			// applied transaction, which is a worse machine than the one this
+			// started with.
+			if preparer.Running() {
+				continue
+			}
+
+			client, err := incusx.Connect()
+			if err != nil {
+				continue
+			}
+
+			client.Close()
+
+			// Nothing restarts a daemon nobody started as a service, and
+			// telling systemd to restart polyseatd.service from a copy somebody
+			// is running by hand would restart the wrong process entirely.
+			// systemd sets this for everything it runs.
+			if os.Getenv("INVOCATION_ID") == "" {
+				logger.Info("Incus is answering now. This polyseatd was not started by systemd, so start it again to pick the seats up")
+
+				return
+			}
+
+			logger.Info("Incus is answering now, restarting into the ordinary interface")
+
+			if err := update.Restart(); err != nil {
+				// Logged and tried again on the next tick rather than given up
+				// on. The page still has its own restart button, and a machine
+				// that is ready and says so is not a machine in trouble.
+				logger.Error("the restart could not be scheduled", "error", err)
+
+				continue
+			}
+
+			return
+		}
+	}
 }

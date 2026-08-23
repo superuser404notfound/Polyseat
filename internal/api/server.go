@@ -22,6 +22,7 @@ import (
 	"github.com/superuser404notfound/Polyseat/internal/auth"
 	"github.com/superuser404notfound/Polyseat/internal/config"
 	"github.com/superuser404notfound/Polyseat/internal/library"
+	"github.com/superuser404notfound/Polyseat/internal/prepare"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
 	"github.com/superuser404notfound/Polyseat/internal/sunshine"
 	"github.com/superuser404notfound/Polyseat/internal/update"
@@ -31,10 +32,36 @@ import (
 
 // Server exposes the manager over HTTP.
 type Server struct {
+	// manager is nil in setup mode, which is the mode this daemon comes up in
+	// when it cannot reach Incus. Everything that touches seats is left
+	// unregistered there, and the handful of handlers that serve both modes ask
+	// through config, streaming and notify rather than reaching for it. See
+	// NewSetup.
 	manager *seat.Manager
+
 	auth    *auth.Store
 	updates *update.Checker
 	log     *slog.Logger
+
+	// setupConfig is what config() answers with when there is no manager to ask.
+	setupConfig config.Config
+
+	// setupReason is why Incus could not be reached, in the words the client
+	// library used. Shown on the page, because "not ready" without a reason
+	// sends people to the journal for the one line that was already known.
+	setupReason string
+
+	// prepare runs host/prepare.sh for the interface. Shared between the two
+	// modes rather than made per server, so that the one-run-at-a-time rule
+	// holds across a restart into the other one.
+	prepare *prepare.Runner
+
+	// removing is set once the removal has been handed to systemd, for the
+	// couple of seconds this process has left. Without it the page has nothing
+	// to show between pressing the button and the connection going away, which
+	// looks exactly like a button that did nothing.
+	removingMu sync.Mutex
+	removing   bool
 
 	// updater is the state of an update started from the interface.
 	//
@@ -90,9 +117,14 @@ type updaterState struct {
 }
 
 // New builds the HTTP handler.
-func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker, logger *slog.Logger) http.Handler {
+func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker, preparer *prepare.Runner, logger *slog.Logger) http.Handler {
+	if preparer == nil {
+		preparer = &prepare.Runner{}
+	}
+
 	s := &Server{
-		manager: manager, auth: credentials, updates: updates, log: logger,
+		manager: manager, auth: credentials, updates: updates,
+		prepare: preparer, log: logger,
 
 		// Asked once, here, and not on every request. It runs pacman, which
 		// takes about a tenth of a second, and the interface asks for its state
@@ -121,6 +153,8 @@ func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker
 	guarded.HandleFunc("POST /api/provision-stale", s.provisionStale)
 	guarded.HandleFunc("POST /api/update", s.applyUpdate)
 	guarded.HandleFunc("POST /api/restart", s.restart)
+	guarded.HandleFunc("POST /api/prepare", s.prepareHost)
+	guarded.HandleFunc("POST /api/uninstall", s.removeHost)
 	guarded.HandleFunc("PATCH /api/seats/{name}", s.updateSeat)
 	guarded.HandleFunc("DELETE /api/seats/{name}", s.deleteSeat)
 	guarded.HandleFunc("GET /api/seats/{name}/log", s.seatLog)
@@ -249,6 +283,13 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		"authenticated": valid,
 		"username":      s.auth.Username(),
 		"setup":         s.auth.NeedsSetup(),
+
+		// Which of the two interfaces this is, answered before there is a
+		// session to ask anything else with. The page has to know whether to
+		// draw seats or the panel that gets the machine ready, and finding out
+		// by fetching state and looking at what came back would mean drawing
+		// the wrong one first.
+		"ready": s.ready(),
 	})
 }
 
@@ -395,8 +436,38 @@ type stateResponse struct {
 	Update  *update.Release `json:"update"`
 	Updater updaterState    `json:"updater"`
 
+	// Ready is whether this is the whole interface or the one that comes up
+	// when the daemon cannot reach Incus. Always true here and always false
+	// there, and sent from both so that the page has one field to branch on
+	// rather than a guess about which keys are missing.
+	Ready bool `json:"ready"`
+
+	// Prepare and Remove are the two things the interface does to the machine
+	// rather than to a seat. Both are here rather than behind endpoints of
+	// their own, because the page needs to know whether to offer them at all
+	// before anybody presses anything: an install from a checkout has no
+	// polyseat-prepare to run, and a configuration can turn either off.
+	Prepare prepare.State `json:"prepare"`
+	Remove  removeState   `json:"remove"`
+
 	Warnings []string  `json:"warnings"`
 	Now      time.Time `json:"now"`
+}
+
+// removeState is what the page needs to decide whether to offer removal.
+type removeState struct {
+	// Enabled is the web_uninstall setting and Available is whether the script
+	// that does the work is installed. Reported separately for the same reason
+	// the updater reports two: one is a choice somebody made and the other is
+	// how this was installed, and the sentences differ.
+	Enabled   bool   `json:"enabled"`
+	Available bool   `json:"available"`
+	Reason    string `json:"reason"`
+
+	// Running is set between handing the removal to systemd and this process
+	// being stopped by it, which is a couple of seconds during which the page
+	// should say what is happening rather than nothing.
+	Running bool `json:"running"`
 }
 
 type hostInfo struct {
@@ -462,6 +533,9 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 		},
 		Update:   s.updates.Available(),
 		Updater:  s.updaterState(),
+		Ready:    true,
+		Prepare:  s.prepare.State(),
+		Remove:   s.removeState(),
 		Warnings: s.warnings(),
 		Now:      time.Now(),
 	}
@@ -531,10 +605,11 @@ func (s *Server) warnings() []string {
 	case "failed":
 		out = append(out, "The uhid observer gave up: this kernel has no "+
 			"uhid_dev_create2 for it to watch, which almost always means uhid "+
-			"is a module that is not loaded. Run modprobe uhid and restart "+
-			"polyseatd, and host/prepare.sh will keep it loaded across a "+
-			"reboot. Gamepads go on working; they are attributed to a seat by "+
-			"name rather than structurally until then.")
+			"is a module that is not loaded. Prepare this machine, under "+
+			"Machine, loads it and keeps it loaded across a reboot, and the "+
+			"probe attaches when the daemon restarts. Gamepads go on working; "+
+			"they are attributed to a seat by name rather than structurally "+
+			"until then.")
 	default:
 		out = append(out, "The uhid observer is not running. Gamepads can then "+
 			"only be attributed to a seat by name, not structurally.")
@@ -1252,20 +1327,61 @@ func fail(w http.ResponseWriter, status int, err error) {
 
 // ------------------------------------------------------------------- updating
 
+// config is the configuration, from wherever this server has one.
+//
+// The manager owns it in the ordinary case, because the manager is what acts on
+// it. In setup mode there is no manager, and the copy the daemon loaded at
+// startup is the whole truth.
+func (s *Server) config() config.Config {
+	if s.manager == nil {
+		return s.setupConfig
+	}
+
+	return s.manager.Config()
+}
+
+// streaming is who is playing right now, and nobody at all when there are no
+// seats to play in.
+func (s *Server) streaming() []string {
+	if s.manager == nil {
+		return nil
+	}
+
+	return s.manager.Streaming()
+}
+
+// updating says whether an update started from the interface is running. Asked
+// by everything else that runs pacman, because the second one would sit on the
+// database lock and fail in a way that says nothing about why.
+func (s *Server) updating() bool {
+	s.updaterMu.Lock()
+	defer s.updaterMu.Unlock()
+
+	return s.updaterOn
+}
+
+// notify pushes a change to the pages that are watching, where there is
+// anything to push it through.
+func (s *Server) notify() {
+	if s.manager != nil {
+		s.manager.Notify()
+	}
+}
+
 // updaterState answers what the page needs without doing anything.
 func (s *Server) updaterState() updaterState {
 	s.updaterMu.Lock()
 	defer s.updaterMu.Unlock()
 
 	out := updaterState{
-		Enabled:       s.manager.Config().WebUpdate,
-		NeedsPassword: s.manager.Config().UpdateNeedsPassword,
+		Enabled:       s.config().WebUpdate,
+		NeedsPassword: s.config().UpdateNeedsPassword,
 		Managed:       s.managed,
 		Running:       s.updaterOn,
 		Log:           append([]string{}, s.updaterLog...),
 		Error:         s.updaterErr,
 		Installed:     s.updaterVersion,
-		Streaming:     s.manager.Streaming(),
+		Streaming:     s.streaming(),
 	}
 
 	if out.Streaming == nil {
@@ -1286,7 +1402,7 @@ func (s *Server) updaterState() updaterState {
 // so a password alone reaches nothing. It is a second question, not a second
 // door.
 func (s *Server) confirmed(r *http.Request) error {
-	return confirmPassword(s.auth, s.manager.Config().UpdateNeedsPassword, r)
+	return confirmPassword(s.auth, s.config().UpdateNeedsPassword, r)
 }
 
 // confirmPassword is the check itself, apart from the server that calls it.
@@ -1353,7 +1469,7 @@ func confirmPassword(store *auth.Store, needed bool, r *http.Request) error {
 // installing somebody's own package, and it is the property to preserve if this
 // handler ever grows an argument.
 func (s *Server) applyUpdate(w http.ResponseWriter, r *http.Request) {
-	if !s.manager.Config().WebUpdate {
+	if !s.config().WebUpdate {
 		fail(w, http.StatusForbidden, errors.New(`updating from the interface is off. Set "web_update": true in /etc/polyseat/polyseatd.json, or use host/update.sh`))
 
 		return
@@ -1367,6 +1483,14 @@ func (s *Server) applyUpdate(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("an update was asked for with the wrong password",
 			"source", auth.Source(r))
 		fail(w, http.StatusUnauthorized, err)
+
+		return
+	}
+
+	// Two pacman transactions at once is one database lock and a failure that
+	// names the lock rather than the reason. Refused where it can be explained.
+	if s.prepare.Running() {
+		fail(w, http.StatusConflict, errors.New("this machine is being prepared, which is already running pacman. Wait for that to finish"))
 
 		return
 	}
@@ -1405,7 +1529,7 @@ func (s *Server) applyUpdate(w http.ResponseWriter, r *http.Request) {
 	s.updaterVersion = ""
 	s.updaterMu.Unlock()
 
-	s.manager.Notify()
+	s.notify()
 
 	// Detached from the request on purpose. A seven megabyte download and a
 	// pacman transaction outlast a phone locking its screen, and an update that
@@ -1427,7 +1551,7 @@ func (s *Server) runUpdate(rel *update.Release) {
 		s.updaterMu.Unlock()
 
 		s.log.Info("update", "line", line)
-		s.manager.Notify()
+		s.notify()
 	}
 
 	// Not the request's context, which ends when the browser goes away, and a
@@ -1456,7 +1580,7 @@ func (s *Server) runUpdate(rel *update.Release) {
 			"version", rel.Version)
 	}
 
-	s.manager.Notify()
+	s.notify()
 }
 
 // restart schedules a restart of the daemon, refusing while somebody plays.
@@ -1467,8 +1591,18 @@ func (s *Server) runUpdate(rel *update.Release) {
 // does better than host/update.sh, which has to work out whether anybody is
 // streaming: the interface already knows.
 func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
-	if !s.manager.Config().WebUpdate {
+	if !s.config().WebUpdate {
 		fail(w, http.StatusForbidden, errors.New(`restarting from the interface is off. Set "web_update": true in /etc/polyseat/polyseatd.json`))
+
+		return
+	}
+
+	// Not in the middle of preparing this machine. The script runs as a child
+	// of this process and a restart takes the whole control group with it, so
+	// this would leave a pacman killed halfway, a lock behind it and a
+	// transaction half applied.
+	if s.prepare.Running() {
+		fail(w, http.StatusConflict, errors.New("this machine is being prepared. A restart now would kill pacman halfway through it"))
 
 		return
 	}
@@ -1477,7 +1611,7 @@ func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
 	// "yes, end their game", which is a thing somebody may legitimately mean on
 	// their own machine. It cannot name what to install or what to run.
 	if r.URL.Query().Get("force") != "true" {
-		if busy := s.manager.Streaming(); len(busy) > 0 {
+		if busy := s.streaming(); len(busy) > 0 {
 			fail(w, http.StatusConflict, fmt.Errorf("somebody is streaming on %s. Restarting now would drop their controller", strings.Join(busy, ", ")))
 
 			return

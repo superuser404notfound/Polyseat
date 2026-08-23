@@ -40,7 +40,6 @@ The packages Polyseat itself needs, the installer works out and installs.
 ```
 curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
 sudo pacman -U polyseat-x86_64.pkg.tar.zst
-sudo polyseat-prepare
 sudo systemctl enable --now polyseatd
 ```
 
@@ -49,10 +48,9 @@ signature that these packages do not carry yet. The link has no version in it
 and never will: it is always the newest release, and `pacman -Qi polyseat` says
 which one arrived.
 
-`polyseat-prepare` is a separate command because a package is not allowed to do
-what it does: install the missing packages, bring Incus up, check the driver,
-and put your account in the `input` group. Both commands can be run again over
-themselves without undoing anything.
+That is the whole of the command line. The machine itself is not ready yet, and
+that part happens in the page: a package is not allowed to do it, and the daemon
+is. Preparing it and removing Polyseat again are both buttons.
 
 Not in the AUR, and anything that turns up there under this name is not this.
 Who does what, and why it is split this way:
@@ -69,17 +67,29 @@ The interface answers on the whole network, so seats can be managed from the
 same phone that runs Moonlight. To keep it on this machine only, set `listen`
 to `127.0.0.1:47800` in `/etc/polyseat/polyseatd.json`.
 
-**3. Add a seat and press provision.** The daemon does the rest: image,
+**3. Press *Prepare this machine*.** The page says the machine is not ready,
+because it is not: Polyseat is installed and the things it talks to are not.
+That button installs the missing packages, writes the idmap range every
+container start needs, brings Incus up and initialises it, checks that the
+graphics driver answers, and puts your account in the `input` group. It reports
+each step as it happens, and every step checks before it changes anything, so
+pressing it again on a machine that is already ready changes nothing.
+
+`sudo polyseat-prepare` is the same thing from a terminal, down to the same
+file, if you would rather watch it there. Either way, Polyseat restarts into its
+own interface a few seconds after Incus comes up, and the page follows it.
+
+**4. Add a seat and press provision.** The daemon does the rest: image,
 packages, driver, Steam, desktop, session. It takes a few minutes and the card
 shows each step as it happens.
 
-**4. Pair a device.** Open *Devices and pairing* on the seat's card, point
+**5. Pair a device.** Open *Devices and pairing* on the seat's card, point
 Moonlight at the address shown at the top of that card, and type the PIN
 Moonlight gives you into that field. The same panel lists what is already
 paired and can unpair it. Every seat is paired here, rather than in a Sunshine
 page of its own.
 
-That is all. Repeat 3 and 4 for the second person.
+That is all. Repeat 4 and 5 for the second person.
 
 ## Updating
 
@@ -102,12 +112,16 @@ differently, the interface names the ones that are behind and offers one button
 to bring them up to date, at a moment you pick rather than in the middle of
 somebody's game.
 
-That update button is the one thing in the interface that reaches root.
-`"web_update": false` in `/etc/polyseat/polyseatd.json` turns it off, and
-`"update_needs_password": true` makes it ask for the interface password when it
-is pressed. What it never does is let the browser say what to install: it takes
-the release the daemon found itself, from this project's own downloads, and
-checks it against the checksum that release states.
+Three things in the interface reach root, and this is one: installing a release,
+preparing the machine, and removing Polyseat. `"web_update": false` in
+`/etc/polyseat/polyseatd.json` turns off the first two, `"web_uninstall": false`
+turns off the third, and `"update_needs_password": true` makes the first two ask
+for the interface password when they are pressed. Removing asks for it either
+way.
+
+What the update never does is let the browser say what to install: it takes the
+release the daemon found itself, from this project's own downloads, and checks
+it against the checksum that release states.
 
 The check for a new version is one request to GitHub every six hours, it sends
 nothing about the machine, and it installs nothing on its own.
@@ -117,23 +131,38 @@ serving is at the bottom of the interface.
 
 ## Removing it
 
+*Machine* in the interface, then **Remove Polyseat**. It asks for the password
+again, because it is the one button here that pressing a second time does not
+undo. At a terminal it is the same file:
+
 ```
-sudo systemctl stop polyseatd
-sudo pacman -Rns polyseat
+sudo polyseat-uninstall
 ```
 
-**Your seats stay.** This takes out the daemon, its unit, the udev rule and the
-helpers, and touches neither the containers nor `/var/lib/polyseat`. Install it
-again and the seats come back as they were.
+**Your seats stay**, unless the box that says otherwise is ticked. This takes out
+the daemon, its unit, the udev rule, the helpers and the package, and touches
+neither the containers nor `/var/lib/polyseat`. Install it again and the seats
+come back as they were.
 
-Stopping the daemon first is yours to do, because removing a package does not
-end a process that is already running.
+**To take the seats with it**, tick *Delete the seats as well*, or
+`sudo polyseat-uninstall --seats`. The shared game library is kept even then,
+because the seats' copies come back from it in a second by sharing blocks where
+downloading them again does not; `--library`, or the second box, removes that
+too.
 
-**To take the seats with it**, use `host/install.sh --purge` from a checkout. It
-asks first, stops the daemon before touching anything, and keeps the shared game
-library so the games do not have to be downloaded again; `--library` removes
-that too. Incus and the other packages are not Polyseat's to remove and stay
-where they are.
+The daemon is stopped before anything it owns is touched, and that order is the
+reason this is a command rather than a paragraph: deleting a container while the
+daemon is still supervising it is what leaves Incus with a stop that never
+finishes.
+
+Incus, bpftrace and python stay where they are. They are not Polyseat's to
+remove, which is also why the package goes with `pacman -R` rather than `-Rns`:
+on a machine where pacman pulled Incus in as a dependency, the `s` would take
+somebody's container manager away.
+
+The interface stops answering a moment in, because the daemon serving it is the
+first thing to stop. That is what it looks like when it worked, and the rest of
+the run is in the journal: `journalctl -u polyseat-uninstall`.
 
 ## What it does
 

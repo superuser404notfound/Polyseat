@@ -10,7 +10,14 @@
 
 <header class="top">
   <h1>Polyseat</h1>
-  <button id="account" class="quiet account" hidden>Account</button>
+
+  <!-- Two buttons rather than one, and the machine is the new one. Everything
+       else in this page is about a seat; these are about the host it runs on,
+       which is the half that used to need a terminal. -->
+  <div class="tools" id="tools" hidden>
+    <button id="machine-open" class="quiet">Machine</button>
+    <button id="account" class="quiet">Account</button>
+  </div>
   <div class="host">
     <span id="hostname"></span>
     <span id="observer" class="pill" title="The uhid observer records which container created which gamepad."></span>
@@ -93,6 +100,40 @@
        with everything else at sign out and never appears on the login form. -->
   <footer class="version" id="version"></footer>
 </main>
+
+<!-- The interface a machine gets before it can run a seat.
+     Shown instead of the app when the daemon came up without an Incus to talk
+     to, which on a machine that has just installed the package is not a fault:
+     Incus is one of the things preparing it installs. -->
+<section id="notready" class="notready" hidden>
+  <h2>This machine is not ready yet</h2>
+  <p class="hint" id="notready-reason"></p>
+
+  <div id="notready-panels"></div>
+
+  <footer class="version" id="notready-version"></footer>
+</section>
+
+<!-- After the removal has been handed to systemd. The daemon serving this page
+     is the first thing it stops, so this is the last thing the page can say. -->
+<section id="farewell" class="notready" hidden>
+  <h2>Polyseat is being removed</h2>
+  <p class="hint" id="farewell-detail"></p>
+</section>
+
+<!-- The host rather than the seats: getting this machine ready, and taking
+     Polyseat off it again. Not a form, because both halves inside it are, and a
+     form inside a form is not a thing a browser will parse. -->
+<dialog id="machine">
+  <h2>This machine</h2>
+
+  <div id="machine-body"></div>
+
+  <menu>
+    <span class="spacer"></span>
+    <button type="button" id="machine-close">Close</button>
+  </menu>
+</dialog>
 
 <dialog id="editor">
   <form method="dialog" id="editor-form">

@@ -6,9 +6,22 @@ cover as well, and what must not end up in it.
 
 ## The rule
 
-**The installer does what a daemon cannot do for itself.** Everything else
-belongs to the daemon, and the web interface does nothing at all except talk to
-the daemon.
+**The installer does what a package may not do.** Everything else belongs to the
+daemon, and the web interface does nothing at all except talk to the daemon.
+
+That used to read "what a daemon cannot do for itself", and the difference is
+the whole of the change in 0.4.0. A daemon running as root can write
+`/etc/subuid` and call `usermod` perfectly well; what cannot do those things is
+an *Arch package*, and that is a rule about packaging rather than about
+privilege. So the machine half stays exactly where it was, in one script, and it
+grew a third caller: the interface runs it too. What is left that genuinely
+cannot be done from inside is smaller than it looks — installing the package,
+and starting the unit — and it is two lines of shell, once, per machine.
+
+The property that has to survive any change here: **the browser never says what
+to run.** Preparing runs one fixed script and takes one argument out of the
+request, the account that goes in the `input` group. Removing runs one fixed
+script and takes two flags. Neither takes a path, a command or a package name.
 
 ## The second line, inside the installer
 
@@ -19,8 +32,17 @@ of them can be packaged.
 the driver check, the filesystem probe, the uplink, the group. An Arch package
 may place files and pull in dependencies, and it may not run `incus admin init`,
 write to `/etc/subuid` or add an account to a group. So this half is a script,
-the package installs it as `polyseat-prepare`, and its post-install message asks
-for it. Everything about it is safe to run again: it checks before it changes,
+the package installs it as `polyseat-prepare`, and there are three ways to run
+it: from a terminal, from `install.sh`, and from the web interface.
+
+The third way is why the script now avoids two things it used to take for
+granted. It reads no terminal it has not tested for, which it already did for
+the driver question; and it takes `POLYSEAT_INPUT_USER` for the account that
+goes in the `input` group, because `SUDO_USER` answers that question only when a
+person invoked it and a daemon started by systemd at boot has nobody to ask.
+`NO_COLOR` and `POLYSEAT_FROM_DAEMON` are the other two: escape codes are noise
+in a browser, and the closing "now start it" is wrong when it is already
+running. Everything about it is safe to run again: it checks before it changes,
 and an entry that already exists is left exactly as it is, including when it is
 narrower than the one it would have written.
 
@@ -164,8 +186,17 @@ because somebody who installed the package has no checkout to find them in:
 | in the repository | installed as |
 |---|---|
 | `host/prepare.sh` | `polyseat-prepare` |
+| `host/uninstall.sh` | `polyseat-uninstall` |
 | `host/lan-bridge.sh` | `polyseat-lan-bridge` |
 | `host/check-hardening.sh` | `polyseat-check-hardening` |
+
+The first two are also placed by `install.sh`, into `/usr/local/bin`, which the
+other two are not. That is not symmetry for its own sake: the daemon looks those
+two up by name, `/usr/local` first and `/usr` second, the same order it uses for
+the input helpers, and a daemon built from a checkout has no way to find the
+checkout it came from. Without them the two buttons in the interface would have
+nothing to run. Nothing looks the other two up, and whoever has a checkout has
+them under `host/` already.
 
 The rest stay in the repository, because they are about the repository:
 `install.sh` and `update.sh` are the checkout's own way in and out,
@@ -256,10 +287,19 @@ be easy to bake the assumption in without noticing.
 **Passwordless sudo is not required.** Nothing in the daemon calls `sudo` on the
 host; it is already root. The two `sudo -u player` calls run *inside* a
 container, invoked by that container's root, and sudo does not authenticate a
-caller whose uid is 0. The whole installation costs two password prompts:
+caller whose uid is 0. The whole installation costs two password prompts, from a
+checkout:
 
 ```
 sudo ./host/install.sh
+sudo systemctl enable --now polyseatd
+```
+
+and two from the package, which is the shorter of the two paths now that the
+machine half moved into the interface:
+
+```
+sudo pacman -U polyseat-x86_64.pkg.tar.zst
 sudo systemctl enable --now polyseatd
 ```
 
@@ -331,6 +371,43 @@ either for the same reason.
 reported rather than changed, because the remaining measures cost the machine
 its text consoles. That judgement belongs to the operator, not to an installer.
 
+## Before the machine is ready
+
+The daemon used to exit when it could not reach Incus, and on a machine that has
+just installed the package that is every time: Incus is one of the things
+`prepare.sh` installs, so there is no socket to connect to. systemd brought it
+back five seconds later, and the interface that exists to explain exactly this
+was the one thing that never came up.
+
+It serves a smaller interface instead, from the same address with the same
+certificate and the same password, and that password is the one that is there
+afterwards. What is registered in that mode is what needs no seat: claiming the
+machine, signing in, preparing it, restarting, and removing Polyseat.
+Everything about seats is left unregistered rather than guarded, because the
+manager those handlers talk to does not exist there. The handful that serve both
+modes ask for the configuration through an accessor rather than through the
+manager, which is the whole of what they had to learn.
+
+The daemon reaches Incus at startup or not at all — the manager, the store and
+every seat hang off that connection — so it does not grow the rest of itself
+afterwards. It restarts into it. A goroutine looks for Incus every fifteen
+seconds and schedules the restart through the same transient unit an update
+uses, which is what makes preparing from the page finish by itself: the last
+thing `prepare.sh` does is bring Incus up, and nobody has to be told what to
+press next.
+
+Two things that watcher deliberately does not do:
+
+* **It does not restart while a prepare is running.** Incus comes up several
+  steps before that script is finished, and `KillMode=mixed` means a restart
+  takes the daemon's whole control group with it, pacman included. A pacman
+  killed halfway leaves a lock and a partly applied transaction, which is a
+  worse machine than the one this started with. The restart button and the
+  update button refuse for the same reason.
+* **It does not restart what systemd did not start.** systemd sets
+  `INVOCATION_ID` for everything it runs; without it, telling systemd to restart
+  `polyseatd.service` would restart a different process than the one running.
+
 ## What the daemon does instead
 
 Everything per-seat and everything at runtime. This was a list of shell scripts
@@ -357,11 +434,29 @@ by the daemon and everything else is a generated artifact, as set out in
 
 ## Removing it again
 
-`--uninstall` takes out the daemon, its unit, the udev rule and the helpers, and
-deliberately leaves the seats, their containers and `/var/lib/polyseat` alone.
-Installing again picks them up where they were.
+`host/uninstall.sh`, installed as `polyseat-uninstall`, and it is one file for
+the same reason `prepare.sh` is: three ways in and one procedure.
+`install.sh --uninstall` and `--purge` hand over to it, the package ships it so
+that a machine which never had a checkout has a way out, and the daemon runs it
+in a transient systemd unit when somebody presses the button in the interface.
 
-`--purge` takes the seats as well, and exists for the order it does things in
+Three things about it are not obvious and all three were paid for:
+
+**It runs from a copy of itself.** `pacman -R polyseat` deletes
+`/usr/bin/polyseat-uninstall` while bash is reading it, and bash reads a script
+in chunks and comes back for the next one at a command boundary. So the first
+thing the file does is copy itself into `/tmp` and hand over.
+
+**It removes the package with `-R` and not `-Rs`.** The package depends on
+incus, bpftrace and python. On a machine where somebody installed Polyseat first
+and let pacman pull Incus in as a dependency, `-s` takes their container manager
+away with it. The readme said `-Rns` before this file existed, which was that
+same trap written down.
+
+**The daemon stops first, before anything it owns is touched**, which is why
+this is a command rather than a paragraph in a document.
+
+`--seats` takes the seats as well, and exists for the order it does things in
 rather than for the list of things it removes. The daemon supervises every seat
 and reads inside each running one every ten seconds; deleting a container while
 that is going on lands an exec in a shutdown, and Incus answers with a "Stopping
@@ -373,6 +468,13 @@ both the order and the way out are written into the script:
 * stop each seat, wait a minute, and if Incus has accepted the stop and left the
   container running anyway, kill its cgroup and restart Incus
 * only then delete the containers and the daemon's state
+* and only then take the files and the package away
+
+The interface offers exactly the same three choices, because it runs exactly the
+same file: the daemon only, the seats with it, and the library with those. What
+it adds is that the password is asked for every time, whatever
+`update_needs_password` says, and that deleting seats needs the word typed out.
+`"web_uninstall": false` turns the button off and leaves the command.
 
 The seat names come from the seat records and from nowhere else. Matching
 container names against a pattern would put an unrelated container one typo away
@@ -417,6 +519,20 @@ Everything in it was learned by doing it by hand three times:
 `host/test-install.sh` runs the installer against a throwaway Arch **virtual
 machine** and checks what it did, including that a second run changes nothing
 and that `--uninstall` removes what it should and keeps what it should.
+
+`host/test-package.sh` covers the other way in, and since 0.4.0 it takes the
+path somebody with a browser takes rather than the one somebody with a terminal
+takes: install the package, start the daemon on a machine that has no Incus,
+check that it stays up and says so, claim it over HTTPS, press prepare through
+the API, wait for it, and check that the daemon restarts into the ordinary
+interface by itself. Then `polyseat-prepare` is run over the top from a
+terminal, which is the idempotence check and the other caller at once, and the
+removal goes through the interface as well.
+
+Two of those checks are worth naming, because they are the ones a change here
+would break quietly: that the password chosen while the machine was not ready is
+still the password afterwards, and that the removal left Incus and bpftrace
+installed.
 
 The check that matters most is not a file check. An installer can put every file
 in the right place and still leave a machine where nothing runs, so the harness

@@ -14,6 +14,13 @@ const el = (id) => document.getElementById(id);
 
 let state = null;
 let library = null;
+
+// Whether this daemon is serving the whole interface or the one that gets the
+// machine ready. Answered by /api/session before anything is drawn, so that a
+// machine without an Incus shows the panel that fixes that rather than a flash
+// of an empty seat list.
+let ready = true;
+
 let openLogs = new Set();
 let openPairing = new Set();
 let openSoftware = new Set();
@@ -390,6 +397,11 @@ function render() {
 
   // The list is absent rather than empty when there is nothing to warn about,
   // and calling map on that is what silently broke the whole page once.
+  // Behind the dialog rather than in the page, but a prepare running there
+  // reports a line at a time like everything else, and a log that only moves
+  // when the dialog is reopened reads as one that has stopped.
+  updateMachine();
+
   el("warnings").replaceChildren(
     ...updateBanner(),
     ...staleBanner(),
@@ -1740,8 +1752,12 @@ function showLogin(setup) {
     stream = null;
   }
 
+  stopSetupPoll();
+
   el("app").hidden = true;
-  el("account").hidden = true;
+  el("notready").hidden = true;
+  el("farewell").hidden = true;
+  el("tools").hidden = true;
   el("login").hidden = false;
   el("hostname").textContent = "";
   el("observer").hidden = true;
@@ -1760,11 +1776,23 @@ function showLogin(setup) {
 }
 
 function showApp() {
-  el("login").hidden = true;
-  el("app").hidden = false;
-  el("account").hidden = false;
   el("login-form").password.value = "";
   el("login-error").textContent = "";
+
+  // A daemon that cannot reach Incus serves a page of its own, and there is no
+  // point asking it for seats: it has no manager to ask. See showSetup.
+  if (!ready) {
+    showSetup();
+
+    return;
+  }
+
+  el("login").hidden = true;
+  el("notready").hidden = true;
+  el("farewell").hidden = true;
+  el("app").hidden = false;
+  el("tools").hidden = false;
+  el("machine-open").hidden = false;
 
   refresh();
   connect();
@@ -2006,6 +2034,579 @@ async function saveEditor(event) {
   }
 }
 
+// -------------------------------------------------------------- the machine
+
+// The two things this interface does to the machine rather than to a seat:
+// getting it ready, and taking Polyseat off it again. Everything else on this
+// page is about seats, and these two were the parts that used to need a
+// terminal at each end of Polyseat's life.
+//
+// Built here and mounted in two places, because two pages need the same
+// panels: the dialog behind the Machine button, and the page a daemon serves
+// when it came up without an Incus to talk to. A second copy would be a second
+// set of the same bugs.
+//
+// Each builder returns a node and an update, rather than being redrawn from
+// scratch the way a seat card is. The daemon pushes a token per log line, and
+// redrawing here would empty the password field somebody was halfway through
+// typing.
+
+// runHost is run() with the failure shown in the panel rather than in an alert,
+// and without the sign out.
+//
+// api() reports every 401 as an expired session, which is right everywhere else
+// and wrong here: both of these ask for the password again at the moment they
+// act, so the commonest 401 they see is a password typed wrong, and signing
+// somebody out of a working session for that would be an odd way to say "try
+// again".
+async function runHost(where, handler) {
+  where.hidden = true;
+
+  try {
+    await handler();
+  } catch (err) {
+    where.hidden = false;
+    where.textContent = err.message || String(err);
+
+    return false;
+  }
+
+  return true;
+}
+
+// fillAccounts puts the machine's accounts in the list without disturbing a
+// choice already made.
+function fillAccounts(select, accounts) {
+  const want = JSON.stringify(accounts);
+  if (select.dataset.accounts === want) return;
+
+  const chosen = select.value;
+
+  select.replaceChildren();
+
+  for (const name of accounts) select.append(new Option(name, name));
+
+  // Last rather than first, so that the ordinary machine with one human account
+  // offers that account by default. Nobody is a real answer all the same: a
+  // headless host has no one at a keyboard, and this grants read access to
+  // every input device on the machine.
+  select.append(new Option("nobody", ""));
+
+  select.dataset.accounts = want;
+
+  if (chosen && accounts.includes(chosen)) select.value = chosen;
+}
+
+function preparePanel(options) {
+  const box = document.createElement("section");
+  box.className = "panel";
+
+  const title = document.createElement("h3");
+  title.textContent = "Prepare this machine";
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent =
+    "Installs the packages the daemon talks to, writes the idmap range every " +
+    "container start needs, brings Incus up and initialises it, checks that the " +
+    "graphics driver answers, and puts an account in the input group. It is the " +
+    "same thing sudo polyseat-prepare does, because it is the same file. Every " +
+    "step checks before it changes anything, so a machine that is already ready " +
+    "is left as it is.";
+
+  const why = document.createElement("p");
+  why.className = "hint";
+  why.hidden = true;
+
+  const label = document.createElement("label");
+  label.className = "field";
+  label.append("Account for the input group");
+
+  const select = document.createElement("select");
+  label.append(select);
+
+  const about = document.createElement("small");
+  about.textContent =
+    "Read access to every input device on this machine. The daemon does not need " +
+    "it, since it is root and opens the nodes itself; the host side tooling does, " +
+    "and so does a Sunshine running on the host rather than in a seat.";
+  label.append(about);
+
+  const button = document.createElement("button");
+  button.className = "primary";
+  button.textContent = "Prepare this machine";
+
+  const error = document.createElement("div");
+  error.className = "warning";
+  error.hidden = true;
+
+  const log = document.createElement("pre");
+  log.className = "log";
+  log.hidden = true;
+
+  const failed = document.createElement("div");
+  failed.className = "warning";
+  failed.hidden = true;
+
+  // What is left after a good run, and the button that does it. The daemon
+  // reaches Incus at startup or not at all, and the uhid observer attaches its
+  // probe at startup too, so a machine that has just been prepared is one
+  // restart away from using any of it.
+  const done = document.createElement("div");
+  done.className = "notice";
+  done.hidden = true;
+
+  const doneText = document.createElement("span");
+  const restart = document.createElement("button");
+  restart.textContent = "Restart the daemon";
+
+  restart.onclick = async () => {
+    restart.disabled = true;
+    restart.textContent = "Restarting";
+
+    try {
+      await api("POST", "/api/restart");
+    } catch (err) {
+      restart.disabled = false;
+      restart.textContent = "Restart the daemon";
+      alert(err.message);
+    }
+  };
+
+  done.append(doneText, restart);
+
+  button.onclick = async () => {
+    const body = { account: select.value };
+
+    // Asked here rather than posted and refused, the same way the update asks.
+    // prompt() and not a field on the page: it cannot be filled in by something
+    // already on the page, and there is nowhere for a browser to have
+    // remembered it.
+    if (button.dataset.password === "yes") {
+      const password = window.prompt(
+        "Preparing this machine runs pacman as root on it. Type the interface " +
+          "password to confirm.",
+      );
+
+      // Cancelled, which is a decision and not a failure.
+      if (password === null) return;
+
+      body.password = password;
+    }
+
+    button.disabled = true;
+
+    const went = await runHost(error, () => api("POST", "/api/prepare", body));
+
+    if (went) await options.refresh();
+    else button.disabled = false;
+  };
+
+  box.append(title, hint, why, label, button, error, log, failed, done);
+
+  function update(state) {
+    const prepare = (state && state.prepare) || {};
+    const config = (state && state.config) || {};
+    const allowed = config.web_update !== false;
+    const running = !!prepare.running;
+
+    fillAccounts(select, prepare.accounts || []);
+
+    // Two reasons there is no button, and they want different sentences: one is
+    // a setting somebody chose, the other is how this was installed.
+    let blocked = "";
+
+    if (!allowed) {
+      blocked =
+        'Preparing from here is off ("web_update" in polyseatd.json). At a ' +
+        "terminal it is: sudo polyseat-prepare";
+    } else if (!prepare.command) {
+      blocked = prepare.reason || "polyseat-prepare is not installed on this machine.";
+    }
+
+    why.hidden = !blocked;
+    why.textContent = blocked;
+
+    label.hidden = !!blocked;
+    button.hidden = !!blocked;
+    button.disabled = running;
+    // The same setting the update button obeys, sent by both interfaces, so
+    // there is one place that decides whether root gets a second question.
+    button.dataset.password = config.update_needs_password ? "yes" : "no";
+
+    button.textContent = running
+      ? "Preparing this machine"
+      : (prepare.log || []).length
+        ? "Prepare it again"
+        : "Prepare this machine";
+
+    const lines = (prepare.log || []).join("\n");
+    log.hidden = !lines;
+
+    if (lines && log.textContent !== lines) {
+      log.textContent = lines;
+      // Only while it runs. Scrolling somebody back to the bottom of a finished
+      // log they were reading through is how a page argues with its reader.
+      if (running) log.scrollTop = log.scrollHeight;
+    }
+
+    failed.hidden = !prepare.error;
+    failed.textContent = prepare.error ? "It stopped: " + prepare.error : "";
+
+    done.hidden = !(prepare.done && !running);
+    doneText.textContent = options.readyText;
+  }
+
+  return { node: box, update };
+}
+
+function removePanel(options) {
+  const box = document.createElement("section");
+  box.className = "panel";
+
+  const title = document.createElement("h3");
+  title.textContent = "Remove Polyseat";
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent =
+    "Stops the daemon, then takes away its unit, the udev rule, the input " +
+    "helpers and the package itself. Incus, bpftrace and python stay: they are " +
+    "not Polyseat's to remove, and something else on this machine may be using " +
+    "them. It is the same thing sudo polyseat-uninstall does.";
+
+  const why = document.createElement("p");
+  why.className = "hint";
+  why.hidden = true;
+
+  const seatsLabel = document.createElement("label");
+  seatsLabel.className = "check";
+
+  const seats = document.createElement("input");
+  seats.type = "checkbox";
+  seatsLabel.append(seats, "Delete the seats as well");
+
+  const seatsAbout = document.createElement("small");
+  seatsAbout.className = "standalone";
+  seatsAbout.textContent =
+    "Left off, the containers, their pairings and /var/lib/polyseat stay exactly " +
+    "as they are, and installing Polyseat again picks them up where they were. " +
+    "Turned on, they are stopped in the order Incus needs and deleted.";
+
+  const libraryLabel = document.createElement("label");
+  libraryLabel.className = "check";
+
+  const library = document.createElement("input");
+  library.type = "checkbox";
+  library.disabled = true;
+  libraryLabel.append(library, "And the shared game library");
+
+  const libraryAbout = document.createElement("small");
+  libraryAbout.className = "standalone";
+  libraryAbout.textContent =
+    "The games in /srv/polyseat/library, which is the expensive thing to lose: " +
+    "a seat's copies come back from that pool in a second by sharing blocks, and " +
+    "downloading them all again does not.";
+
+  const confirmLabel = document.createElement("label");
+  confirmLabel.className = "field";
+  confirmLabel.append("Type remove to confirm");
+  confirmLabel.hidden = true;
+
+  const confirm = document.createElement("input");
+  confirm.type = "text";
+  confirm.autocomplete = "off";
+  confirmLabel.append(confirm);
+
+  const passwordLabel = document.createElement("label");
+  passwordLabel.className = "field";
+  passwordLabel.append("Interface password");
+
+  const password = document.createElement("input");
+  password.type = "password";
+  password.autocomplete = "current-password";
+  passwordLabel.append(password);
+
+  const passwordAbout = document.createElement("small");
+  passwordAbout.textContent =
+    "Asked every time for this one, whatever update_needs_password says. Nothing " +
+    "else in this interface is undone by doing it again, and this is.";
+  passwordLabel.append(passwordAbout);
+
+  const button = document.createElement("button");
+  button.className = "danger";
+  button.textContent = "Remove Polyseat";
+
+  const error = document.createElement("div");
+  error.className = "warning";
+  error.hidden = true;
+
+  seats.onchange = () => {
+    library.disabled = !seats.checked;
+    if (!seats.checked) library.checked = false;
+    confirmLabel.hidden = !seats.checked;
+  };
+
+  button.onclick = async () => {
+    if (!password.value) {
+      error.hidden = false;
+      error.textContent = "The interface password is what confirms this.";
+      password.focus();
+
+      return;
+    }
+
+    if (seats.checked && confirm.value !== "remove") {
+      error.hidden = false;
+      error.textContent = 'Deleting the seats needs the word "remove" typed out.';
+      confirm.focus();
+
+      return;
+    }
+
+    button.disabled = true;
+
+    const body = {
+      password: password.value,
+      seats: seats.checked,
+      library: library.checked,
+      confirm: confirm.value,
+    };
+
+    let answer = null;
+
+    const went = await runHost(error, async () => {
+      answer = await api("POST", "/api/uninstall", body);
+    });
+
+    password.value = "";
+
+    if (!went) {
+      button.disabled = false;
+
+      return;
+    }
+
+    showFarewell(answer);
+  };
+
+  box.append(
+    title,
+    hint,
+    why,
+    seatsLabel,
+    seatsAbout,
+    libraryLabel,
+    libraryAbout,
+    confirmLabel,
+    passwordLabel,
+    button,
+    error,
+  );
+
+  function update(state) {
+    const remove = (state && state.remove) || {};
+
+    let blocked = "";
+
+    if (remove.enabled === false) {
+      blocked =
+        'Removing from here is off ("web_uninstall" in polyseatd.json). At a ' +
+        "terminal it is: sudo polyseat-uninstall";
+    } else if (!remove.available) {
+      blocked = remove.reason || "polyseat-uninstall is not installed on this machine.";
+    }
+
+    why.hidden = !blocked;
+    why.textContent = blocked;
+
+    for (const node of [seatsLabel, seatsAbout, libraryLabel, libraryAbout, passwordLabel, button]) {
+      node.hidden = !!blocked;
+    }
+
+    if (!blocked) confirmLabel.hidden = !seats.checked;
+  }
+
+  return { node: box, update };
+}
+
+// showFarewell is the last thing this page has to say.
+//
+// The removal stops the daemon serving this page as its first act, so there is
+// nothing to poll and nothing that will come back. Saying so is the point: a
+// page that simply stopped answering looks exactly like one that broke.
+function showFarewell(answer) {
+  if (stream) {
+    stream.close();
+    stream = null;
+  }
+
+  stopSetupPoll();
+
+  el("machine").close();
+  el("app").hidden = true;
+  el("login").hidden = true;
+  el("notready").hidden = true;
+  el("tools").hidden = true;
+  el("farewell").hidden = false;
+  el("link").textContent = "removing";
+  el("link").className = "pill offline";
+
+  const parts = [
+    "The daemon is stopped first, so this page stops answering in a moment. " +
+      "That is what it looks like when it worked.",
+  ];
+
+  if (answer && answer.seats) {
+    parts.push("The seats and their containers go with it.");
+  } else {
+    parts.push(
+      "The seats are untouched: their containers and /var/lib/polyseat stay, and " +
+        "installing Polyseat again picks them up where they were.",
+    );
+  }
+
+  if (answer && answer.library) parts.push("So does the shared game library.");
+
+  parts.push(
+    "The rest of the run is written to the journal: " +
+      ((answer && answer.journal) || "journalctl -u polyseat-uninstall"),
+  );
+
+  el("farewell-detail").textContent = parts.join(" ");
+}
+
+// ------------------------------------------------- the machine, as a dialog
+
+let machineViews = null;
+
+function openMachine() {
+  if (!machineViews) {
+    machineViews = [
+      preparePanel({
+        refresh,
+        readyText:
+          "This machine is ready. What was loaded or installed just now reaches " +
+          "the daemon when it restarts, and a restart is refused while somebody " +
+          "is playing. ",
+      }),
+      removePanel({ refresh }),
+    ];
+
+    el("machine-body").replaceChildren(...machineViews.map((view) => view.node));
+  }
+
+  updateMachine();
+  el("machine").showModal();
+}
+
+// Called from render as well, so that a prepare running behind an open dialog
+// shows its log as it happens rather than when somebody closes and reopens it.
+function updateMachine() {
+  if (!machineViews || !state) return;
+
+  for (const view of machineViews) view.update(state);
+}
+
+// --------------------------------------------- the machine, as a whole page
+
+// What a daemon serves when it came up without an Incus to talk to. On a
+// machine that has just installed the package that is the ordinary state and
+// not a fault: Incus is one of the things preparing it installs.
+
+let setupViews = null;
+let setupTimer = null;
+
+function showSetup() {
+  el("login").hidden = true;
+  el("app").hidden = true;
+  el("farewell").hidden = true;
+  el("notready").hidden = false;
+  el("tools").hidden = false;
+
+  // The panels are on the page here, so the button that opens them in a dialog
+  // would open a second copy of what is already being read.
+  el("machine-open").hidden = true;
+
+  el("observer").hidden = true;
+  el("gpu").hidden = true;
+
+  if (!setupViews) {
+    setupViews = [
+      preparePanel({
+        refresh: refreshSetup,
+        readyText:
+          "This machine is ready. Polyseat restarts into its own interface by " +
+          "itself once Incus answers, which is a moment from now; this does it " +
+          "immediately. ",
+      }),
+      removePanel({ refresh: refreshSetup }),
+    ];
+
+    el("notready-panels").replaceChildren(...setupViews.map((view) => view.node));
+  }
+
+  refreshSetup();
+  startSetupPoll();
+}
+
+async function refreshSetup() {
+  try {
+    const data = await api("GET", "/api/state");
+
+    // The daemon restarts into the ordinary interface once Incus answers, and
+    // this is how the page finds out that it has: the state it gets back is the
+    // real one. Reloaded rather than switched over in place, because the app
+    // half of this page has never run and starts from the top.
+    if (data.ready !== false) {
+      location.reload();
+
+      return;
+    }
+
+    el("link").textContent = "live";
+    el("link").className = "pill online";
+    el("hostname").textContent = data.host.hostname || "";
+    el("notready-version").textContent = "polyseatd " + (data.host.version || "unknown");
+    el("notready-reason").textContent =
+      "Polyseat is running, but it cannot reach Incus, which is what holds the " +
+      "seats: " +
+      (data.reason || "no reason given") +
+      ". On a machine that has just installed the package that is the ordinary " +
+      "state rather than a fault, because Incus is one of the things preparing " +
+      "it installs.";
+
+    for (const view of setupViews) view.update(data);
+  } catch (err) {
+    if (err.unauthorized) {
+      showLogin();
+
+      return;
+    }
+
+    // Not an error worth shouting about. The commonest reason to be here is
+    // that the daemon is restarting into the interface this page is waiting
+    // for, which takes a couple of seconds and fixes itself.
+    el("link").textContent = "reconnecting";
+    el("link").className = "pill offline";
+  }
+}
+
+// Polled rather than pushed. The event stream belongs to the manager, which is
+// exactly the part that does not exist in this mode, and two seconds is fast
+// enough for a log that moves at the speed of pacman.
+function startSetupPoll() {
+  stopSetupPoll();
+  setupTimer = setInterval(refreshSetup, 2000);
+}
+
+function stopSetupPoll() {
+  if (setupTimer) {
+    clearInterval(setupTimer);
+    setupTimer = null;
+  }
+}
+
 // --------------------------------------------------------------------- setup
 
 function connect() {
@@ -2051,6 +2652,8 @@ el("password-form").onsubmit = submitPassword;
 el("password-cancel").onclick = () => el("password").close();
 el("logout").onclick = signOut;
 el("account").onclick = () => run(openAccount);
+el("machine-open").onclick = openMachine;
+el("machine-close").onclick = () => el("machine").close();
 // Says what it did. A button that silently changes nothing is indistinguishable
 // from a button that is broken, which is exactly how the per seat setting above
 // managed to hide.
@@ -2085,5 +2688,12 @@ el("import-form").onsubmit = submitImport;
 // Ask before drawing anything, so a signed out visitor gets the login form
 // rather than a flash of an empty seat list.
 api("GET", "/api/session")
-  .then((session) => (session.authenticated ? showApp() : showLogin(session.setup)))
+  .then((session) => {
+    // Before anything is drawn. A daemon in setup mode answers every seat
+    // endpoint with a 404, and finding that out by asking would mean drawing
+    // the wrong page first and taking it away again.
+    ready = session.ready !== false;
+
+    return session.authenticated ? showApp() : showLogin(session.setup);
+  })
   .catch(() => showLogin(false));

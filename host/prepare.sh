@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Gets a machine ready to run Polyseat, without installing Polyseat.
 #
-# Split out of install.sh so that there is one copy of it and two ways in. This
-# is everything a package cannot do for you: an Arch package may place files and
-# pull in dependencies, and it may not initialise Incus, write to /etc/subuid or
-# put your account in a group. So the packaged install runs this once by hand,
-# and install.sh runs it for you.
+# Split out of install.sh so that there is one copy of it and three ways in.
+# This is everything a package cannot do for you: an Arch package may place
+# files and pull in dependencies, and it may not initialise Incus, write to
+# /etc/subuid or put your account in a group.
+#
+# The third way in is the daemon. It runs this file for the web interface and
+# reads the output back a line at a time, so that a machine which has the
+# package and nothing else can be made ready without a terminal. That is why
+# nothing here reads from stdin without testing for a terminal first, and why
+# the two variables below exist.
 #
 # Safe to run again. Every step here checks before it changes anything, and an
 # entry that already exists is left exactly as it is, including when it is
@@ -15,12 +20,32 @@
 #
 #   sudo polyseat-prepare      from a package
 #   sudo ./prepare.sh          from a checkout
+#   Prepare this machine       in the web interface, which runs the same file
+#
+# POLYSEAT_INPUT_USER   whose account goes in the input group, for the caller
+#                       that has no SUDO_USER to read it from
+# POLYSEAT_FROM_DAEMON  suppresses the closing "what to do next", which is the
+#                       interface's to say rather than this file's
 set -euo pipefail
 
-ok()   { printf '  \033[32m\u2713\033[0m %s\n' "$*"; }
-bad()  { printf '  \033[31m\u2717\033[0m %s\n' "$*"; }
-warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
-step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+# Colour only where somebody is watching it happen.
+#
+# This script has a third caller now: the daemon runs it for the web interface
+# and reads the output back a line at a time, and an escape code there is not
+# a colour, it is three characters of noise in the middle of a sentence in a
+# browser. NO_COLOR is honoured too, because it is the convention and costs one
+# test.
+if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
+    green=$'\033[32m'; red=$'\033[31m'; yellow=$'\033[33m'
+    bold=$'\033[1m';  plain=$'\033[0m'
+else
+    green=""; red=""; yellow=""; bold=""; plain=""
+fi
+
+ok()   { printf '  %s\u2713%s %s\n' "$green" "$plain" "$*"; }
+bad()  { printf '  %s\u2717%s %s\n' "$red" "$plain" "$*"; }
+warn() { printf '  %s!%s %s\n' "$yellow" "$plain" "$*"; }
+step() { printf '\n%s%s%s\n' "$bold" "$*" "$plain"; }
 
 [[ $EUID -eq 0 ]] || { echo "needs root"; exit 1; }
 
@@ -488,9 +513,20 @@ step "Group membership"
 # the active one. Group membership works in all of them and an ACL works in
 # none.
 #
-# Not undone by --uninstall. It is a property of the account rather than of this
-# installation, and an account may well have been in that group first.
-target_user=${SUDO_USER:-}
+# Not undone by the uninstaller. It is a property of the account rather than of
+# this installation, and an account may well have been in that group first.
+#
+# POLYSEAT_INPUT_USER is how the daemon says whose account it is. sudo answers
+# that question by itself and the daemon cannot: it is started by systemd at
+# boot and nobody invoked it, so when the web interface runs this the account
+# is picked in the browser and arrives here. Refused rather than trusted if no
+# such account exists, because this ends in usermod.
+target_user=${POLYSEAT_INPUT_USER:-${SUDO_USER:-}}
+if [[ -n $target_user ]] && ! id -u "$target_user" >/dev/null 2>&1; then
+    warn "there is no account called $target_user on this machine"
+    target_user=""
+fi
+
 if [[ -z $target_user || $target_user == root ]]; then
     warn "no unprivileged account to add: run this with sudo from your own account"
 elif id -nG "$target_user" 2>/dev/null | tr ' ' '\n' | grep -qx input; then
@@ -500,10 +536,15 @@ else
     ok "$target_user added to the input group, which takes effect at the next login"
 fi
 
-# Only when somebody ran this themselves. install.sh sets the variable and goes
-# straight on to build and place Polyseat, so telling them there what is left to
-# do would be describing the next thirty lines of their own output.
-if [[ -z ${POLYSEAT_INSTALLING:-} ]]; then
+# Only when somebody ran this themselves.
+#
+# install.sh sets POLYSEAT_INSTALLING and goes straight on to build and place
+# Polyseat, so telling them there what is left to do would be describing the
+# next thirty lines of their own output. The daemon sets POLYSEAT_FROM_DAEMON
+# and is already running, so telling the browser to start it would be worse
+# than useless: what is left there is a restart, and the page says so with a
+# button rather than with a command to copy.
+if [[ -z ${POLYSEAT_INSTALLING:-} && -z ${POLYSEAT_FROM_DAEMON:-} ]]; then
     cat <<EOF
 
 This machine is ready. Polyseat itself is what is left.

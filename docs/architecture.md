@@ -208,6 +208,16 @@ would mean a second author for the generated files, which is exactly what the
 next section forbids. When the interface will not start, the thing to read is
 `journalctl -u polyseatd`.
 
+**That reaches the machine itself now, not only the seats on it.** Getting a
+host ready and taking Polyseat off it again were the two things at either end of
+its life that still needed a terminal, and both are buttons. Neither is a second
+way into anything the daemon owns: they run the same two scripts somebody at a
+terminal runs, `polyseat-prepare` and `polyseat-uninstall`, and the browser
+cannot say what to run — one takes an account name, the other takes two flags.
+What is left on the command line is what nothing already on the machine can do
+for itself: installing the package and starting the unit. Where that line runs
+and why is [`installation.md`](installation.md).
+
 ## Principle: the daemon owns the configuration
 
 Incus profiles, Sunshine configs, udev rules and systemd units are **generated

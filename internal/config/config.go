@@ -67,15 +67,22 @@ type Config struct {
 	// and no request is made at all.
 	UpdateCheck bool `json:"update_check"`
 
-	// WebUpdate lets the interface install a newer release and restart the
-	// daemon, rather than only saying that one exists.
+	// WebUpdate lets the interface install a newer release, restart the daemon,
+	// and prepare the machine, rather than only saying what is wrong with it.
 	//
-	// On by default, and the switch is here because this is the one thing the
-	// interface does that ends on the host rather than inside a seat. With it
+	// On by default, and the switch is here because these are the things the
+	// interface does that end on the host rather than inside a seat. With it
 	// on, the interface password reaches root on this machine: pacman runs
 	// install scripts as root and the binary it places is what systemd starts.
 	// Set to false and the interface goes back to saying a version exists and
-	// nothing more, which is what host/update.sh is for.
+	// nothing more, which is what host/update.sh and polyseat-prepare are for.
+	//
+	// Preparing is under this switch rather than under one of its own because
+	// it is the same sentence: the interface running pacman as root on the
+	// host. It is the smaller half of it, in fact. An update replaces the
+	// binary systemd starts; preparing installs the packages the daemon talks
+	// to and initialises Incus, and every step of it is one that checks before
+	// it changes and can be run again over itself.
 	//
 	// What the switch does not change, because it is what makes the feature
 	// defensible at all: the browser never names what to install. It asks for
@@ -95,6 +102,23 @@ type Config struct {
 	// does not pretend to be one; it is the same secret asked at the moment it
 	// matters.
 	UpdateNeedsPassword bool `json:"update_needs_password"`
+
+	// WebUninstall lets the interface remove Polyseat from this machine.
+	//
+	// Its own switch rather than WebUpdate's, because it is the one action in
+	// the whole interface that cannot be undone by pressing the button again.
+	// Everything else the page does is reversible by doing it differently:
+	// a seat can be provisioned twice, an update can be followed by another
+	// update. This ends with the daemon gone and, if it was asked to, the
+	// containers deleted.
+	//
+	// On by default all the same, because a machine that can only be installed
+	// from a terminal and only removed from a terminal has not been made any
+	// easier to live with. What guards it instead is asked at the moment it
+	// matters: the interface password, every time, whatever
+	// UpdateNeedsPassword says, plus the word "remove" typed out when the
+	// seats are going too.
+	WebUninstall bool `json:"web_uninstall"`
 
 	// GPURenderNode picks the card the seats render and encode on, for example
 	// /dev/dri/renderD129. Empty means the daemon finds it itself, which is the
@@ -126,8 +150,9 @@ func Default() Config {
 		// installation too: Load starts from these defaults and lets the file
 		// overwrite what it names, so a configuration written before this
 		// setting existed leaves it on rather than off.
-		UpdateCheck: true,
-		WebUpdate:   true,
+		UpdateCheck:  true,
+		WebUpdate:    true,
+		WebUninstall: true,
 
 		// Empty on purpose: the daemon looks at the machine. See GPURenderNode.
 		GPURenderNode: "",

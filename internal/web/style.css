@@ -58,13 +58,13 @@ header.top {
 }
 
 header.top h1 { grid-area: 1 / 1; }
-header.top .account { grid-area: 1 / 2; justify-self: end; }
+header.top .tools { grid-area: 1 / 2; justify-self: end; }
 header.top .host { grid-row: 2; grid-column: 1 / -1; }
 
 @media (min-width: 46rem) {
   header.top { grid-template-columns: auto 1fr auto; }
   header.top .host { grid-area: 1 / 2; justify-content: flex-end; }
-  header.top .account { grid-area: 1 / 3; }
+  header.top .tools { grid-area: 1 / 3; }
 }
 
 h1 {
@@ -472,7 +472,7 @@ dialog input[type="range"] {
   accent-color: var(--accent);
 }
 
-dialog input[type="text"], dialog input:not([type]) {
+dialog input[type="text"], dialog input[type="password"], dialog input:not([type]) {
   display: block;
   width: 100%;
   margin-top: 0.25rem;
@@ -579,3 +579,85 @@ button.quiet {
   font-size: 0.75rem;
   text-align: right;
 }
+
+/* ------------------------------------------------------------- the machine */
+
+/* The host rather than the seats: getting this machine ready, and taking
+   Polyseat off it again. The same two panels appear in a dialog behind the
+   Machine button and on the page a daemon serves when it came up without an
+   Incus, so everything here is written for both. */
+
+.tools { display: flex; gap: 0.4rem; align-items: center; }
+
+/* Narrower than main, because it is one column of prose and a form rather than
+   a row of cards, and prose set to sixty rem is prose nobody finishes. */
+.notready {
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.notready h2 { margin: 0 0 0.7rem; font-size: 1.2rem; }
+
+.panel {
+  display: block;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.1rem 1.2rem;
+  margin-bottom: 1.2rem;
+}
+
+/* Inside the dialog the panels are already on the dialog's own card, so a
+   second border around each of them is one too many. */
+dialog .panel {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  margin-bottom: 1.6rem;
+}
+
+dialog .panel + .panel { border-top: 1px solid var(--line); padding-top: 1.2rem; }
+
+.panel h3 { margin: 0 0 0.6rem; font-size: 1rem; }
+.panel .hint { margin-bottom: 1rem; }
+.panel .warning, .panel .notice { margin: 0.9rem 0 0; }
+.panel .notice button { margin-left: 0.4rem; }
+.panel pre.log { max-height: 16rem; }
+
+/* Labels here are the dialog's, on a page that is not a dialog. Repeated rather
+   than shared with a selector list, because the dialog's rules are written
+   against a fixed width and these have to hold at any. */
+.panel label.field {
+  display: block;
+  margin-bottom: 0.9rem;
+  font-size: 0.85rem;
+  color: var(--dim);
+}
+
+.panel label.check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.panel input[type="text"], .panel input[type="password"], .panel select {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.panel small { display: block; margin-top: 0.25rem; font-size: 0.78rem; color: var(--dim); }
+
+/* Wider than the seat editor. It holds two panels with a log between them, and
+   at thirty rem the log is a column of hyphens. */
+#machine { width: min(38rem, calc(100vw - 2rem)); }

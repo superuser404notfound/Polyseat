@@ -10,6 +10,68 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## Unreleased
+
+**Both ends of Polyseat's life move into the interface.** Installing it was four
+commands and removing it was a command plus a checkout; it is two commands and
+two buttons now. What could not move is what a package may not do and what
+nothing else can do for it: `pacman -U` and `systemctl enable --now polyseatd`.
+
+- **The daemon comes up on a machine that is not ready.** It used to exit when
+  it could not reach Incus, and on a machine that has just installed the package
+  that is every time, because Incus is one of the things preparing it installs.
+  systemd brought it back five seconds later and the interface that exists to
+  explain exactly this was the one thing that never came up. It now serves a
+  smaller page from the same address with the same certificate and the same
+  password, offering the button that fixes it, and restarts into the ordinary
+  interface by itself once Incus answers.
+
+- **Prepare this machine**, in that page and under *Machine* afterwards, runs
+  `host/prepare.sh` and reports it a line at a time. The same file somebody at a
+  terminal runs as `polyseat-prepare`, because two of it would mean one of them
+  is wrong and nobody knows which. The one thing it cannot work out for itself
+  arrives from the browser: whose account goes in the `input` group, which
+  `sudo` answers by itself and a daemon started at boot cannot.
+
+- **Remove Polyseat**, under *Machine*, with the same three choices the command
+  has: the daemon, the seats with it, the shared library with those. It asks for
+  the interface password every time, whatever `update_needs_password` says, and
+  deleting seats needs the word typed out. `"web_uninstall": false` turns the
+  button off.
+
+- **`host/uninstall.sh`, installed as `polyseat-uninstall`.** The removal used to
+  live inside `install.sh`, which meant a machine installed from the package had
+  no way to remove its seats without cloning the repository. Three things in it
+  are not obvious: it runs from a copy of itself, because pacman deletes the file
+  bash is reading; it removes the package with `-R` and not `-Rs`, because the
+  `s` takes Incus with it on a machine where pacman pulled Incus in as a
+  dependency; and it stops the daemon before touching anything it owns, which is
+  the order that keeps Incus out of a "Stopping instance" that never finishes.
+
+- **The readme's own removal command was that same trap.** It said
+  `pacman -Rns polyseat`, which on such a machine removes Incus, bpftrace and
+  python. `test-package.sh` now checks that Incus and bpftrace survive.
+
+- **Nothing runs two pacman transactions at once.** Preparing refuses while an
+  update is installing and the other way round, and both the restart button and
+  the watcher that restarts the daemon by itself hold off while a prepare is
+  running: `KillMode=mixed` means a restart takes the whole control group with
+  it, and a pacman killed halfway leaves a lock and a partly applied
+  transaction.
+
+- **`prepare.sh` stopped assuming a terminal.** No colour where nothing renders
+  it, `POLYSEAT_INPUT_USER` for the account, `POLYSEAT_FROM_DAEMON` for the
+  closing "now start it" that is wrong when it is already running. It still
+  refuses to install a graphics driver without somebody there to say yes, which
+  is why a machine with no driver still ends at a terminal.
+
+- **`test-package.sh` takes the browser's path.** Install the package, start the
+  daemon with no Incus on the machine, claim it over HTTPS, prepare it through
+  the API, wait for the daemon to restart into the real interface, and remove
+  Polyseat from that interface. The two checks worth naming: the password chosen
+  while the machine was not ready is still the password afterwards, and the
+  removal left Incus and bpftrace installed.
+
 ## 0.3.5
 
 A review pass, and most of what it found had been true for a while without

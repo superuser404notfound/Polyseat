@@ -186,6 +186,12 @@ check "the missing package was installed" vm pacman -Qq bpftrace
 check "and every other prerequisite"     vm pacman -Qq incus nvidia-container-toolkit python go
 check "polyseatd is installed"           vm test -x /usr/local/bin/polyseatd
 check "it runs and reports a version"    vm /usr/local/bin/polyseatd -version
+# The two scripts the daemon runs for the web interface. They are commands here
+# as well as in the package because a daemon built from a checkout has no way to
+# find the checkout it came from, and without them the two buttons that get this
+# machine ready and take Polyseat off it have nothing to run.
+check "polyseat-prepare is a command"    vm test -x /usr/local/bin/polyseat-prepare
+check "polyseat-uninstall is a command"  vm test -x /usr/local/bin/polyseat-uninstall
 check "the systemd unit is registered"   vm test -f /etc/systemd/system/polyseatd.service
 check "systemd can read that unit"       vm systemctl cat polyseatd.service
 check "the udev rule is in place"        vm test -f /etc/udev/rules.d/72-polyseat-hide.rules
@@ -284,6 +290,13 @@ check "polyseatd is gone"                vm bash -c '! test -e /usr/local/bin/po
 check "the unit is gone"                 vm bash -c '! test -e /etc/systemd/system/polyseatd.service'
 check "the udev rule is gone"            vm bash -c '! test -e /etc/udev/rules.d/72-polyseat-hide.rules'
 check "the helpers are gone"             vm bash -c '! test -e /usr/local/lib/polyseat'
+check "polyseat-prepare is gone"         vm bash -c '! test -e /usr/local/bin/polyseat-prepare'
+# The interesting one: pacman and this script both delete the file that is doing
+# the deleting, which is why it copies itself to /tmp and hands over before it
+# starts. If that ever stops working, bash reads its next command from an inode
+# nothing points at and the run ends somewhere unpredictable.
+check "polyseat-uninstall removed itself" vm bash -c '! test -e /usr/local/bin/polyseat-uninstall'
+check "and left no copy of itself behind" vm bash -c '! ls /tmp/polyseat-uninstall.* >/dev/null 2>&1'
 
 # Deliberately kept, and the test says so rather than leaving it unexamined.
 check "the idmap entry is kept"          vm grep -qE '^root:' /etc/subuid

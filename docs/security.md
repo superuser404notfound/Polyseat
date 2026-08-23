@@ -471,11 +471,11 @@ comes from Steam, and a seat installs its own software.
 
 ### The interface can install a newer Polyseat, as root
 
-**This is the one thing the interface does that ends on the host rather than
-inside a seat**, and it is the largest single change to what the interface
+**This is one of three things the interface does that end on the host rather
+than inside a seat**, and it is the largest single change to what the interface
 password is worth. It is on by default. `"web_update": false` in
 `/etc/polyseat/polyseatd.json` turns it off and puts updating back where it was,
-which is `host/update.sh`.
+which is `host/update.sh`. The other two are the section below.
 
 Everything else the password reaches ends in a container. Somebody with it can
 already install an AppImage from any address they type, which is remote code
@@ -537,6 +537,40 @@ still cannot name what to install.
 **Only where pacman owns the installation.** A checkout install has nothing for
 pacman to replace, and the interface says so rather than offering a button that
 would half work.
+
+### It can also prepare the machine and remove Polyseat, as root
+
+The same sentence as the section above, twice more, and both are on by default.
+
+**Preparing** runs `host/prepare.sh`, which installs packages with pacman,
+initialises Incus, writes `/etc/subuid` and puts an account in the `input` group.
+It is under `"web_update"` rather than a switch of its own because it is the
+same statement: the interface running pacman as root on this host. It is the
+smaller half of it, in fact. An update replaces the binary systemd starts; this
+installs the packages the daemon talks to, and every step of it checks before it
+changes and can be run again over itself.
+
+**Removing** runs `host/uninstall.sh`, which stops the daemon, can delete every
+seat and, if it is asked to, the shared game library. `"web_uninstall": false`
+turns it off. It is the one action in the interface that pressing again does not
+undo, so it asks for the interface password every time, whatever
+`update_needs_password` says, and deleting seats needs the word "remove" typed
+out — checked in the daemon and not only in the browser, because it is the API
+that deletes things.
+
+**What holds for both is what holds for the update: the browser never says what
+to run.** Preparing takes one argument out of the request, the account name for
+the `input` group, and it is refused unless this machine has an account by that
+name. Removing takes two flags. Neither takes a path, a command, a package name
+or a URL, and both run a fixed script that is either the one the package
+installed or the one a checkout install placed. A stolen session can make this
+machine prepare itself, or remove Polyseat from itself. It cannot make it run
+something else.
+
+Removing is handed to systemd as a transient unit rather than run here, because
+the first thing that script does is stop the process that started it. That also
+means the interface stops answering partway through and the rest of the run is
+in the journal, under `polyseat-uninstall`.
 
 ### The kernel console
 
