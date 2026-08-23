@@ -10,7 +10,12 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
-## Unreleased
+## 0.3.3
+
+Two ways in and two ways to update, where before there was one of each. Nothing
+here changes how a seat is built, so updating is a restart of the daemon and no
+more, and existing seats are untouched.
+
 
 - **Updating is a button in the interface**, where Polyseat was installed from
   the package. One button installs and a second restarts, and they are two
@@ -41,6 +46,21 @@ costs a few minutes per seat rather than a restart.
   accounts still cannot be registered, and it matters less than it sounds: the
   AUR distributes recipes, and installing from one means building it yourself,
   which `host/install.sh` already does and does better.
+
+  The install URL carries no version and never will. Each release gets the
+  package twice, once under the name makepkg gave it and once under a name that
+  does not change, because `releases/latest/download/` only works as a permanent
+  link when the file name is permanent. A documented command that has to be
+  edited at every release is one that is eventually wrong.
+
+- **`--uninstall` now removes `/etc/modules-load.d/polyseat.conf`**, the file
+  0.3.2 started writing. It is host configuration this installer put in `/etc`,
+  the same as the udev rule beside it, and leaving it meant a machine that goes
+  on loading a module at every boot for something no longer on it. The module
+  itself is left loaded: unloading it would reach past this installation, since
+  uhid is also what bluez uses for HID over GATT. `pacman -Rns` cannot do the
+  same, because `polyseat-prepare` wrote the file and the package does not own
+  it, so the removal message names it and gives the line that takes it out.
 
 - **CI parses the interface.** Sixty kilobytes of JavaScript were checked by
   nothing: a typo in it fails no build, no test and no vet, only somebody's

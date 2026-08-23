@@ -23,32 +23,28 @@ input devices, shares the game library, and repairs what drifts.
 | | |
 |---|---|
 | **Host** | Arch-based. The installer queries `pacman` rather than pretending to be portable. |
-| **Packages** | `incus`, `bpftrace`, `python`, `go`, plus `nvidia-container-toolkit` on NVIDIA. The installer works out which card is in the machine first and installs whichever of them are missing. |
+| **Packages** | `incus`, `bpftrace` and `python`, plus `nvidia-container-toolkit` on NVIDIA. The installer works out which card is in the machine first and installs whichever of them are missing. A checkout install also needs `go`, because it builds the daemon; the package arrives built and does not. |
 | **GPU** | **NVIDIA**, with the driver installed and answering. `nvidia-utils` carries the two libraries NVENC needs, `libcuda.so.1` and `libnvidia-encode.so.1`, and the container toolkit injects them into every seat. `lib32-nvidia-utils` as well, or 32 bit games will not find the GPU. The `cuda` package is the toolkit and is **not** needed.<br><br>**AMD** works differently and is simpler: `amdgpu` on the host is the whole requirement, and Mesa goes into each seat as an ordinary package, so no host driver update can leave a seat behind. Encoding is VA-API, the only hardware path AMD has on Linux. **This path has never been run on real hardware**, see [docs/amd.md](docs/amd.md) for what was verified and what was not.<br><br>Either way the installer refuses rather than warns if the driver is missing, because a seat without it comes up, streams in software and looks perfectly healthy. |
 | **Filesystem** | btrfs, or XFS created with `reflink=1`, **and only for the shared game library**. `ext4` cannot share blocks, and neither can tmpfs or a network filesystem. Seats still work on those; the shared library simply stays off and every seat downloads its own games. The installer tests it and says which it found. |
 | **Network** | One wired interface, so each seat is a host of its own on the LAN and can use the standard Sunshine ports. Seats take a macvlan from it, or a port on it where it is a bridge, which is what `host/lan-bridge.sh` makes it and what local multiplayer between the host and a seat needs. Wireless cannot do either: 802.11 carries one MAC address per association. |
 
 **1. Install it, once per machine.** There are two ways in and the package is
-the shorter one. It is attached to every release:
+the shorter one. That URL is not versioned and does not need to be: it is
+whatever the newest release is, and the version lives inside the file rather
+than in its name.
 
 ```
-sudo pacman -U https://github.com/superuser404notfound/Polyseat/releases/download/v0.3.2/polyseat-0.3.2-1-x86_64.pkg.tar.zst
+sudo pacman -U https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
 sudo polyseat-prepare
 sudo systemctl enable --now polyseatd
 ```
-
-`polyseat-prepare` is a second command because a package is not allowed to be
-one command. It may place files; it may not initialise Incus, write to
-`/etc/subuid` or put your account in a group. So that half is a command you run
-once, and it says what it finds either way and changes nothing that is already
-right.
 
 Or from a checkout, which does both halves in one go and is what to use to run a
 particular commit rather than a release, which is what testing on unusual
 hardware means:
 
 ```
-git clone --branch v0.3.2 https://github.com/superuser404notfound/Polyseat.git
+git clone --branch v0.3.3 https://github.com/superuser404notfound/Polyseat.git
 cd Polyseat
 sudo host/install.sh
 sudo systemctl enable --now polyseatd
@@ -64,20 +60,28 @@ up under that name is not this. It matters less than it sounds, because the AUR
 distributes recipes rather than packages and installing from one means building
 it yourself, which is what the checkout above already does.
 
-The install does everything in one go: missing packages, the idmap range that
-every container start needs, bringing Incus up and initialising it if nobody
-has, checking that the graphics driver really answers, loading the `uhid` module
-so the observer has something to watch from the first boot onwards, putting your
-account in the `input` group, and then it builds the daemon and places the input
-helpers under `/usr/local/lib/polyseat`, the udev rule that keeps seat devices
-off the host desktop, and one systemd unit. It creates no seat. It can be run
-again after an update without undoing anything, which is what *Updating* further
-down is.
+**Both ways do the same two halves**, in a different number of commands.
 
-The half of that a package would not be allowed to do lives in
-`host/prepare.sh`, which `install.sh` runs for you and which the package would
-install as `polyseat-prepare`. The split is real work and it stays, because the
-package is finished and only unpublished.
+Getting the machine ready is `polyseat-prepare` from the package and the first
+part of `host/install.sh` from a checkout, and it is the same script either way:
+missing packages, the idmap range every container start needs, bringing Incus up
+and initialising it if nobody has, checking that the graphics driver really
+answers, loading the `uhid` module so the input observer has something to watch
+from the first boot onwards, and putting your account in the `input` group. It
+changes nothing that is already right and says what it found either way.
+
+Putting Polyseat in place is the other half: the daemon, the input helpers, the
+udev rule that keeps seat devices off the host desktop, and one systemd unit.
+The package places them under `/usr` and a checkout builds them and places them
+under `/usr/local`; the daemon looks in both and prefers the local one.
+
+Neither creates a seat, and both can be run again over themselves without
+undoing anything.
+
+The split exists because a package is not allowed to do the first half. It may
+place files, and it may not initialise Incus, write to `/etc/subuid` or put an
+account in a group. That is why `host/prepare.sh` is a script of its own and
+ships as the `polyseat-prepare` command.
 
 Two things it reports rather than changes, because they are yours to decide:
 whether the filesystem holding the game library can share blocks, which it asks
@@ -133,13 +137,13 @@ to be chosen for this to happen: the shared library is the only library a seat's
 Steam has, so signing in and pressing install puts the game where the other
 seats can reach it. Each seat keeps its own private, fully writable copy; the
 daemon replicates game directories between them with reflinks, so the copies
-share their blocks on disk. Taking this machine's 69 GB library into the pool took 0.8 seconds and
-cost 432 KB. The host's own Steam library is found and taken into the pool
-without being asked, as long as there is exactly one of them and it can share
-blocks with the pool; two of them is a choice with consequences and stays a
-question. It keeps working after an update, because that library is watched
-rather than imported once, and a seat that is behind is brought forward as soon
-as nothing in it is using the shared files.
+share their blocks on disk. Taking this machine's 69 GB library into the pool
+took 0.8 seconds and cost 432 KB. The host's own Steam library is found and
+taken into the pool without being asked, as long as there is exactly one of them
+and it can share blocks with the pool; two of them is a choice with consequences
+and stays a question. It keeps working after an update, because that library is
+watched rather than imported once, and a seat that is behind is brought forward
+as soon as nothing in it is using the shared files.
 
 **Launchers other than Steam work too.** Each seat has a `shared/` directory
 where one folder is one game; point Heroic, Lutris or Bottles at it and the game
@@ -166,13 +170,13 @@ terminal. Moonlight's app list is generated from what the seat really has, with
 box art, so Steam Big Picture, any installed launcher and the installed games
 themselves are one pick away before a stream even starts. The desktop's own
 launcher is generated from the same scan, so a game is in both menus without
-anybody making a shortcut for it. Software goes in from
-either end with no password and no root: the player types `flatpak install ...`
-in the seat, or somebody installs it into that seat from the Polyseat web
-interface and watches the progress bar. **AppImages count as software here too**,
-which matters because a good many emulators are published that way and no other:
-paste the address into the web interface, or download the file inside the seat
-with Firefox and leave it in `~/Downloads`, and either way it lands in
+anybody making a shortcut for it. Software goes in from either end with no
+password and no root: the player types `flatpak install ...` in the seat, or
+somebody installs it into that seat from the Polyseat web interface and watches
+the progress bar. **AppImages count as software here too**, which matters
+because a good many emulators are published that way and no other: paste the
+address into the web interface, or download the file inside the seat with
+Firefox and leave it in `~/Downloads`, and either way it lands in
 `~/Applications` and appears in both menus by itself.
 
 **Every client gets the picture it asked for.** The seat's output is virtual, so
@@ -251,47 +255,40 @@ found, from this project's own downloads, and checks it against the checksum the
 release states. [`docs/security.md`](docs/security.md) has what that is worth
 and what it is not.
 
-By hand, and this is the whole of it where the interface is off or where this
-came from a checkout.
-
-From the package, the new one over the old one and then a restart at a moment
-you choose:
+**By hand from the package**, which is the same two steps the buttons are, and
+the same unversioned URL:
 
 ```
-sudo pacman -U https://github.com/superuser404notfound/Polyseat/releases/download/v0.3.2/polyseat-0.3.2-1-x86_64.pkg.tar.zst
+sudo pacman -U https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
 sudo systemctl restart polyseatd
 ```
 
-The restart is separate on purpose, and pacman will say so too. Replacing a
-binary does not disturb the process already using it, so the new version is on
-disk and the old one is still serving until you say otherwise. Nobody's game
-ends in the middle.
-
-From a checkout it is one command:
+**By hand from a checkout**, where `host/update.sh` is the one command:
 
 ```
 sudo host/update.sh          # --check to look without changing anything
 ```
 
 It refuses a checkout with uncommitted work in it, and it waits for a moment
-when nobody is streaming, because installing restarts the daemon and that takes
-every seat's input broker with it. `--now` skips the waiting and `--tag v0.1.0`
-goes to a particular release, older ones included.
-
-By hand is the same thing and stays supported:
+when nobody is streaming, because it rebuilds the daemon and restarts it in one
+go. `--now` skips the waiting and `--tag v0.1.0` goes to a particular release,
+older ones included. Doing it yourself is the same thing and stays supported:
 
 ```
 git fetch --tags
-git checkout v0.3.2
+git checkout v0.3.3
 sudo host/install.sh
 ```
 
-Either way the daemon is rebuilt and restarted, which is the step that makes an
-update take effect at all: building a new binary does not disturb the process
-using the old one. Seats that exist are not touched. If the new version builds
-them differently the interface names the ones that are behind and offers one
-button to bring them up to date, at a moment you pick rather than in the middle
-of somebody's game.
+**The restart is what makes an update take effect**, on every one of these
+paths, and it is separate from installing on all but the last. Replacing a
+binary does not disturb the process already using it, so the new version waits
+on disk while the old one goes on serving. That is what lets an update be
+installed in the middle of somebody's game and finished afterwards.
+
+**Seats are not touched.** If a new version builds them differently, the
+interface names the ones that are behind and offers one button to bring them up
+to date, at a moment you pick rather than in the middle of somebody's game.
 
 Which version is actually serving is at the bottom of the interface, in
 `polyseatd -version`, and in the journal at every start. It is the tag it was
@@ -314,6 +311,13 @@ Neither stops the daemon for you, and pacman says so on the way out. A removed
 package is a binary that is no longer on disk, not a process that has ended, so
 `sudo systemctl stop polyseatd` is yours to give when the seats are not in use.
 
+One difference between the two: `--uninstall` also removes
+`/etc/modules-load.d/polyseat.conf`, which is what loads `uhid` at boot. `pacman
+-Rns` cannot, because `polyseat-prepare` wrote that file rather than the
+package, so nothing owns it. The removal message says so and gives the one line
+that takes it out. Neither unloads the module, which something else on the
+machine may be using.
+
 To take the seats with it, `sudo host/install.sh --purge`, which asks first and
 keeps the shared game library so the games do not have to be downloaded again;
 add `--library` to remove that too. It stops the daemon before touching anything
@@ -332,10 +336,11 @@ behind full copies: the daemon says so plainly instead.
 
 Architecture and the reasoning behind every decision:
 [`docs/architecture.md`](docs/architecture.md). What the isolation actually
-guarantees, measured rather than assumed: [`docs/security.md`](docs/security.md).
-Who installs what, and where the line between installer, daemon and interface
-runs: [`docs/installation.md`](docs/installation.md). What changed between
-versions: [`CHANGELOG.md`](CHANGELOG.md).
+guarantees, measured rather than assumed:
+[`docs/security.md`](docs/security.md). Who installs what, and where the line
+between installer, daemon and interface runs:
+[`docs/installation.md`](docs/installation.md). What changed between versions:
+[`CHANGELOG.md`](CHANGELOG.md).
 
 **Running it on hardware that is not the author's is the most useful thing
 anybody can do for this project**, and reporting back either way is the point.
