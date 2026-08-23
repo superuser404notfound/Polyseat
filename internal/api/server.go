@@ -414,7 +414,22 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 func (s *Server) warnings() []string {
 	var out []string
 
-	if s.manager.ObserverState() != "running" {
+	// Two ways of not running, and they want different sentences. Down is
+	// something that may come back on its own; given up is a fact about this
+	// kernel, and saying "not running" for it sends somebody looking for a
+	// crash that is not there. The cause is named because it is one command to
+	// fix and nothing else in the interface hints at it: /dev/uhid exists
+	// either way, so everything looks correctly installed.
+	switch s.manager.ObserverState() {
+	case "running":
+	case "failed":
+		out = append(out, "The uhid observer gave up: this kernel has no "+
+			"uhid_dev_create2 for it to watch, which almost always means uhid "+
+			"is a module that is not loaded. Run modprobe uhid and restart "+
+			"polyseatd, and host/prepare.sh will keep it loaded across a "+
+			"reboot. Gamepads go on working; they are attributed to a seat by "+
+			"name rather than structurally until then.")
+	default:
 		out = append(out, "The uhid observer is not running. Gamepads can then "+
 			"only be attributed to a seat by name, not structurally.")
 	}

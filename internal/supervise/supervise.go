@@ -12,6 +12,7 @@ package supervise
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"os/exec"
 	"sync"
@@ -49,6 +50,17 @@ type Process struct {
 
 	// OnState is called whenever the state changes.
 	OnState func(State)
+
+	// Fatal decides whether an exit code means another attempt is pointless.
+	//
+	// Nil retries everything, which is what a broker wants: most ways one dies
+	// are ways it might not die next time. The uhid observer has one that is
+	// not. A kernel with no uhid_dev_create2 in it will still have none in
+	// thirty seconds, so retrying writes six lines of the same bpftrace error
+	// into the journal twice a minute until the machine is rebooted, and the
+	// interface shows "restarting" forever for something that has in fact
+	// settled. Failed is the honest answer and the broker's fallback covers it.
+	Fatal func(code int) bool
 
 	mu      sync.Mutex
 	state   State
@@ -137,6 +149,21 @@ func (p *Process) supervise(ctx context.Context, done chan struct{}) {
 		err := p.runOnce(ctx)
 
 		if ctx.Err() != nil {
+			return
+		}
+
+		// Asked before the backoff, because the point is not to wait at all.
+		// The code comes from the child rather than from matching its output:
+		// the helper already knows which of its failures this is, and the
+		// daemon should not have to read English to find out.
+		var exit *exec.ExitError
+		if p.Fatal != nil && errors.As(err, &exit) && p.Fatal(exit.ExitCode()) {
+			if p.OnOutput != nil {
+				p.OnOutput("giving up: " + err.Error())
+			}
+
+			p.setState(Failed)
+
 			return
 		}
 

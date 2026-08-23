@@ -427,6 +427,44 @@ else
     ok "$uplink carries the default route and seats can take a macvlan from it"
 fi
 
+step "uhid"
+# The daemon's observer attaches a kprobe to uhid_dev_create2 so that a gamepad
+# can be attributed to the container that created it as a fact rather than a
+# guess. A kprobe attaches to a symbol the running kernel has, and where uhid is
+# a module rather than built in, that symbol does not exist until it is loaded.
+#
+# Nothing loads it on its own in time. /dev/uhid is a static node, declared in
+# modules.devname and created at boot by systemd-tmpfiles, and the module is
+# autoloaded only when something first opens that node, which is the first seat
+# that runs a gamepad. So on a fresh boot the observer starts, finds no symbol,
+# and restarts every thirty seconds until somebody happens to plug in a pad.
+# Measured on CachyOS 7.2.0, where CONFIG_UHID=m.
+#
+# The node existing is therefore no evidence that the module is loaded, which is
+# the trap: everything looks correct while the probe cannot attach.
+if [[ -d /sys/module/uhid ]]; then
+    ok "uhid is loaded"
+elif modprobe uhid 2>/dev/null; then
+    # Also succeeds where uhid is built in, which has no /sys/module entry
+    # unless the module takes parameters, and uhid takes none.
+    ok "uhid loaded"
+else
+    warn "uhid could not be loaded, so gamepads can only be attributed by name"
+    echo "    Seats still work and still get gamepads. What is lost is the"
+    echo "    structural check, and the observer says so and stops rather than"
+    echo "    retrying forever."
+fi
+
+# Loading it now does not survive a reboot, and a reboot is exactly when this
+# goes wrong: the observer starts within seconds of boot, long before anything
+# opens /dev/uhid.
+if [[ -e /etc/modules-load.d/polyseat.conf ]]; then
+    ok "/etc/modules-load.d/polyseat.conf is in place"
+else
+    printf 'uhid\n' > /etc/modules-load.d/polyseat.conf
+    ok "/etc/modules-load.d/polyseat.conf: uhid, so it is loaded at the next boot"
+fi
+
 step "Group membership"
 # The daemon does not need this. It runs as root and opens every device node
 # directly; that is worth saying plainly, because a step that grants an account

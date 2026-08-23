@@ -41,6 +41,21 @@ HID_DEVICES = "/sys/bus/hid/devices"
 # readable and has no build step. The probe is the only thing that matters.
 PROBE = 'kprobe:uhid_dev_create2 { printf("create %d\\n", pid); }'
 
+# What bpftrace says when the running kernel has no such symbol. Worth telling
+# apart from every other way this fails, because it is the only one that will
+# still be true in thirty seconds. uhid is a module on most kernels and its
+# symbols do not exist until it is loaded, and nothing loads it early: /dev/uhid
+# is a static node from modules.devname, and the module is autoloaded when
+# something first opens it, which is the first seat that runs a gamepad. So the
+# node is there, everything looks installed, and the probe has nothing to attach
+# to.
+NO_SYMBOL = "No matches for kprobe"
+
+# Told to the supervisor as an exit code rather than left for it to read out of
+# the log. It stops restarting on this one and says so once. Kept in step with
+# observerCannotAttach in internal/seat/manager.go.
+EXIT_CANNOT_ATTACH = 3
+
 CGROUP_RE = re.compile(r"(?:lxc|incus)\.payload\.([A-Za-z0-9_.-]+)")
 
 
@@ -115,8 +130,11 @@ class Observer:
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
 
         last_prune = time.time()
+        cannot_attach = False
         for line in proc.stdout:
             line = line.strip()
+            if NO_SYMBOL in line:
+                cannot_attach = True
             if line.startswith("create "):
                 try:
                     pid = int(line.split()[1])
@@ -133,6 +151,15 @@ class Observer:
                     self.write_state()
 
         code = proc.wait()
+
+        if cannot_attach:
+            print("this kernel has no uhid_dev_create2 to attach to. uhid is "
+                  "most likely a module that is not loaded: modprobe uhid, and "
+                  "an entry in /etc/modules-load.d keeps it loaded across a "
+                  "reboot. Gamepads still work meanwhile; the broker attributes "
+                  "them by name rather than structurally.", file=sys.stderr)
+            return EXIT_CANNOT_ATTACH
+
         print(f"bpftrace exited with {code}", file=sys.stderr)
         return code
 

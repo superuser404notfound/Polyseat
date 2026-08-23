@@ -346,10 +346,17 @@ func (m *Manager) shutdown() {
 
 // ------------------------------------------------------------------ observer
 
+// observerCannotAttach is what uhid_observer.py exits with when the running
+// kernel has no uhid_dev_create2 for its kprobe. Kept in step with
+// EXIT_CANNOT_ATTACH there.
+const observerCannotAttach = 3
+
 func (m *Manager) startObserver() {
 	m.observer = supervise.New([]string{
 		m.cfg.Python, "-u", m.cfg.HelperDir + "/uhid_observer.py",
 	})
+
+	m.observer.Fatal = func(code int) bool { return code == observerCannotAttach }
 
 	m.observer.OnOutput = func(line string) {
 		m.log.Info("uhid observer", "line", line)
