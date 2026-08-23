@@ -10,12 +10,16 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
-## Unreleased
+## 0.4.0
 
 **Both ends of Polyseat's life move into the interface.** Installing it was four
 commands and removing it was a command plus a checkout; it is two commands and
 two buttons now. What could not move is what a package may not do and what
 nothing else can do for it: `pacman -U` and `systemctl enable --now polyseatd`.
+
+**Seats are not touched by this.** Nothing here changes how one is built, so an
+existing machine updates with a restart and no seat has to be provisioned
+again.
 
 - **The daemon comes up on a machine that is not ready.** It used to exit when
   it could not reach Incus, and on a machine that has just installed the package
