@@ -52,11 +52,18 @@ EOF
 
     cat <<'EOF'
 
-Two things are deliberately left behind, because they are yours and not the
-package's:
+Three things are left behind, because none of them is the package's to take:
 
   /var/lib/polyseat   the seats, their pairings and the interface password
   /srv/polyseat       the shared game library
+
+  /etc/modules-load.d/polyseat.conf   loads uhid at boot
+
+The first two are yours. The third was written by polyseat-prepare rather than
+by the package, so pacman does not own it and will not remove it. It loads one
+small kernel module at boot and is harmless to leave; to be rid of it:
+
+  sudo rm /etc/modules-load.d/polyseat.conf
 
 Your seats themselves are still there as Incus containers. `incus list` shows
 them. Install Polyseat again and it picks them up where they were.

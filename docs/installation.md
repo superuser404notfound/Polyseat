@@ -186,9 +186,17 @@ Nothing is lost while the module is missing. Gamepads still work, and the broker
 falls back to attributing them by name, which is the documented fallback and a
 heuristic rather than a fact.
 
-`--uninstall` leaves `/etc/modules-load.d/polyseat.conf` where it is. That is
-worth deciding rather than inheriting: the udev rule beside it *is* removed, so
-the two are not consistent today.
+`--uninstall` removes `/etc/modules-load.d/polyseat.conf`, for the same reason
+it removes the udev rule: both are host configuration the installer put in
+`/etc`, and a machine that goes on loading a module at every boot for something
+that is no longer installed is a machine nobody tidied.
+
+The module itself is left loaded. Unloading it would reach past this
+installation, since uhid is also what bluez uses for HID over GATT.
+
+`pacman -Rns` cannot do the same, because `polyseat-prepare` wrote that file and
+the package does not own it. The removal message says so and gives the one line
+that removes it.
 
 ### Group membership
 

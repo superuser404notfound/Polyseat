@@ -13,8 +13,15 @@ prepares the machine in the same run.
 somebody actually wants is one `pacman -U` away:
 
 ```
-sudo pacman -U https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-X.Y.Z-1-x86_64.pkg.tar.zst
+sudo pacman -U https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
 ```
+
+That URL carries no version and never has to be edited. Each release gets the
+package twice: once under the name makepkg gave it, which is what tells two
+downloads apart, and once under the name above, which is what
+`releases/latest/download/` needs in order to be a link that keeps working.
+pacman reads the name and the version from inside the file, so the filename is
+free to say nothing.
 
 That covers installing, upgrading and removing through pacman, which is three
 things the shell scripts no longer have to be the only answer to. What it does

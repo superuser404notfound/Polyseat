@@ -115,6 +115,22 @@ jobs:
             exit 1
           fi
 
+          # Twice, under two names, and the second one is the point.
+          #
+          # GitHub serves releases/latest/download/<name>, which only helps when
+          # <name> never changes, and makepkg's name carries the version. So a
+          # copy goes up under a name that does not, and the readme can then
+          # carry one URL forever instead of one that has to be edited at every
+          # release and will one day not be. pacman reads the package's name and
+          # version from inside the file, so the filename is free to say nothing.
+          #
+          # The versioned one stays as well. It is what makepkg made and what
+          # somebody downloading two releases needs in order to tell them apart.
           gh release upload "$tag" "$pkg" --clobber
+
+          stable=polyseat-x86_64.pkg.tar.zst
+          cp -- "$pkg" "$stable"
+          gh release upload "$tag" "$stable" --clobber
+
           echo "attached to $tag:"
-          ls -la "$pkg"
+          ls -la "$pkg" "$stable"

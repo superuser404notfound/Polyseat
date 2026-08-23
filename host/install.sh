@@ -31,6 +31,7 @@ BINDIR=/usr/local/bin
 LIBDIR=/usr/local/lib/polyseat
 UNITDIR=/etc/systemd/system
 RULEDIR=/etc/udev/rules.d
+MODULESDIR=/etc/modules-load.d
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd -- "$HERE/.." && pwd)"
 SRC="$REPO/spike/m2-input-broker"
@@ -193,6 +194,15 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     rm -rfv "$LIBDIR"
     rm -fv "$RULEDIR/70-polyseat-hide.rules" \
            "$RULEDIR/72-polyseat-hide.rules"
+    # Written by prepare.sh, and removed here for the same reason the udev rule
+    # is: both are host configuration this installer put in /etc, and leaving
+    # one behind means a machine that goes on loading a module at every boot for
+    # something that is no longer on it.
+    #
+    # The module itself is left loaded. Unloading it would reach past this
+    # installation: uhid is what bluez uses for HID over GATT, so something else
+    # on this machine may be holding it for its own reasons.
+    rm -fv "$MODULESDIR/polyseat.conf"
     systemctl daemon-reload
     udevadm control --reload
     if [[ -n "${POLYSEAT_PURGED:-}" ]]; then
