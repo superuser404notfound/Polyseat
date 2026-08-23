@@ -31,7 +31,7 @@ BINDIR=/usr/local/bin
 LIBDIR=/usr/local/lib/polyseat
 UNITDIR=/etc/systemd/system
 RULEDIR=/etc/udev/rules.d
-MODULESDIR=/etc/modules-load.d
+MODULESDIR=/usr/local/lib/modules-load.d
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd -- "$HERE/.." && pwd)"
 SRC="$REPO/spike/m2-input-broker"
@@ -194,15 +194,13 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     rm -rfv "$LIBDIR"
     rm -fv "$RULEDIR/70-polyseat-hide.rules" \
            "$RULEDIR/72-polyseat-hide.rules"
-    # Written by prepare.sh, and removed here for the same reason the udev rule
-    # is: both are host configuration this installer put in /etc, and leaving
-    # one behind means a machine that goes on loading a module at every boot for
-    # something that is no longer on it.
+    # Placed by this installer, so removed by it. The module itself is left
+    # loaded: unloading it would reach past this installation, since uhid is
+    # what bluez uses for HID over GATT.
     #
-    # The module itself is left loaded. Unloading it would reach past this
-    # installation: uhid is what bluez uses for HID over GATT, so something else
-    # on this machine may be holding it for its own reasons.
-    rm -fv "$MODULESDIR/polyseat.conf"
+    # The /etc copy is the one 0.3.2 to 0.3.4 wrote from prepare.sh, taken out
+    # here as well so that an older installation does not leave it behind.
+    rm -fv "$MODULESDIR/polyseat.conf" /etc/modules-load.d/polyseat.conf
     systemctl daemon-reload
     udevadm control --reload
     if [[ -n "${POLYSEAT_PURGED:-}" ]]; then
@@ -300,6 +298,13 @@ if [[ -e "$UNITDIR/polyseat-broker@.service" || -e "$UNITDIR/polyseat-uhid-obser
     rm -f "$UNITDIR/polyseat-broker@.service" "$UNITDIR/polyseat-uhid-observer.service"
     warn "removed the old broker and observer units, polyseatd runs those now"
 fi
+# Loaded at boot so the uhid observer has a symbol to attach to. In
+# /usr/local/lib because that is where a checkout install belongs, next to the
+# binary and the helpers; the package owns /usr/lib/modules-load.d instead.
+# systemd reads both.
+install -Dm644 "$HERE/polyseat-modules-load.conf" "$MODULESDIR/polyseat.conf"
+ok "$MODULESDIR/polyseat.conf"
+
 install -m 0644 "$HERE/polyseatd.service" "$UNITDIR/polyseatd.service"
 systemctl daemon-reload
 ok "registered"

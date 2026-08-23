@@ -172,10 +172,16 @@ function updateBanner() {
   // Installed and waiting for a restart. The version on disk is the new one and
   // the version serving is still the old one, which is exactly what the two
   // buttons are for, so this says so rather than looking like nothing happened.
-  if ((updater.log || []).length) {
+  //
+  // Compared against what is on offer rather than assumed to be it. A newer
+  // release can appear between installing and restarting, and this used to read
+  // the version out of the offer, so it would have named a release that is not
+  // the one sitting on disk. When they differ, the offer is what matters and
+  // this falls through to the install button again.
+  if (updater.installed && updater.installed === release.version) {
     const done = document.createElement("span");
     done.textContent =
-      ` ${release.version} is installed and takes effect when the daemon restarts. `;
+      ` ${updater.installed} is installed and takes effect when the daemon restarts. `;
 
     const streaming = updater.streaming || [];
     const button = document.createElement("button");

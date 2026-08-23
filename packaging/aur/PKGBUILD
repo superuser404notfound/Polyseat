@@ -114,6 +114,13 @@ package() {
   install -Dm644 host/72-polyseat-hide.rules \
     "$pkgdir/usr/lib/udev/rules.d/72-polyseat-hide.rules"
 
+  # uhid at boot, owned by the package so that pacman -Rns takes it away again.
+  # It used to be written by polyseat-prepare into /etc, where nothing owned it
+  # and removing the package left it behind loading a module for something that
+  # was gone. systemd reads /usr/lib/modules-load.d as well as /etc.
+  install -Dm644 host/polyseat-modules-load.conf \
+    "$pkgdir/usr/lib/modules-load.d/polyseat.conf"
+
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 
   for doc in README.md CHANGELOG.md SECURITY.md docs/architecture.md docs/security.md \

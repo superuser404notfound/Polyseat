@@ -455,14 +455,19 @@ else
     echo "    retrying forever."
 fi
 
-# Loading it now does not survive a reboot, and a reboot is exactly when this
-# goes wrong: the observer starts within seconds of boot, long before anything
-# opens /dev/uhid.
+# Making it survive a reboot is not this script's job any more, and that is the
+# point of the change. The file that does it ships with Polyseat, in
+# /usr/lib/modules-load.d from the package and /usr/local/lib/modules-load.d
+# from a checkout, both of which systemd reads. Owning it that way means
+# whichever installed it also removes it, instead of a file this script wrote by
+# hand outliving the thing it was written for.
+#
+# 0.3.2 to 0.3.4 wrote /etc/modules-load.d/polyseat.conf from here. It is taken
+# out on the way past, because two files loading the same module is untidy and
+# the one in /etc is the one nothing owns.
 if [[ -e /etc/modules-load.d/polyseat.conf ]]; then
-    ok "/etc/modules-load.d/polyseat.conf is in place"
-else
-    printf 'uhid\n' > /etc/modules-load.d/polyseat.conf
-    ok "/etc/modules-load.d/polyseat.conf: uhid, so it is loaded at the next boot"
+    rm -f /etc/modules-load.d/polyseat.conf
+    ok "removed /etc/modules-load.d/polyseat.conf, which Polyseat now ships itself"
 fi
 
 step "Group membership"

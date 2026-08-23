@@ -18,11 +18,32 @@ FIX=0
 [[ "${1:-}" == "--fix" ]] && FIX=1
 
 step "udev rule"
-if [[ -e /etc/udev/rules.d/72-polyseat-hide.rules ]]; then
-    ok "installed"
+# Four directories, in the order udev reads them, because two installers put the
+# rule in two of them: host/install.sh writes /etc, where a local
+# administrator's rules go, and the package owns /usr/lib, where a
+# distribution's do. Looking only in /etc told every package install that the
+# rule protecting it was missing while it was in place and working, and a
+# hardening check that cries wolf is worse than none.
+rule_found=
+for dir in /etc/udev/rules.d /run/udev/rules.d /usr/local/lib/udev/rules.d /usr/lib/udev/rules.d; do
+    if [[ -e $dir/72-polyseat-hide.rules ]]; then
+        rule_found=$dir/72-polyseat-hide.rules
+        break
+    fi
+done
+
+if [[ -n $rule_found ]]; then
+    ok "installed: $rule_found"
 else
     bad "missing: seat devices would be readable on the host desktop"
-    echo "     sudo cp host/72-polyseat-hide.rules /etc/udev/rules.d/ && sudo udevadm control --reload"
+    # Named by how Polyseat got here, because this script now ships in the
+    # package and telling somebody to copy a file out of a checkout they do not
+    # have is an instruction that cannot be followed.
+    if pacman -Qo "$0" >/dev/null 2>&1; then
+        echo "     sudo pacman -U on the release package places it. Reinstalling is enough."
+    else
+        echo "     sudo host/install.sh   places it, from the checkout this came from"
+    fi
 fi
 
 # The number is not cosmetic. At 70 it sorted before 70-uaccess.rules, which

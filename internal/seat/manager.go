@@ -435,7 +435,21 @@ func (m *Manager) setState(name string, state State) {
 
 // Log returns the seat's recent log lines.
 func (m *Manager) Log(name string) []string {
-	return m.runtimeOf(name).log.Lines()
+	m.mu.Lock()
+	rt, known := m.rt[name]
+	m.mu.Unlock()
+
+	// Without creating one, which is what runtimeOf would do and what every
+	// other caller wants. This is the only path a name from outside reaches
+	// unchecked: the interface asks for /api/seats/{name}/log with whatever is
+	// in the URL, and ValidateName runs when a seat is made rather than when
+	// one is read. Creating a record per name asked about meant a map that grew
+	// for as long as somebody kept asking.
+	if !known {
+		return nil
+	}
+
+	return rt.log.Lines()
 }
 
 func (m *Manager) logf(name, format string, args ...any) {

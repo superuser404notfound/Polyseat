@@ -111,10 +111,23 @@ func (c *Client) Pair(ctx context.Context, pin, name string) error {
 }
 
 // Unpair removes one paired client.
+//
+// The answer is read and not only decoded. Sunshine reports a refusal in the
+// body with a 200 beside it, the same way it does for a PIN, and this used to
+// decode that into a value nothing looked at: the interface then said the
+// device had been removed while it was still paired, which is the one thing a
+// pairing screen must never say.
 func (c *Client) Unpair(ctx context.Context, uuid string) error {
 	var out statusResponse
+	if err := c.call(ctx, http.MethodPost, "/api/clients/unpair", map[string]string{"uuid": uuid}, &out); err != nil {
+		return err
+	}
 
-	return c.call(ctx, http.MethodPost, "/api/clients/unpair", map[string]string{"uuid": uuid}, &out)
+	if !out.Status {
+		return fmt.Errorf("Sunshine did not remove that device")
+	}
+
+	return nil
 }
 
 func (c *Client) call(ctx context.Context, method, path string, body, into any) error {
@@ -206,6 +219,17 @@ func (c *Client) ReloadApps(ctx context.Context) error {
 	first["index"] = 0
 
 	var out statusResponse
+	if err := c.call(ctx, http.MethodPost, "/api/apps", first, &out); err != nil {
+		return err
+	}
 
-	return c.call(ctx, http.MethodPost, "/api/apps", first, &out)
+	// Same reason as Unpair. A reload that quietly did not happen leaves
+	// Moonlight showing games a seat no longer has, which is the exact symptom
+	// this function was written to cure, so it is worth an error rather than a
+	// silence.
+	if !out.Status {
+		return fmt.Errorf("Sunshine did not reload its app list")
+	}
+
+	return nil
 }

@@ -177,18 +177,37 @@ func run(configPath, listenOverride string, logger *slog.Logger) error {
 		serverDone <- err
 	}()
 
+	// Kept, because it decides the exit status and the exit status decides
+	// whether systemd brings this back. The unit says Restart=on-failure, and
+	// returning nil after the web interface died would exit 0, which systemd
+	// reads as "it finished". The daemon would stay down, systemctl would say
+	// "inactive (dead)" rather than "failed", and it would look like somebody
+	// had stopped it on purpose.
+	var failure error
+
+	// Whether the manager has already been waited for. It is a buffered channel
+	// with exactly one value in it, so the wait further down would block for its
+	// full fifteen seconds on the one path that had already taken that value,
+	// and then warn that the manager had not shut down when it had shut down
+	// first.
+	managerStopped := false
+
 	select {
 	case <-ctx.Done():
 		logger.Info("shutting down, the seats keep running")
 	case err := <-managerDone:
+		managerStopped = true
+
 		if err != nil {
 			logger.Error("the seat manager stopped", "error", err)
+			failure = err
 		}
 
 		stop()
 	case err := <-serverDone:
 		if err != nil {
 			logger.Error("the web interface stopped", "error", err)
+			failure = err
 		}
 
 		stop()
@@ -199,11 +218,13 @@ func run(configPath, listenOverride string, logger *slog.Logger) error {
 
 	_ = server.Shutdown(shutdownCtx)
 
-	select {
-	case <-managerDone:
-	case <-time.After(15 * time.Second):
-		logger.Warn("the seat manager did not shut down in time")
+	if !managerStopped {
+		select {
+		case <-managerDone:
+		case <-time.After(15 * time.Second):
+			logger.Warn("the seat manager did not shut down in time")
+		}
 	}
 
-	return nil
+	return failure
 }

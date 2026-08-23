@@ -42,10 +42,23 @@ type Server struct {
 	// this is the daemon updating itself. One at a time, which busy enforces: a
 	// second pacman while the first is running would fail on the database lock
 	// anyway, and failing in a place that can explain itself is better.
+	// managed is whether pacman owns the running binary, worked out at startup.
+	// See New.
+	managed bool
+
 	updaterMu  sync.Mutex
 	updaterOn  bool
 	updaterLog []string
 	updaterErr string
+
+	// updaterVersion is the release the last successful install put on disk.
+	//
+	// Kept because "something was installed" and "this release was installed"
+	// are different facts, and the page used the second while only knowing the
+	// first: it read the version out of whatever the checker currently offered,
+	// so a newer release appearing between installing and restarting made it
+	// claim that newer one was installed and waiting. It was not.
+	updaterVersion string
 }
 
 // updaterState is what the page needs to decide what to show.
@@ -65,6 +78,12 @@ type updaterState struct {
 	Log     []string `json:"log"`
 	Error   string   `json:"error"`
 
+	// Installed is the release the last successful install put on disk, empty
+	// when none has. The page compares it against the release on offer rather
+	// than assuming they are the same, because between installing and
+	// restarting a newer one can appear.
+	Installed string `json:"installed"`
+
 	// Streaming is who is playing right now, so the page can refuse the restart
 	// and say whose game it would have ended.
 	Streaming []string `json:"streaming"`
@@ -72,7 +91,18 @@ type updaterState struct {
 
 // New builds the HTTP handler.
 func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker, logger *slog.Logger) http.Handler {
-	s := &Server{manager: manager, auth: credentials, updates: updates, log: logger}
+	s := &Server{
+		manager: manager, auth: credentials, updates: updates, log: logger,
+
+		// Asked once, here, and not on every request. It runs pacman, which
+		// takes about a tenth of a second, and the interface asks for its state
+		// on every change the daemon pushes: during a provision that is several
+		// a second, each one forking a process to answer a question whose answer
+		// cannot change. It cannot change because the thing it asks about is the
+		// running binary, and replacing that means a restart, which comes back
+		// through here.
+		managed: update.Managed(),
+	}
 
 	mux := http.NewServeMux()
 
@@ -449,6 +479,42 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// udevRuleDirs is where the rule can legitimately be, in the order udev reads
+// them.
+//
+// Two installers put it in two places: host/install.sh writes /etc, which is
+// where a local administrator's rules go, and the package owns /usr/lib, which
+// is where a distribution's do. /run and /usr/local/lib are here because udev
+// reads them too, and a check that knows less about the system than udev does
+// is a check that will one day disagree with it.
+//
+// Looking in one of them was a real bug and not a hypothetical: every package
+// install was told, permanently and in the interface, that the rule protecting
+// it was missing while the rule was in place and working. A security warning
+// that cries wolf is worse than none, because the next one is not read either.
+var udevRuleDirs = []string{
+	"/etc/udev/rules.d",
+	"/run/udev/rules.d",
+	"/usr/local/lib/udev/rules.d",
+	"/usr/lib/udev/rules.d",
+}
+
+// udevRuleName is the file, and the number in it is not cosmetic. At 70 it
+// sorted before 70-uaccess.rules, which put the tag it had just stripped
+// straight back on.
+const udevRuleName = "72-polyseat-hide.rules"
+
+// udevRuleInstalled says whether any of those directories has it.
+func udevRuleInstalled() bool {
+	for _, dir := range udevRuleDirs {
+		if _, err := os.Stat(filepath.Join(dir, udevRuleName)); err == nil {
+			return true
+		}
+	}
+
+	return false
+}
+
 // warnings are the host level things a seat cannot fix for itself. They belong
 // in the interface rather than only in a script nobody runs.
 func (s *Server) warnings() []string {
@@ -474,9 +540,10 @@ func (s *Server) warnings() []string {
 			"only be attributed to a seat by name, not structurally.")
 	}
 
-	if _, err := os.Stat("/etc/udev/rules.d/72-polyseat-hide.rules"); err != nil {
+	if !udevRuleInstalled() {
 		out = append(out, "The udev rule that hides seat input devices from the "+
-			"host desktop is not installed. Run host/install.sh.")
+			"host desktop is not installed. Install Polyseat again: the package "+
+			"places it, and so does host/install.sh.")
 	}
 
 	// The number is not cosmetic. At 70 the rule sorted before
@@ -1193,10 +1260,11 @@ func (s *Server) updaterState() updaterState {
 	out := updaterState{
 		Enabled:       s.manager.Config().WebUpdate,
 		NeedsPassword: s.manager.Config().UpdateNeedsPassword,
-		Managed:       update.Managed(),
+		Managed:       s.managed,
 		Running:       s.updaterOn,
 		Log:           append([]string{}, s.updaterLog...),
 		Error:         s.updaterErr,
+		Installed:     s.updaterVersion,
 		Streaming:     s.manager.Streaming(),
 	}
 
@@ -1316,7 +1384,7 @@ func (s *Server) applyUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !update.Managed() {
+	if !s.managed {
 		fail(w, http.StatusConflict, errors.New("this Polyseat was not installed from the package, so pacman has nothing to replace. Use host/update.sh in the checkout it was built from"))
 
 		return
@@ -1334,6 +1402,7 @@ func (s *Server) applyUpdate(w http.ResponseWriter, r *http.Request) {
 	s.updaterOn = true
 	s.updaterErr = ""
 	s.updaterLog = nil
+	s.updaterVersion = ""
 	s.updaterMu.Unlock()
 
 	s.manager.Notify()
@@ -1374,6 +1443,8 @@ func (s *Server) runUpdate(rel *update.Release) {
 
 	if err != nil {
 		s.updaterErr = err.Error()
+	} else {
+		s.updaterVersion = rel.Version
 	}
 
 	s.updaterMu.Unlock()
