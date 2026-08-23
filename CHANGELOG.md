@@ -10,7 +10,10 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
-## Unreleased
+## 0.4.2
+
+Words and the one place that cannot be looked up again. Nothing here changes how
+a seat is built, so updating is a restart of the daemon and no more.
 
 - **The submenu is called *Host* rather than *Machine*.** It holds preparing
   this machine, checking for a newer Polyseat and removing it, which are the
