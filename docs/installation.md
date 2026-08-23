@@ -151,6 +151,40 @@ The installer does both. The init is skipped when a storage pool already exists,
 because `incus admin init` fails on a machine that has one and there is no
 sensible way to rerun it.
 
+### The uhid module
+
+`modprobe uhid`, and `uhid` written into `/etc/modules-load.d/polyseat.conf` so
+that the next boot does it too.
+
+The daemon's observer attaches a kprobe to `uhid_dev_create2` to record which
+container created each gamepad, which is what makes ownership a fact rather than
+a guess. A kprobe attaches to a symbol the running kernel has, and where uhid is
+a module, `CONFIG_UHID=m`, its symbols do not exist until it is loaded.
+
+Nothing loads it early enough on its own. `/dev/uhid` is a static node, declared
+in `modules.devname` and created at boot by systemd-tmpfiles, and the module is
+autoloaded only when something first opens that node, which is the first seat
+that runs a pad. Without this step the daemon starts seconds into boot, finds no
+symbol, and the observer gives up until something happens to open the node.
+
+**The node existing is not evidence that the module is loaded**, which is what
+made this expensive to find: everything looks correctly installed, and the
+warning in the interface that says to load the module tests for `/dev/uhid`,
+which is there either way. That warning is right about what it actually asks,
+which is whether a seat can have a gamepad at all, and it is left as it is.
+
+The ordering at the next boot needs nothing added to the unit:
+`systemd-modules-load.service` runs `Before=sysinit.target`, and `polyseatd`
+hangs off `multi-user.target`, which is ordered after it.
+
+Nothing is lost while the module is missing. Gamepads still work, and the broker
+falls back to attributing them by name, which is the documented fallback and a
+heuristic rather than a fact.
+
+`--uninstall` leaves `/etc/modules-load.d/polyseat.conf` where it is. That is
+worth deciding rather than inheriting: the udev rule beside it *is* removed, so
+the two are not consistent today.
+
 ### Group membership
 
 **`incus-admin` is not needed.** The spike scripts needed the invoking user in

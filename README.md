@@ -50,12 +50,13 @@ finds nothing, and anything that does turn up under that name is not this.
 
 The install does everything in one go: missing packages, the idmap range that
 every container start needs, bringing Incus up and initialising it if nobody
-has, checking that the graphics driver really answers, putting your account in
-the `input` group, and then it builds the daemon and places the input helpers
-under `/usr/local/lib/polyseat`, the udev rule that keeps seat devices off the
-host desktop, and one systemd unit. It creates no seat. It can be run again
-after an update without undoing anything, which is what *Updating* further down
-is.
+has, checking that the graphics driver really answers, loading the `uhid` module
+so the observer has something to watch from the first boot onwards, putting your
+account in the `input` group, and then it builds the daemon and places the input
+helpers under `/usr/local/lib/polyseat`, the udev rule that keeps seat devices
+off the host desktop, and one systemd unit. It creates no seat. It can be run
+again after an update without undoing anything, which is what *Updating* further
+down is.
 
 The half of that a package would not be allowed to do lives in
 `host/prepare.sh`, which `install.sh` runs for you and which the package would
