@@ -1,7 +1,7 @@
 # Maintainer: rooky <superuser404@tuta.com>
 
 pkgname=polyseat
-pkgver=0.3.5
+pkgver=0.4.0
 pkgrel=1
 pkgdesc="Several people playing on one Linux PC at once, each in an isolated seat streamed to their own Moonlight client"
 arch=('x86_64')
@@ -42,7 +42,7 @@ optdepends=(
 install=polyseat.install
 
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('0bb746969dce1acd09ceaf935e35afb70e5a34c5b972038d6eb4ea878bd9ae48')
+sha256sums=('c0ab9b6ef635fcf70216bd2c02180e0dd6bdff4652002526c93b9c02149772d2')
 
 _src="Polyseat-$pkgver"
 
@@ -84,6 +84,14 @@ package() {
   # initialise Incus, write to /etc/subuid or put an account in a group, so this
   # is what the post-install message asks people to run.
   install -Dm755 host/prepare.sh "$pkgdir/usr/bin/polyseat-prepare"
+
+  # The way out, and the file the interface's remove button runs. Without it a
+  # package that installs in one command can only be removed with pacman, which
+  # knows nothing about the order this has to come apart in: the daemon has to
+  # stop before its seats are touched, or Incus is left with a "Stopping
+  # instance" task that never finishes. It also removes itself, which is why it
+  # runs from a copy of itself; see the top of the file.
+  install -Dm755 host/uninstall.sh "$pkgdir/usr/bin/polyseat-uninstall"
 
   # The other two host tools the readme sends people to, for the same reason.
   # Neither is a development aid: lan-bridge turns the uplink into a bridge,

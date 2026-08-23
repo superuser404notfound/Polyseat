@@ -1,31 +1,33 @@
 post_install() {
     cat <<'EOF'
 
-Polyseat is installed. Two things are left, and a package is not allowed to do
-either of them for you.
+Polyseat is installed. One command is left, and a package is not allowed to run
+it for you:
 
-  1. Get the machine ready:
+  sudo systemctl enable --now polyseatd
 
-       sudo polyseat-prepare
+Then open https://<this machine>:47800. Nobody has claimed this machine yet, so
+the page asks you to choose a password rather than to type one. Do that before
+anybody else on the network does.
 
-     It writes the idmap range every container start needs, brings up Incus and
-     initialises it if nobody has, checks that the graphics driver answers, and
-     puts your account in the input group. It says what it finds either way and
-     changes nothing that is already right.
+The machine itself is not ready yet, and the page says so and offers to do it:
+the idmap range every container start needs, Incus brought up and initialised,
+the graphics driver checked, your account in the input group. Press "Prepare
+this machine" and it runs exactly what the command below runs, and reports what
+it found either way. Either way is fine:
 
-  2. Start it and claim it:
+  sudo polyseat-prepare
 
-       sudo systemctl enable --now polyseatd
+Removing it again is one command as well, or the same button in the page. It
+leaves your seats alone unless you ask it not to:
 
-     Then open https://<this machine>:47800. Nobody has claimed it yet, so the
-     page asks you to choose a password rather than to type one. Do that before
-     anybody else on the network does.
+  sudo polyseat-uninstall
 
 Two things worth knowing before you build a seat:
 
   * The shared game library needs a filesystem that can share blocks, which
     means btrfs or XFS made with reflink=1. Seats work without one; the library
-    simply stays off, and polyseat-prepare says which you have.
+    simply stays off, and preparing the machine says which you have.
 
   * On an AMD card, you are the first. That path was written and reasoned about
     without one to run it on. It is expected to work and it may well not, and
@@ -60,6 +62,12 @@ package's:
 
 Your seats themselves are still there as Incus containers. `incus list` shows
 them. Install Polyseat again and it picks them up where they were.
+
+To have taken them with it, `polyseat-uninstall --seats` was the command, and it
+has just gone with the package. From here it is Incus that owns them:
+
+  sudo incus delete -f <seat>
+  sudo rm -rf /var/lib/polyseat /etc/polyseat
 
 EOF
 }
