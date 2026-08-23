@@ -10,6 +10,18 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## Unreleased
+
+- **The text pacman prints after installing says less and says where to go.**
+  It carried the AMD warning and the shared library's filesystem requirement,
+  both of which the interface says on its own in front of the thing they are
+  about, and it named the address as `<this machine>`. It now prints the address
+  a browser can actually open — the IPv4 address on the interface carrying the
+  default route, the host name when there is no route to ask — on a line of its
+  own with nothing after it, which is what makes a terminal treat it as a link.
+  `host/install.sh` and `host/prepare.sh` end the same way and are shorter by
+  about half.
+
 ## 0.4.1
 
 Two things that 0.4.0 put one click too far away.

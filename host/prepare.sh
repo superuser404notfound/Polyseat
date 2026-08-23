@@ -49,6 +49,26 @@ step() { printf '\n%s%s%s\n' "$bold" "$*" "$plain"; }
 
 [[ $EUID -eq 0 ]] || { echo "needs root"; exit 1; }
 
+# web_url prints the address to open, rather than a placeholder or a host name
+# nothing on the network resolves.
+#
+# The IPv4 address on the interface carrying the default route, which is the one
+# another machine here can reach, and the host name when there is no route to
+# ask. There is a copy of this in packaging/aur/polyseat.install, which cannot
+# source anything: three lines in two places beats a library for two callers.
+web_url() {
+    local addr
+
+    addr=$(ip -4 route get 1.1.1.1 2>/dev/null |
+        awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}')
+
+    [[ -n $addr ]] || addr=$(hostname 2>/dev/null)
+    [[ -n $addr ]] || addr=this-machine
+
+    printf 'https://%s:47800\n' "$addr"
+}
+
+
 step "Graphics"
 # Which card is in this machine decides everything downstream: which package
 # this installer needs, which driver check has to pass, and what the daemon
@@ -547,13 +567,16 @@ fi
 if [[ -z ${POLYSEAT_INSTALLING:-} && -z ${POLYSEAT_FROM_DAEMON:-} ]]; then
     cat <<EOF
 
-This machine is ready. Polyseat itself is what is left.
+This machine is ready. What is left is Polyseat itself, which a package install
+has already put in place and only has to start:
 
-From a package it is already installed and only has to be started:
+  sudo systemctl enable --now polyseatd
 
-  systemctl enable --now polyseatd
+Then open
 
-Then open https://$(hostname):47800 and choose a password. Nobody has claimed
-this machine yet, so the page asks you to set one rather than to type one.
+  $(web_url)
+
+and choose a password. Nobody has claimed this machine yet, so whoever opens
+that page first sets it.
 EOF
 fi

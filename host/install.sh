@@ -45,6 +45,26 @@ step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 [[ $EUID -eq 0 ]] || { echo "needs root"; exit 1; }
 
+# web_url prints the address to open, rather than a placeholder or a host name
+# nothing on the network resolves.
+#
+# The IPv4 address on the interface carrying the default route, which is the one
+# another machine here can reach, and the host name when there is no route to
+# ask. There is a copy of this in packaging/aur/polyseat.install, which cannot
+# source anything: three lines in two places beats a library for two callers.
+web_url() {
+    local addr
+
+    addr=$(ip -4 route get 1.1.1.1 2>/dev/null |
+        awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}')
+
+    [[ -n $addr ]] || addr=$(hostname 2>/dev/null)
+    [[ -n $addr ]] || addr=this-machine
+
+    printf 'https://%s:47800\n' "$addr"
+}
+
+
 # Removing is uninstall.sh, and this is only the door to it.
 #
 # One copy of the procedure, for the same reason prepare.sh holds the machine
@@ -190,28 +210,26 @@ fi
 
 cat <<EOF
 
-Installed. Start it with:
+Installed. Start it:
 
-  systemctl enable --now polyseatd
+  sudo systemctl enable --now polyseatd
 
-Then open the interface and create your seats there:
+Then open
 
-  https://$(hostname):47800
+  $(web_url)
 
-It has no password yet, so the page asks you to choose one rather than to type
-one. Do that before anybody else on the network does.
+and choose a password. Nobody has claimed this machine yet, so whoever opens
+that page first sets it, and the seats are made there.
 
-It answers on the whole network and the certificate is self signed, so the
-browser asks once, exactly like Sunshine's own interface. To keep it on this
-machine instead, set "listen" to "127.0.0.1:47800" in
+The certificate is self signed, so the browser asks about it once. To keep the
+page on this machine only, set "listen" to "127.0.0.1:47800" in
 /etc/polyseat/polyseatd.json.
 
-Check the host afterwards with:
+Two more commands, for later:
 
   $HERE/check-hardening.sh
-
-Removing it again is one command, and it leaves the seats alone unless it is
-asked not to:
-
   sudo polyseat-uninstall
+
+The first reports what this host still exposes to a seat. The second takes
+Polyseat off again and keeps the seats, unless it is told otherwise.
 EOF

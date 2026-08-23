@@ -1,92 +1,91 @@
-post_install() {
-    cat <<'EOF'
+# What pacman says after installing, upgrading and removing.
+#
+# Kept short on purpose. This is the one place where nobody can click anything
+# and nothing can be looked up later, so it carries the commands that cannot be
+# discovered anywhere else and leaves everything else to the page. What is
+# missing here on purpose: the AMD warning and the shared library's filesystem
+# requirement, both of which the interface says on its own, in front of the
+# thing they are about.
 
-Polyseat is installed. One command is left, and a package is not allowed to run
-it for you:
+# polyseat_url prints the address to open, rather than a placeholder.
+#
+# The IPv4 address on the interface carrying the default route, which is the one
+# another machine on this network can reach, and the host name when there is no
+# route to ask. Printed on a line of its own with nothing after it, because that
+# is what makes a terminal treat it as a link.
+polyseat_url() {
+    local addr
+
+    addr=$(ip -4 route get 1.1.1.1 2>/dev/null |
+        awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}')
+
+    [ -n "$addr" ] || addr=$(hostname 2>/dev/null)
+    [ -n "$addr" ] || addr=this-machine
+
+    printf 'https://%s:47800\n' "$addr"
+}
+
+post_install() {
+    cat <<EOF
+
+Polyseat is installed. Start it:
 
   sudo systemctl enable --now polyseatd
 
-Then open https://<this machine>:47800. Nobody has claimed this machine yet, so
-the page asks you to choose a password rather than to type one. Do that before
-anybody else on the network does.
+Then open
 
-The machine itself is not ready yet, and the page says so and offers to do it:
-the idmap range every container start needs, Incus brought up and initialised,
-the graphics driver checked, your account in the input group. Press "Prepare
-this machine" and it runs exactly what the command below runs, and reports what
-it found either way. Either way is fine:
+  $(polyseat_url)
 
-  sudo polyseat-prepare
+and choose a password. Nobody has claimed this machine yet, so whoever opens
+that page first sets it, and everything else happens there. The first thing it
+asks for is one press to prepare the machine: the packages, Incus, the idmap
+range and the driver check that a package is not allowed to do for you.
 
-Removing it again is one command as well, or the same button in the page. It
-leaves your seats alone unless you ask it not to:
+Both of those are commands as well, for anyone who would rather watch them:
+polyseat-prepare and polyseat-uninstall.
 
-  sudo polyseat-uninstall
+EOF
+}
 
-Two things worth knowing before you build a seat:
+post_upgrade() {
+    cat <<EOF
 
-  * The shared game library needs a filesystem that can share blocks, which
-    means btrfs or XFS made with reflink=1. Seats work without one; the library
-    simply stays off, and preparing the machine says which you have.
+Polyseat is upgraded on disk. The process that is running is still the old one:
 
-  * On an AMD card, you are the first. That path was written and reasoned about
-    without one to run it on. It is expected to work and it may well not, and
-    either answer is worth an issue with the output of: sudo polyseatd -report
+  sudo systemctl restart polyseatd
+
+Seats keep running through that. Each one's input broker restarts with the
+daemon, so a controller can drop for a moment. If this version builds seats
+differently, the page names the ones that are behind and has a button for them.
 
 EOF
 }
 
 post_remove() {
     if systemctl is-active --quiet polyseatd.service; then
-        cat <<'EOF'
+        cat <<EOF
 
 polyseatd is still running, from a binary that is no longer on disk. Removing a
-package does not stop a service, and this one is deliberately not stopped for
-you.
+package does not stop a service:
 
   sudo systemctl stop polyseatd
-
-Your seats keep running either way. They are Incus containers and Incus owns
-them; the daemon supervises them and does not hold them up.
 
 EOF
     fi
 
-    cat <<'EOF'
+    cat <<EOF
 
-Two things are deliberately left behind, because they are yours and not the
-package's:
+Two things are left behind, because they are yours and not the package's:
 
   /var/lib/polyseat   the seats, their pairings and the interface password
   /srv/polyseat       the shared game library
 
-Your seats themselves are still there as Incus containers. `incus list` shows
-them. Install Polyseat again and it picks them up where they were.
-
-To have taken them with it, `polyseat-uninstall --seats` was the command, and it
-has just gone with the package. From here it is Incus that owns them:
+The seats are still Incus containers, and installing Polyseat again picks them
+up where they were. To have taken them along, polyseat-uninstall --seats was
+the command, and it has just gone with the package:
 
   sudo incus delete -f <seat>
   sudo rm -rf /var/lib/polyseat /etc/polyseat
-
-EOF
-}
-
-post_upgrade() {
-    cat <<'EOF'
-
-Polyseat is upgraded on disk. The process that is running is still the old one:
-replacing a binary does not disturb a process using it.
-
-  sudo systemctl restart polyseatd
-
-Seats keep running through that. Their containers are not stopped and are picked
-up again on the way back in, so nobody's game ends. What does happen is that
-each seat's input broker restarts with the daemon, so a controller can drop for
-a moment.
-
-If this version builds seats differently, the web interface names the seats that
-are behind and offers one button to bring them up to date, at a moment you pick.
 
 EOF
 }
