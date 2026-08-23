@@ -78,6 +78,14 @@
 
 <main id="app" hidden>
   <div id="warnings"></div>
+
+  <!-- The machine itself, on the page rather than behind the Machine button,
+       for as long as it has not been prepared. A seat cannot be built on a
+       machine without an idmap range for root, so the one thing to do about
+       that should not have to be found first. It holds the same panel the
+       dialog does. -->
+  <section id="firstrun" hidden></section>
+
   <div id="seats" class="seats"></div>
 
   <button id="add" class="add">Add a seat</button>

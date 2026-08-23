@@ -229,3 +229,89 @@ func TestStartRefusesAnAccountThisMachineHasNever(t *testing.T) {
 		t.Error("an account that does not exist was accepted")
 	}
 }
+
+// idmap points the readiness check at a machine this one is not.
+func idmap(t *testing.T, subuid, subgid string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	files := []string{}
+
+	for name, content := range map[string]string{"subuid": subuid, "subgid": subgid} {
+		path := filepath.Join(dir, name)
+
+		if content != "" {
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		files = append(files, path)
+	}
+
+	// Sorted, so that the file named in a failure is the same one every run:
+	// ranging over a map is not ordered, and a test that names subuid half the
+	// time and subgid the other half reads as a flake.
+	if strings.HasSuffix(files[0], "subgid") {
+		files[0], files[1] = files[1], files[0]
+	}
+
+	old := idmapFiles
+	idmapFiles = files
+
+	t.Cleanup(func() { idmapFiles = old })
+}
+
+// The entry CachyOS does not ship, and without which every container start
+// fails with a message that mentions neither subuid nor Polyseat.
+func TestReadyWantsAnIdmapRangeForRoot(t *testing.T) {
+	cases := []struct {
+		why            string
+		subuid, subgid string
+		ready          bool
+	}{
+		{"both files carry one", "root:1000000:1000000000\n", "root:1000000:1000000000\n", true},
+		{"a narrower one is still one", "root:100000:65536\n", "root:100000:65536\n", true},
+		{"a user entry is not one", "vincent:100000:65536\n", "root:1000000:1000000000\n", false},
+		{"the gid half is missing", "root:1000000:1000000000\n", "vincent:100000:65536\n", false},
+		{"the file is not there at all", "", "", false},
+		{"an entry that only looks like it", "notroot:100000:65536\n", "root:1000000:1000000000\n", false},
+
+		// The daemon reads these before it writes anything, so a file that ends
+		// without a newline is a real shape rather than a contrived one:
+		// prepare.sh appends one only when it has to.
+		{"the last line has no newline", "root:1000000:1000000000", "root:1000000:1000000000", true},
+	}
+
+	for _, c := range cases {
+		idmap(t, c.subuid, c.subgid)
+
+		got, why := Ready()
+		if got != c.ready {
+			t.Errorf("%s: ready = %v, wanted %v (%s)", c.why, got, c.ready, why)
+		}
+
+		if !got && why == "" {
+			t.Errorf("%s: said no and did not say why", c.why)
+		}
+	}
+}
+
+// The state carries it, because the page decides where to put the panel from
+// this one field.
+func TestStateSaysWhetherTheMachineNeedsPreparing(t *testing.T) {
+	script(t, "true\n")
+	idmap(t, "vincent:100000:65536\n", "vincent:100000:65536\n")
+
+	var runner Runner
+
+	if got := runner.State(); !got.Needed || got.Why == "" {
+		t.Errorf("an unprepared machine reported %+v", got)
+	}
+
+	idmap(t, "root:1000000:1000000000\n", "root:1000000:1000000000\n")
+
+	if got := runner.State(); got.Needed || got.Why != "" {
+		t.Errorf("a prepared machine reported %+v", got)
+	}
+}

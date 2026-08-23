@@ -225,3 +225,89 @@ func TestNewer(t *testing.T) {
 		}
 	}
 }
+
+// The button in the interface, which is the same request the loop makes with
+// one difference: somebody is waiting for this one, so what goes wrong is
+// returned rather than logged and dropped.
+func TestCheckNowAnswersStraightAway(t *testing.T) {
+	server := serve(t, nil) // publishes v0.1.0
+
+	checker := New("v0.0.9", true, discard())
+	checker.api = server.URL
+
+	release, err := checker.CheckNow(context.Background())
+	if err != nil {
+		t.Fatalf("refused: %v", err)
+	}
+
+	if release == nil || release.Version != "v0.1.0" {
+		t.Fatalf("answered with %v", release)
+	}
+
+	if checker.LastCheck().IsZero() {
+		t.Error("it did not record having asked")
+	}
+}
+
+// Nothing newer is an answer and not a failure, and the page says so out loud.
+// A button that reports nothing when it worked is one nobody presses twice.
+func TestCheckNowSaysNothingNewerWithoutAnError(t *testing.T) {
+	server := serve(t, nil)
+
+	checker := New("v0.1.0", true, discard())
+	checker.api = server.URL
+
+	release, err := checker.CheckNow(context.Background())
+	if err != nil {
+		t.Fatalf("refused: %v", err)
+	}
+
+	if release != nil {
+		t.Errorf("offered %v to the version that publishes it", release)
+	}
+
+	if checker.LastCheck().IsZero() {
+		t.Error("it did not record having asked")
+	}
+}
+
+// The difference from the background check, and the reason this exists at all:
+// somebody pressed a button and is owed an answer, including "GitHub did not
+// answer". The loop logs that and moves on, because nobody is watching it.
+func TestCheckNowReportsWhatWentWrong(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	checker := New("v0.0.9", true, discard())
+	checker.api = server.URL
+
+	if _, err := checker.CheckNow(context.Background()); err == nil {
+		t.Fatal("a server that answered 500 was reported as a successful check")
+	}
+
+	if !checker.LastCheck().IsZero() {
+		t.Error("a failed check was recorded as having asked")
+	}
+}
+
+// Two refusals that would otherwise arrive as "nothing newer", which is the one
+// answer they do not mean.
+func TestCheckNowRefusesRatherThanShrugging(t *testing.T) {
+	server := serve(t, nil)
+
+	off := New("v0.0.9", false, discard())
+	off.api = server.URL
+
+	if _, err := off.CheckNow(context.Background()); err == nil {
+		t.Error("a checker with the setting off answered as though it had asked")
+	}
+
+	development := New("v0.1.0-4-gabc1234-dirty", true, discard())
+	development.api = server.URL
+
+	if _, err := development.CheckNow(context.Background()); err == nil {
+		t.Error("a build that cannot name itself as a release was compared with one")
+	}
+}

@@ -64,6 +64,55 @@ func Command() (string, error) {
 		Name, strings.Join(Dirs, " or "))
 }
 
+// idmapFiles are the two files every container start depends on. Variables so
+// that the check below can be tested against a machine this one is not.
+var idmapFiles = []string{"/etc/subuid", "/etc/subgid"}
+
+// Ready says whether this machine looks like one polyseat-prepare has been run
+// on, and what says otherwise.
+//
+// One fact decides it, and it is deliberately not a marker file this daemon
+// writes: whether root has an idmap range. That is asking the machine rather
+// than asking a note somebody left about the machine, which is the same choice
+// the library probe makes when it clones a file instead of reading a filesystem
+// label. A marker would also be wrong in both directions, surviving a machine
+// that was reset and missing on one prepared before it existed.
+//
+// It is the right single fact for three reasons. Nothing else on an Arch
+// machine writes that entry: CachyOS ships one for the user and none for root.
+// Without it every container start fails with "System doesn't have a functional
+// idmap setup", which names neither subuid nor Polyseat, so a seat cannot be
+// built and the message does not say why. And it is two small file reads,
+// cheap enough to answer on every state request.
+//
+// Everything else preparing does is either already reported on its own — the
+// uhid observer, the udev rule, the library filesystem, the uplink — or cannot
+// be asked from here at all, like whose account is in the input group.
+func Ready() (bool, string) {
+	for _, path := range idmapFiles {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return false, fmt.Sprintf("%s cannot be read, and a container needs an idmap range from it", path)
+		}
+
+		found := false
+
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "root:") {
+				found = true
+
+				break
+			}
+		}
+
+		if !found {
+			return false, fmt.Sprintf("%s has no range for root, so every container start fails with \"System doesn't have a functional idmap setup\"", path)
+		}
+	}
+
+	return true, ""
+}
+
 // State is what the interface needs to draw the panel and its log.
 type State struct {
 	// Command is the script that would run, empty when there is none. The page
@@ -78,6 +127,14 @@ type State struct {
 	// sudo answers that question by itself and a daemon started by systemd
 	// cannot, so it is asked in the browser.
 	Accounts []string `json:"accounts"`
+
+	// Needed is whether this machine still has to be prepared, and Why is the
+	// fact that says so. The interface puts the panel on the page itself while
+	// this holds, rather than behind the button that opens the dialog: on a
+	// machine that has never been prepared, a seat cannot be built, and the one
+	// thing to do about that should not have to be found first.
+	Needed bool   `json:"needed"`
+	Why    string `json:"why"`
 
 	Running bool     `json:"running"`
 	Log     []string `json:"log"`
@@ -108,8 +165,12 @@ func (r *Runner) State() State {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	ready, why := Ready()
+
 	out := State{
 		Accounts: Accounts(),
+		Needed:   !ready,
+		Why:      why,
 		Running:  r.running,
 		Log:      append([]string{}, r.log...),
 		Error:    r.err,

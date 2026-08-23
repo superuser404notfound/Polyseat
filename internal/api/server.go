@@ -101,6 +101,16 @@ type updaterState struct {
 	// ask before it posts rather than posting and being turned away.
 	NeedsPassword bool `json:"needs_password"`
 
+	// CheckEnabled is the update_check setting, and Checked is when GitHub last
+	// answered, null until it has.
+	//
+	// Both are here for the button that asks now rather than waiting for the
+	// six-hourly look. Without Checked the page cannot tell "nothing newer"
+	// from "nothing heard", which on a machine that has been off the network
+	// since yesterday are different answers with the same appearance.
+	CheckEnabled bool       `json:"check_enabled"`
+	Checked      *time.Time `json:"checked"`
+
 	Running bool     `json:"running"`
 	Log     []string `json:"log"`
 	Error   string   `json:"error"`
@@ -152,6 +162,7 @@ func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker
 	guarded.HandleFunc("POST /api/seats", s.createSeat)
 	guarded.HandleFunc("POST /api/provision-stale", s.provisionStale)
 	guarded.HandleFunc("POST /api/update", s.applyUpdate)
+	guarded.HandleFunc("POST /api/update/check", s.checkUpdate)
 	guarded.HandleFunc("POST /api/restart", s.restart)
 	guarded.HandleFunc("POST /api/prepare", s.prepareHost)
 	guarded.HandleFunc("POST /api/uninstall", s.removeHost)
@@ -1376,6 +1387,7 @@ func (s *Server) updaterState() updaterState {
 	out := updaterState{
 		Enabled:       s.config().WebUpdate,
 		NeedsPassword: s.config().UpdateNeedsPassword,
+		CheckEnabled:  s.updates.Enabled(),
 		Managed:       s.managed,
 		Running:       s.updaterOn,
 		Log:           append([]string{}, s.updaterLog...),
@@ -1386,6 +1398,10 @@ func (s *Server) updaterState() updaterState {
 
 	if out.Streaming == nil {
 		out.Streaming = []string{}
+	}
+
+	if when := s.updates.LastCheck(); !when.IsZero() {
+		out.Checked = &when
 	}
 
 	return out
@@ -1459,6 +1475,41 @@ func confirmPassword(store *auth.Store, needed bool, r *http.Request) error {
 	store.Succeeded(source)
 
 	return nil
+}
+
+// checkUpdate asks GitHub now, instead of waiting for the next six-hourly look.
+//
+// It reaches the network and changes nothing on this machine, which is why it
+// needs neither the password nor web_update: looking is what update_check
+// governs, and installing is the handler below. A POST rather than a GET all
+// the same, because it is an action with an effect somewhere else, and because
+// every state changing call here is a POST guarded by a strict SameSite cookie.
+//
+// Nothing limits how often it may be pressed. It is behind a session, one
+// person presses it, and the only thing on the other end that could be spent is
+// GitHub's own unauthenticated rate limit, which answers for itself and says so
+// in the sentence the page prints.
+func (s *Server) checkUpdate(w http.ResponseWriter, r *http.Request) {
+	// Not the request's context alone: a browser that goes away mid-check would
+	// otherwise cancel a request whose answer this daemon keeps either way.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 45*time.Second)
+	defer cancel()
+
+	release, err := s.updates.CheckNow(ctx)
+	if err != nil {
+		fail(w, http.StatusConflict, err)
+
+		return
+	}
+
+	s.log.Info("checked for a newer Polyseat from the interface",
+		"found", release != nil)
+
+	// So that every other page open on this machine learns what this one just
+	// asked, rather than only the one that pressed the button.
+	s.notify()
+
+	writeJSON(w, http.StatusOK, map[string]any{"release": release})
 }
 
 // applyUpdate installs the release the daemon found, and nothing else.

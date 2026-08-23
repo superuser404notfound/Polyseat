@@ -326,3 +326,62 @@ func TestSetupModeServesWhatItCanAndNothingElse(t *testing.T) {
 		t.Errorf("the setup interface did not serve the page: %d", w.Code)
 	}
 }
+
+// ------------------------------------------------------------- update check
+
+// Looking is not installing, so this needs neither web_update nor the password.
+// What it does obey is the setting that governs looking, and it says so rather
+// than answering "nothing newer", which is the one thing a switched-off check
+// does not know.
+func TestCheckingForUpdatesObeysTheCheckSetting(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	s := host(t, config.Default())
+	s.updates = update.New("v0.1.0", false, logger)
+
+	w := httptest.NewRecorder()
+	s.checkUpdate(w, post("/api/update/check", "", "10.4.0.1"))
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("answered %d, wanted 409", w.Code)
+	}
+
+	if !strings.Contains(w.Body.String(), "update_check") {
+		t.Errorf("it did not name the setting: %s", w.Body)
+	}
+}
+
+// A build that cannot name itself as a release cannot be compared with one, and
+// that is a sentence rather than a silence for the same reason.
+func TestCheckingForUpdatesRefusesADevelopmentBuild(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	s := host(t, config.Default())
+	s.updates = update.New("dev", true, logger)
+
+	w := httptest.NewRecorder()
+	s.checkUpdate(w, post("/api/update/check", "", "10.4.1.1"))
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("answered %d, wanted 409", w.Code)
+	}
+}
+
+// The page reads three things out of this to decide what to draw, and all three
+// are absent on a machine that has never looked.
+func TestTheStateCarriesWhatTheCheckKnows(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	s := host(t, config.Default())
+	s.updates = update.New("v0.1.0", true, logger)
+
+	got := s.updaterState()
+
+	if !got.CheckEnabled {
+		t.Error("the check is on and the state says it is not")
+	}
+
+	if got.Checked != nil {
+		t.Errorf("it has never asked and the state says it asked at %v", got.Checked)
+	}
+}

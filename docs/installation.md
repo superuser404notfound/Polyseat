@@ -371,6 +371,34 @@ either for the same reason.
 reported rather than changed, because the remaining measures cost the machine
 its text consoles. That judgement belongs to the operator, not to an installer.
 
+## Whether the machine is ready, and where the panel sits
+
+The daemon answers that from one fact, and deliberately not from a marker file
+it writes itself: **whether root has an idmap range** in `/etc/subuid` and
+`/etc/subgid`. That is asking the machine rather than asking a note somebody
+left about it, which is the same choice the library probe makes when it clones a
+file instead of reading a filesystem label. A marker would be wrong in both
+directions, surviving a machine that was reset and missing on one prepared
+before the marker existed.
+
+It is the right single fact for three reasons. Nothing else on an Arch machine
+writes that entry, since CachyOS ships one for the user and none for root.
+Without it every container start fails with `System doesn't have a functional
+idmap setup`, which names neither subuid nor Polyseat, so no seat can be built
+and the message does not say why. And it is two small file reads, cheap enough
+to answer on every state request. Everything else preparing does is either
+already reported on its own — the uhid observer, the udev rule, the library
+filesystem, the uplink — or cannot be asked from here at all, like whose account
+is in the `input` group.
+
+**Where the panel lives follows from that.** On a machine that is not ready it
+is on the page itself, above the seats that cannot be built yet. On a machine
+that is ready but has no seats it is still there, in ordinary colours rather
+than a warning, because that is somebody's first look at this page and "is this
+machine ready" should not need a dialog to answer. Once a seat exists it moves
+behind the *Machine* button, where it belongs among the things that are done
+rarely and on purpose.
+
 ## Before the machine is ready
 
 The daemon used to exit when it could not reach Incus, and on a machine that has

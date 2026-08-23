@@ -100,6 +100,12 @@ type Checker struct {
 
 	mu     sync.Mutex
 	latest *Release
+
+	// checked is when GitHub last answered, zero until it has. Kept so that the
+	// interface can say when it last looked rather than only what it found: on
+	// a machine that has been offline for a day, "nothing newer" and "nothing
+	// heard" look the same and mean different things.
+	checked time.Time
 }
 
 // New builds a checker for the version this binary was built from.
@@ -114,6 +120,48 @@ func (c *Checker) Available() *Release {
 	defer c.mu.Unlock()
 
 	return c.latest
+}
+
+// Enabled is whether this checker looks at all, which is the update_check
+// setting. Reported to the interface so that a page can say the check is off
+// rather than showing a button that answers with a refusal.
+func (c *Checker) Enabled() bool {
+	return c.enabled
+}
+
+// LastCheck is when GitHub last answered, zero if it never has.
+func (c *Checker) LastCheck() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.checked
+}
+
+// CheckNow asks straight away, for somebody who does not want to wait six
+// hours to find out.
+//
+// It is the same request the loop makes, and it is a request to GitHub rather
+// than to anything on this machine: what it can do wrong is be offline, which
+// is why this one reports the failure instead of logging it and moving on the
+// way the background check does. Nobody is waiting on that one.
+//
+// The two refusals are worth telling apart in the page, so they are errors
+// rather than a nil answer: a check that is switched off and a build that
+// cannot be compared with a release both look like "nothing newer" otherwise.
+func (c *Checker) CheckNow(ctx context.Context) (*Release, error) {
+	if !c.enabled {
+		return nil, fmt.Errorf(`the update check is off ("update_check" in /etc/polyseat/polyseatd.json)`)
+	}
+
+	if _, ok := parseTag(c.current); !ok {
+		return nil, fmt.Errorf("this build calls itself %q rather than a release, and there is no way to compare that with one. See parseTag", c.current)
+	}
+
+	if err := c.check(ctx); err != nil {
+		return nil, err
+	}
+
+	return c.Available(), nil
 }
 
 // Run polls until the context ends. Meant to be run in a goroutine of its own.
@@ -147,39 +195,42 @@ func (c *Checker) Run(ctx context.Context) {
 			return
 
 		case <-first.C:
-			c.check(ctx)
+			_ = c.check(ctx)
 
 		case <-tick.C:
-			c.check(ctx)
+			_ = c.check(ctx)
 		}
 	}
 }
 
 // check asks once and keeps the answer.
 //
-// A failure is logged and otherwise dropped. There is no banner for "could not
-// reach GitHub": the machine this runs on is a games host on somebody's LAN,
-// being offline is a normal state for it, and an interface that complains about
-// it teaches people to ignore the place where the real warnings go.
-func (c *Checker) check(ctx context.Context) {
+// The error is returned for CheckNow, which has somebody watching, and dropped
+// by the loop, which does not. There is no banner for "could not reach GitHub"
+// on its own: the machine this runs on is a games host on somebody's LAN, being
+// offline is a normal state for it, and an interface that complains about that
+// teaches people to ignore the place where the real warnings go.
+func (c *Checker) check(ctx context.Context) error {
 	release, err := fetch(ctx, c.api)
 	if err != nil {
 		c.log.Info("could not check for a new version", "error", err)
 
-		return
+		return err
 	}
 
 	if !newer(c.current, release.Version) {
 		c.mu.Lock()
 		c.latest = nil
+		c.checked = time.Now()
 		c.mu.Unlock()
 
-		return
+		return nil
 	}
 
 	c.mu.Lock()
 	known := c.latest == nil || c.latest.Version != release.Version
 	c.latest = release
+	c.checked = time.Now()
 	c.mu.Unlock()
 
 	// Logged when it changes and not on every check, or a machine left running
@@ -188,6 +239,8 @@ func (c *Checker) check(ctx context.Context) {
 		c.log.Info("a newer Polyseat has been published",
 			"running", c.current, "available", release.Version, "url", release.URL)
 	}
+
+	return nil
 }
 
 // fetch asks GitHub for the current release.

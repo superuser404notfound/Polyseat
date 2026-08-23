@@ -401,6 +401,7 @@ function render() {
   // reports a line at a time like everything else, and a log that only moves
   // when the dialog is reopened reads as one that has stopped.
   updateMachine();
+  renderFirstrun();
 
   el("warnings").replaceChildren(
     ...updateBanner(),
@@ -420,12 +421,20 @@ function render() {
   forgetMissingSeats();
 
   if (state.seats.length === 0) {
+    // Two sentences for two situations. On a machine that has not been prepared
+    // the first thing to do is above this, not here, and saying "no seats yet"
+    // as though the next step were adding one sends somebody to a button that
+    // would build a container this machine cannot start.
+    const needed = state.prepare && state.prepare.needed;
+
     seats.replaceChildren(
       Object.assign(document.createElement("p"), {
         className: "empty",
-        textContent:
-          "No seats yet. A seat is a container with its own session, its own " +
-          "Sunshine and its own Steam account.",
+        textContent: needed
+          ? "Prepare this machine first, above. A seat is a container, and " +
+            "without that step no container on this machine can start."
+          : "No seats yet. A seat is a container with its own session, its own " +
+            "Sunshine and its own Steam account.",
       }),
     );
     return;
@@ -1754,6 +1763,10 @@ function showLogin(setup) {
 
   stopSetupPoll();
 
+  // Forgotten at sign out, or the next person to sign in gets the panel and the
+  // log from a session that was not theirs.
+  firstrunOpen = false;
+
   el("app").hidden = true;
   el("notready").hidden = true;
   el("farewell").hidden = true;
@@ -2198,8 +2211,15 @@ function preparePanel(options) {
 
     const went = await runHost(error, () => api("POST", "/api/prepare", body));
 
-    if (went) await options.refresh();
-    else button.disabled = false;
+    if (went) {
+      // Whoever mounted this panel may want to keep it on the screen now that
+      // there is a log in it, even once the reason it appeared has gone away.
+      if (options.onRun) options.onRun();
+
+      await options.refresh();
+    } else {
+      button.disabled = false;
+    }
   };
 
   box.append(title, hint, why, label, button, error, log, failed, done);
@@ -2476,6 +2496,166 @@ function showFarewell(answer) {
   el("farewell-detail").textContent = parts.join(" ");
 }
 
+// updatePanel is where somebody asks now rather than waiting six hours.
+//
+// The banner at the top of the page says when there is a newer Polyseat, and
+// says nothing at all when there is not, which is right for a banner and leaves
+// nowhere to answer the question "is there?". This is that place, and it also
+// says when the daemon last managed to ask: on a machine that has been off the
+// network since yesterday, "nothing newer" and "nothing heard" look identical
+// and are not the same answer.
+function updatePanel(options) {
+  const box = document.createElement("section");
+  box.className = "panel";
+
+  const title = document.createElement("h3");
+  title.textContent = "Updates";
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent =
+    "The daemon asks GitHub every six hours whether a newer Polyseat has been " +
+    "published. The request carries nothing about this machine, and it installs " +
+    "nothing on its own.";
+
+  const running = document.createElement("p");
+  running.className = "hint";
+
+  const button = document.createElement("button");
+  button.textContent = "Check now";
+
+  const answer = document.createElement("div");
+  answer.className = "notice";
+  answer.hidden = true;
+
+  const error = document.createElement("div");
+  error.className = "warning";
+  error.hidden = true;
+
+  button.onclick = async () => {
+    button.disabled = true;
+    answer.hidden = true;
+
+    let found = null;
+
+    const went = await runHost(error, async () => {
+      found = (await api("POST", "/api/update/check")).release;
+    });
+
+    button.disabled = false;
+
+    if (!went) return;
+
+    answer.hidden = false;
+    answer.textContent = found
+      ? `${found.version} was published${describeAge(found.published)}. ` +
+        "The line at the top of the page has the button that installs it."
+      : "This is the newest release.";
+
+    await options.refresh();
+  };
+
+  box.append(title, hint, running, button, answer, error);
+
+  function update(state) {
+    const updater = (state && state.updater) || {};
+    const version = (state && state.host && state.host.version) || "an unknown version";
+
+    // Never asked, asked and answered, or switched off: three sentences,
+    // because "no newer version" means something different under each.
+    let when = "It has not managed to ask yet.";
+
+    if (updater.checked) {
+      const at = new Date(updater.checked);
+
+      if (!Number.isNaN(at.getTime())) {
+        when = "Last asked at " + at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ".";
+      }
+    }
+
+    if (updater.check_enabled === false) {
+      when = 'The check is off ("update_check" in polyseatd.json), so this asks nothing.';
+    }
+
+    running.textContent = `This machine runs polyseatd ${version}. ${when}`;
+    button.hidden = updater.check_enabled === false;
+  }
+
+  return { node: box, update };
+}
+
+// -------------------------------------------- the machine, on the page itself
+
+// Until this machine has been prepared, the panel that prepares it is on the
+// page rather than behind the Machine button.
+//
+// It was only in the dialog to begin with, and that is one place too far for
+// the one thing a new installation has to do: no seat can be built on a machine
+// with no idmap range for root, so somebody who has just installed Polyseat
+// needs it in front of them, above the seats they cannot create yet.
+//
+// Two situations put it there, and the second is the one that matters most for
+// a first installation. A machine that has not been prepared shows it because
+// nothing under it can work yet. A machine with no seats shows it because that
+// is somebody's first look at this page, and "is this machine ready" is a
+// question they should not have to open a dialog to answer. Once a seat exists
+// it goes back to living behind the Machine button.
+//
+// After it has been used it stays until the page is reloaded, even when both
+// reasons have gone: it is holding the log of the run that just finished and
+// the button that restarts into it, and a panel that vanished at the moment it
+// succeeded would take both away.
+
+let firstrunView = null;
+let firstrunOpen = false;
+let firstrunUsed = false;
+
+function renderFirstrun() {
+  const prepare = (state && state.prepare) || {};
+  const wanted = !!prepare.needed || (state.seats || []).length === 0;
+
+  firstrunOpen = wanted || (firstrunOpen && firstrunUsed);
+
+  el("firstrun").hidden = !firstrunOpen;
+
+  if (!firstrunOpen) return;
+
+  if (!firstrunView) {
+    firstrunView = preparePanel({
+      refresh,
+      onRun: () => {
+        firstrunUsed = true;
+      },
+      readyText:
+        "This machine is ready, and seats can be built on it. What was loaded " +
+        "or installed just now reaches the daemon when it restarts. ",
+    });
+
+    const why = document.createElement("p");
+    why.className = "hint";
+    why.id = "firstrun-why";
+
+    el("firstrun").replaceChildren(why, firstrunView.node);
+  }
+
+  // The same panel under two headings, because the two situations are not the
+  // same news. One says nothing here works yet; the other says everything does
+  // and here is where that is checked.
+  const why = el("firstrun-why");
+  why.hidden = false;
+  why.className = prepare.needed ? "hint bad" : "hint";
+  why.textContent = prepare.needed
+    ? "This machine has not been prepared yet" +
+      (prepare.why ? ": " + prepare.why : "") +
+      ". Nothing below can be built until that is done."
+    : "This machine is ready and has no seats yet. Preparing it again changes " +
+      "nothing that is already right, so it is also how to check.";
+
+  el("firstrun").className = prepare.needed ? "not-ready" : "";
+
+  firstrunView.update(state);
+}
+
 // ------------------------------------------------- the machine, as a dialog
 
 let machineViews = null;
@@ -2490,6 +2670,7 @@ function openMachine() {
           "the daemon when it restarts, and a restart is refused while somebody " +
           "is playing. ",
       }),
+      updatePanel({ refresh }),
       removePanel({ refresh }),
     ];
 
