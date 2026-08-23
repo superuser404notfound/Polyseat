@@ -102,6 +102,19 @@ jobs:
             exit 1
           fi
 
-          gh release upload "$tag" ./*.pkg.tar.zst --clobber
+          # Named rather than globbed. makepkg in this container has debug in
+          # its default OPTIONS and therefore builds polyseat-debug-* beside
+          # the real one, and a release page offering two files where one of
+          # them is not installable is worse than one offering neither. The
+          # debug package is not published: nothing links it, and split DWARF
+          # for a Go binary is not what a bug report here is short of.
+          pkg=$(echo polyseat-"$pkgver"-*-x86_64.pkg.tar.zst)
+
+          if [[ ! -f $pkg ]]; then
+            echo "::error::no package for $pkgver was built"
+            exit 1
+          fi
+
+          gh release upload "$tag" "$pkg" --clobber
           echo "attached to $tag:"
-          ls -la ./*.pkg.tar.zst
+          ls -la "$pkg"
