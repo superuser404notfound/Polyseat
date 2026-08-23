@@ -10,6 +10,35 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.4.1
+
+Two things that 0.4.0 put one click too far away.
+
+- **Preparing the machine was only behind the *Machine* button.** On a host that
+  the daemon could reach Incus on — one where Incus was already installed and
+  initialised — the page came up as the ordinary interface and the one thing a
+  new installation still had to do was in a dialog nobody opens first. The panel
+  is now on the page itself, above the seats, whenever the machine has not been
+  prepared or has no seats yet, and it moves back behind the button once there
+  is a seat.
+
+  Whether the machine is ready is answered from one fact rather than from a
+  marker file the daemon writes: whether root has an idmap range in
+  `/etc/subuid` and `/etc/subgid`. Nothing else on an Arch machine writes that
+  entry, without it every container start fails with a message that names
+  neither subuid nor Polyseat, and it is two small file reads.
+
+  The empty seat list says the same thing rather than offering to add one: a
+  seat built on a machine in that state is a container that cannot start.
+
+- **A button that asks GitHub now**, under *Machine*, instead of waiting up to
+  six hours for the next look. It says when the daemon last managed to ask,
+  because on a machine that has been off the network since yesterday "nothing
+  newer" and "nothing heard" look identical and are not the same answer, and it
+  says plainly when it found nothing rather than leaving a silence. It needs no
+  password: looking is what `update_check` governs, and installing is still the
+  button that asks for one.
+
 ## 0.4.0
 
 **Both ends of Polyseat's life move into the interface.** Installing it was four
