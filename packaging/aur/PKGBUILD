@@ -85,6 +85,16 @@ package() {
   # is what the post-install message asks people to run.
   install -Dm755 host/prepare.sh "$pkgdir/usr/bin/polyseat-prepare"
 
+  # The other two host tools the readme sends people to, for the same reason.
+  # Neither is a development aid: lan-bridge turns the uplink into a bridge,
+  # which is what local multiplayer between the host and a seat needs, and
+  # check-hardening reports the console and device exposures that docs/security.md
+  # describes. Somebody who installed the package has no checkout to find them
+  # in, and until they were here the readme named two files that machine did not
+  # have. Both stand on their own and read nothing from a source tree.
+  install -Dm755 host/lan-bridge.sh "$pkgdir/usr/bin/polyseat-lan-bridge"
+  install -Dm755 host/check-hardening.sh "$pkgdir/usr/bin/polyseat-check-hardening"
+
   # The input broker and its helpers. /usr/lib rather than /usr/local/lib, which
   # is where a checkout install puts them; the daemon looks in both and prefers
   # the local one, so a package and a checkout on one machine behave the way a

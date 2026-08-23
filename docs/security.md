@@ -329,7 +329,7 @@ what is left holding. Worth it for a machine whose seats are for people in the
 same room, which is what this is for; not worth it for a seat handed to somebody
 you do not trust, and that was already the case before this existed.
 
-`sudo host/lan-bridge.sh --undo` puts the macvlan arrangement back.
+`sudo polyseat-lan-bridge --undo` puts the macvlan arrangement back.
 
 ### Per seat, and the isolated state is still available
 

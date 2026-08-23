@@ -139,9 +139,9 @@ jobs:
           # compared every asset against the empty string.
           #
           # Rebuilding is still possible and has to be asked for by hand.
-          if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qxF "$pkg"; then
+          if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qxF "$stable"; then
             if [[ "${{ inputs.rebuild }}" != "true" ]]; then
-              echo "::notice::$tag already carries $pkg, so it is left alone."
+              echo "::notice::$tag already carries $stable, so it is left alone."
               echo "::notice::Run this workflow by hand with rebuild if that is really wanted."
               exit 0
             fi
@@ -149,21 +149,20 @@ jobs:
             echo "::warning::replacing the package on $tag, which was asked for"
           fi
 
-          # Twice, under two names, and the second one is the point.
+          # One file, under a name with no version in it.
           #
-          # GitHub serves releases/latest/download/<name>, which only helps when
-          # <name> never changes, and makepkg's name carries the version. So a
-          # copy goes up under a name that does not, and the readme can then
-          # carry one URL forever instead of one that has to be edited at every
-          # release and will one day not be. pacman reads the package's name and
-          # version from inside the file, so the filename is free to say nothing.
+          # GitHub serves releases/latest/download/<name>, which is a permanent
+          # link only while <name> is permanent, and makepkg's name carries the
+          # version. pacman reads the package's name and version from inside the
+          # file, so the name is free to say nothing and the documented command
+          # never has to be edited.
           #
-          # The versioned one stays as well. It is what makepkg made and what
-          # somebody downloading two releases needs in order to tell them apart.
-          gh release upload "$tag" "$pkg" --clobber
-
+          # makepkg's own name is not published beside it. Two files on a
+          # release page where either would do is a question asked of everybody
+          # who arrives, and the release is already the thing that says which
+          # version this is.
           cp -- "$pkg" "$stable"
           gh release upload "$tag" "$stable" --clobber
 
           echo "attached to $tag:"
-          ls -la "$pkg" "$stable"
+          ls -la "$stable"

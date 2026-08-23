@@ -156,6 +156,26 @@ The installer does both. The init is skipped when a storage pool already exists,
 because `incus admin init` fails on a machine that has one and there is no
 sensible way to rerun it.
 
+### What the host tools are called
+
+Three of the scripts in `host/` are not development aids and ship as commands,
+because somebody who installed the package has no checkout to find them in:
+
+| in the repository | installed as |
+|---|---|
+| `host/prepare.sh` | `polyseat-prepare` |
+| `host/lan-bridge.sh` | `polyseat-lan-bridge` |
+| `host/check-hardening.sh` | `polyseat-check-hardening` |
+
+The rest stay in the repository, because they are about the repository:
+`install.sh` and `update.sh` are the checkout's own way in and out,
+`reset-machine.sh` and the `test-*.sh` scripts exist to be run against a machine
+somebody is willing to break.
+
+Elsewhere in these documents the scripts are named by their path, because that
+is where they are written and read. Where a document gives a command to type,
+it uses the installed name.
+
 ### The uhid module
 
 `modprobe uhid`, and `uhid` written into `/etc/modules-load.d/polyseat.conf` so
@@ -305,7 +325,7 @@ either for the same reason.
 
 ### Optional hardening
 
-`host/check-hardening.sh --fix` pins `kernel.sysrq`. Everything else it finds is
+`polyseat-check-hardening --fix` pins `kernel.sysrq`. Everything else it finds is
 reported rather than changed, because the remaining measures cost the machine
 its text consoles. That judgement belongs to the operator, not to an installer.
 

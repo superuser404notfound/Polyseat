@@ -24,12 +24,15 @@ looks for a `.sig` that is not there; a file already on disk applies
 it needs a key that is published and trusted by hand, which is the same key a
 package repository would need.
 
-That URL carries no version and never has to be edited. Each release gets the
-package twice: once under the name makepkg gave it, which is what tells two
-downloads apart, and once under the name above, which is what
-`releases/latest/download/` needs in order to be a link that keeps working.
-pacman reads the name and the version from inside the file, so the filename is
-free to say nothing.
+That URL carries no version and never has to be edited, which is why the file is
+published under a name that carries none either: `releases/latest/download/` is
+a permanent link only while the name is permanent. pacman reads the name and the
+version from inside the file, so the filename is free to say nothing, and
+`pacman -Qip` on the download says which version it turned out to be.
+
+makepkg's own versioned name is not published beside it. Two files on a release
+page where either one would do is a question asked of everybody who arrives, and
+the release itself already says which version it is.
 
 That covers installing, upgrading and removing through pacman, which is three
 things the shell scripts no longer have to be the only answer to. What it does
