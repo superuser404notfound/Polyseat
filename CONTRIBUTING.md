@@ -47,7 +47,7 @@ Both of those hand over to `host/uninstall.sh`, which is also installed as
 A checkout install places `polyseat-prepare` and `polyseat-uninstall` in
 `/usr/local/bin` as well, because the daemon looks for those two by name and a
 binary built from a checkout has no way to find the checkout it came from.
-Without them the two buttons under *Machine* have nothing to run and say so.
+Without them the two buttons under *Host* have nothing to run and say so.
 
 The daemon installed this way is **not** updated by the button in the web
 interface, and the interface says so: there is no package for pacman to replace.

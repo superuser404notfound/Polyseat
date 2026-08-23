@@ -38,7 +38,7 @@ Then open
 
 and choose a password. Nobody has claimed this machine yet, so whoever opens
 that page first sets it, and everything else happens there. The first thing it
-asks for is one press to prepare the machine: the packages, Incus, the idmap
+asks for is one press to prepare this host: the packages, Incus, the idmap
 range and the driver check that a package is not allowed to do for you.
 
 Both of those are commands as well, for anyone who would rather watch them:

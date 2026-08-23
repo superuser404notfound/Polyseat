@@ -12,6 +12,12 @@ costs a few minutes per seat rather than a restart.
 
 ## Unreleased
 
+- **The submenu is called *Host* rather than *Machine*.** It holds preparing
+  this machine, checking for a newer Polyseat and removing it, which are the
+  three things that are about the computer the seats run on rather than about a
+  seat, and "host" is the word this project uses for that everywhere else. The
+  entries under 0.4.0 and 0.4.1 below name it as it was called then.
+
 - **The text pacman prints after installing says less and says where to go.**
   It carried the AMD warning and the shared library's filesystem requirement,
   both of which the interface says on its own in front of the thing they are

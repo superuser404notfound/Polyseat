@@ -11,11 +11,11 @@
 <header class="top">
   <h1>Polyseat</h1>
 
-  <!-- Two buttons rather than one, and the machine is the new one. Everything
-       else in this page is about a seat; these are about the host it runs on,
-       which is the half that used to need a terminal. -->
+  <!-- Two buttons rather than one, and the host is the new one. Everything
+       else on this page is about a seat; this is about the machine they run
+       on, which is the half that used to need a terminal. -->
   <div class="tools" id="tools" hidden>
-    <button id="machine-open" class="quiet">Machine</button>
+    <button id="host-open" class="quiet">Host</button>
     <button id="account" class="quiet">Account</button>
   </div>
   <div class="host">
@@ -79,11 +79,10 @@
 <main id="app" hidden>
   <div id="warnings"></div>
 
-  <!-- The machine itself, on the page rather than behind the Machine button,
-       for as long as it has not been prepared. A seat cannot be built on a
-       machine without an idmap range for root, so the one thing to do about
-       that should not have to be found first. It holds the same panel the
-       dialog does. -->
+  <!-- The host itself, on the page rather than behind the Host button, for as
+       long as it has not been prepared. A seat cannot be built on a host with
+       no idmap range for root, so the one thing to do about that should not
+       have to be found first. It holds the same panel the dialog does. -->
   <section id="firstrun" hidden></section>
 
   <div id="seats" class="seats"></div>
@@ -109,12 +108,12 @@
   <footer class="version" id="version"></footer>
 </main>
 
-<!-- The interface a machine gets before it can run a seat.
+<!-- The interface a host gets before it can run a seat.
      Shown instead of the app when the daemon came up without an Incus to talk
-     to, which on a machine that has just installed the package is not a fault:
+     to, which on a host that has just installed the package is not a fault:
      Incus is one of the things preparing it installs. -->
 <section id="notready" class="notready" hidden>
-  <h2>This machine is not ready yet</h2>
+  <h2>This host is not ready yet</h2>
   <p class="hint" id="notready-reason"></p>
 
   <div id="notready-panels"></div>
@@ -129,17 +128,17 @@
   <p class="hint" id="farewell-detail"></p>
 </section>
 
-<!-- The host rather than the seats: getting this machine ready, and taking
-     Polyseat off it again. Not a form, because both halves inside it are, and a
-     form inside a form is not a thing a browser will parse. -->
-<dialog id="machine">
-  <h2>This machine</h2>
+<!-- The host rather than the seats: getting it ready, keeping it up to date,
+     and taking Polyseat off it again. Not a form, because the halves inside it
+     are, and a form inside a form is not a thing a browser will parse. -->
+<dialog id="host">
+  <h2>This host</h2>
 
-  <div id="machine-body"></div>
+  <div id="host-body"></div>
 
   <menu>
     <span class="spacer"></span>
-    <button type="button" id="machine-close">Close</button>
+    <button type="button" id="host-close">Close</button>
   </menu>
 </dialog>
 

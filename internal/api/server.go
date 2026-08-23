@@ -616,9 +616,9 @@ func (s *Server) warnings() []string {
 	case "failed":
 		out = append(out, "The uhid observer gave up: this kernel has no "+
 			"uhid_dev_create2 for it to watch, which almost always means uhid "+
-			"is a module that is not loaded. Prepare this machine, under "+
-			"Machine, loads it and keeps it loaded across a reboot, and the "+
-			"probe attaches when the daemon restarts. Gamepads go on working; "+
+			"is a module that is not loaded. Prepare this host, under Host, "+
+			"loads it and keeps it loaded across a reboot, and the probe "+
+			"attaches when the daemon restarts. Gamepads go on working; "+
 			"they are attributed to a seat by name rather than structurally "+
 			"until then.")
 	default:

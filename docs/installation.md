@@ -396,7 +396,7 @@ is on the page itself, above the seats that cannot be built yet. On a machine
 that is ready but has no seats it is still there, in ordinary colours rather
 than a warning, because that is somebody's first look at this page and "is this
 machine ready" should not need a dialog to answer. Once a seat exists it moves
-behind the *Machine* button, where it belongs among the things that are done
+behind the *Host* button, where it belongs among the things that are done
 rarely and on purpose.
 
 ## Before the machine is ready

@@ -67,7 +67,7 @@ The interface answers on the whole network, so seats can be managed from the
 same phone that runs Moonlight. To keep it on this machine only, set `listen`
 to `127.0.0.1:47800` in `/etc/polyseat/polyseatd.json`.
 
-**3. Press *Prepare this machine*.** It is the first thing on the page, above
+**3. Press *Prepare this host*.** It is the first thing on the page, above
 the seats, until this machine has one. The button installs the missing packages,
 writes the idmap range every container start needs, brings Incus up and
 initialises it, checks that the graphics driver answers, and puts your account
@@ -75,7 +75,7 @@ in the `input` group. It reports each step as it happens, and every step checks
 before it changes anything, so pressing it again on a machine that is already
 ready changes nothing — which is also how to check that it is.
 
-Afterwards it moves under *Machine*, at the top of the page, along with removing
+Afterwards it moves under *Host*, at the top of the page, along with removing
 Polyseat and asking GitHub for a newer version.
 
 `sudo polyseat-prepare` is the same thing from a terminal, down to the same
@@ -127,7 +127,7 @@ release the daemon found itself, from this project's own downloads, and checks
 it against the checksum that release states.
 
 The check for a new version is one request to GitHub every six hours, it sends
-nothing about the machine, and it installs nothing on its own. *Machine* has a
+nothing about the machine, and it installs nothing on its own. *Host* has a
 button that asks now rather than waiting for the next one, and says when the
 daemon last managed to ask, because "nothing newer" and "nothing heard" are
 different answers. `"update_check": false` turns all of it off. [`CHANGELOG.md`](CHANGELOG.md) is where
@@ -136,7 +136,7 @@ serving is at the bottom of the interface.
 
 ## Removing it
 
-*Machine* in the interface, then **Remove Polyseat**. It asks for the password
+*Host* in the interface, then **Remove Polyseat**. It asks for the password
 again, because it is the one button here that pressing a second time does not
 undo. At a terminal it is the same file:
 

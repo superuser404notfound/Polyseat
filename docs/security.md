@@ -463,7 +463,7 @@ switch.
 What it does give away is that a machine at that address runs something which
 watches this repository, to GitHub and to anybody who can see the connection.
 `"update_check": false` in `/etc/polyseat/polyseatd.json` turns it off, and then
-no request is made at all — including the button under *Machine* that asks now
+no request is made at all — including the button under *Host* that asks now
 instead of waiting six hours, which refuses and says which setting refused it.
 That button needs a session and nothing else: it makes the same request the
 timer makes, changes nothing on this machine, and installing what it finds is

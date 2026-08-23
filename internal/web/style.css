@@ -580,12 +580,12 @@ button.quiet {
   text-align: right;
 }
 
-/* ------------------------------------------------------------- the machine */
+/* ---------------------------------------------------------------- the host */
 
-/* The host rather than the seats: getting this machine ready, and taking
-   Polyseat off it again. The same two panels appear in a dialog behind the
-   Machine button and on the page a daemon serves when it came up without an
-   Incus, so everything here is written for both. */
+/* The host rather than the seats: getting it ready, keeping it up to date and
+   taking Polyseat off it again. The same panels appear in the dialog behind the
+   Host button and on the page a daemon serves when it came up without an Incus,
+   so everything here is written for both. */
 
 .tools { display: flex; gap: 0.4rem; align-items: center; }
 
@@ -660,17 +660,17 @@ dialog .panel + .panel { border-top: 1px solid var(--line); padding-top: 1.2rem;
 
 /* Wider than the seat editor. It holds three panels with a log among them, and
    at thirty rem the log is a column of hyphens. */
-#machine { width: min(38rem, calc(100vw - 2rem)); }
+#host { width: min(38rem, calc(100vw - 2rem)); }
 
-/* The panel a machine that is not ready gets, above the seats it cannot build
+/* The panel a host that is not ready gets, above the seats it cannot build
    yet. Bordered in the warning colour rather than the line colour, because it
    is not one card among several: nothing under it works until it has been
    used. */
 #firstrun { margin-bottom: 1.25rem; }
 #firstrun > .hint { margin: 0 0 0.7rem; }
 
-/* Only while it is the one thing standing in the way. A machine that is ready
-   and simply has no seats yet shows the same panel in the ordinary colours,
-   because there is nothing wrong with it. */
+/* Only while it is the one thing standing in the way. A host that is ready and
+   simply has no seats yet shows the same panel in the ordinary colours, because
+   there is nothing wrong with it. */
 #firstrun.not-ready .panel { border-color: var(--warn); }
 #firstrun > .hint.bad { color: var(--warn); }

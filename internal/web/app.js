@@ -147,7 +147,7 @@ function updateBanner() {
   const text = document.createElement("span");
   text.textContent =
     `Polyseat ${release.version} was published${describeAge(release.published)}. ` +
-    `This machine runs ${state.host.version || "an unknown version"}. `;
+    `This host runs ${state.host.version || "an unknown version"}. `;
 
   const link = document.createElement("a");
   link.href = release.url;
@@ -252,7 +252,7 @@ function updateBanner() {
 
     if (updater.needs_password) {
       password = window.prompt(
-        `Installing ${release.version} runs pacman as root on this machine. ` +
+        `Installing ${release.version} runs pacman as root on this host. ` +
           "Type the interface password to confirm.",
       );
 
@@ -400,7 +400,7 @@ function render() {
   // Behind the dialog rather than in the page, but a prepare running there
   // reports a line at a time like everything else, and a log that only moves
   // when the dialog is reopened reads as one that has stopped.
-  updateMachine();
+  updateHost();
   renderFirstrun();
 
   el("warnings").replaceChildren(
@@ -431,8 +431,8 @@ function render() {
       Object.assign(document.createElement("p"), {
         className: "empty",
         textContent: needed
-          ? "Prepare this machine first, above. A seat is a container, and " +
-            "without that step no container on this machine can start."
+          ? "Prepare this host first, above. A seat is a container, and without " +
+            "that step no container on this host can start."
           : "No seats yet. A seat is a container with its own session, its own " +
             "Sunshine and its own Steam account.",
       }),
@@ -1805,7 +1805,7 @@ function showApp() {
   el("farewell").hidden = true;
   el("app").hidden = false;
   el("tools").hidden = false;
-  el("machine-open").hidden = false;
+  el("host-open").hidden = false;
 
   refresh();
   connect();
@@ -2047,15 +2047,15 @@ async function saveEditor(event) {
   }
 }
 
-// -------------------------------------------------------------- the machine
+// ------------------------------------------------------------------ the host
 
-// The two things this interface does to the machine rather than to a seat:
+// The two things this interface does to the host rather than to a seat:
 // getting it ready, and taking Polyseat off it again. Everything else on this
 // page is about seats, and these two were the parts that used to need a
 // terminal at each end of Polyseat's life.
 //
 // Built here and mounted in two places, because two pages need the same
-// panels: the dialog behind the Machine button, and the page a daemon serves
+// panels: the dialog behind the Host button, and the page a daemon serves
 // when it came up without an Incus to talk to. A second copy would be a second
 // set of the same bugs.
 //
@@ -2115,7 +2115,7 @@ function preparePanel(options) {
   box.className = "panel";
 
   const title = document.createElement("h3");
-  title.textContent = "Prepare this machine";
+  title.textContent = "Prepare this host";
 
   const hint = document.createElement("p");
   hint.className = "hint";
@@ -2124,7 +2124,7 @@ function preparePanel(options) {
     "container start needs, brings Incus up and initialises it, checks that the " +
     "graphics driver answers, and puts an account in the input group. It is the " +
     "same thing sudo polyseat-prepare does, because it is the same file. Every " +
-    "step checks before it changes anything, so a machine that is already ready " +
+    "step checks before it changes anything, so a host that is already ready " +
     "is left as it is.";
 
   const why = document.createElement("p");
@@ -2140,14 +2140,14 @@ function preparePanel(options) {
 
   const about = document.createElement("small");
   about.textContent =
-    "Read access to every input device on this machine. The daemon does not need " +
+    "Read access to every input device on this host. The daemon does not need " +
     "it, since it is root and opens the nodes itself; the host side tooling does, " +
     "and so does a Sunshine running on the host rather than in a seat.";
   label.append(about);
 
   const button = document.createElement("button");
   button.className = "primary";
-  button.textContent = "Prepare this machine";
+  button.textContent = "Prepare this host";
 
   const error = document.createElement("div");
   error.className = "warning";
@@ -2197,7 +2197,7 @@ function preparePanel(options) {
     // remembered it.
     if (button.dataset.password === "yes") {
       const password = window.prompt(
-        "Preparing this machine runs pacman as root on it. Type the interface " +
+        "Preparing this host runs pacman as root on it. Type the interface " +
           "password to confirm.",
       );
 
@@ -2241,7 +2241,7 @@ function preparePanel(options) {
         'Preparing from here is off ("web_update" in polyseatd.json). At a ' +
         "terminal it is: sudo polyseat-prepare";
     } else if (!prepare.command) {
-      blocked = prepare.reason || "polyseat-prepare is not installed on this machine.";
+      blocked = prepare.reason || "polyseat-prepare is not installed on this host.";
     }
 
     why.hidden = !blocked;
@@ -2255,10 +2255,10 @@ function preparePanel(options) {
     button.dataset.password = config.update_needs_password ? "yes" : "no";
 
     button.textContent = running
-      ? "Preparing this machine"
+      ? "Preparing this host"
       : (prepare.log || []).length
         ? "Prepare it again"
-        : "Prepare this machine";
+        : "Prepare this host";
 
     const lines = (prepare.log || []).join("\n");
     log.hidden = !lines;
@@ -2292,7 +2292,7 @@ function removePanel(options) {
   hint.textContent =
     "Stops the daemon, then takes away its unit, the udev rule, the input " +
     "helpers and the package itself. Incus, bpftrace and python stay: they are " +
-    "not Polyseat's to remove, and something else on this machine may be using " +
+    "not Polyseat's to remove, and something else on this host may be using " +
     "them. It is the same thing sudo polyseat-uninstall does.";
 
   const why = document.createElement("p");
@@ -2434,7 +2434,7 @@ function removePanel(options) {
         'Removing from here is off ("web_uninstall" in polyseatd.json). At a ' +
         "terminal it is: sudo polyseat-uninstall";
     } else if (!remove.available) {
-      blocked = remove.reason || "polyseat-uninstall is not installed on this machine.";
+      blocked = remove.reason || "polyseat-uninstall is not installed on this host.";
     }
 
     why.hidden = !blocked;
@@ -2463,7 +2463,7 @@ function showFarewell(answer) {
 
   stopSetupPoll();
 
-  el("machine").close();
+  el("host").close();
   el("app").hidden = true;
   el("login").hidden = true;
   el("notready").hidden = true;
@@ -2515,7 +2515,7 @@ function updatePanel(options) {
   hint.className = "hint";
   hint.textContent =
     "The daemon asks GitHub every six hours whether a newer Polyseat has been " +
-    "published. The request carries nothing about this machine, and it installs " +
+    "published. The request carries nothing about this host, and it installs " +
     "nothing on its own.";
 
   const running = document.createElement("p");
@@ -2577,17 +2577,17 @@ function updatePanel(options) {
       when = 'The check is off ("update_check" in polyseatd.json), so this asks nothing.';
     }
 
-    running.textContent = `This machine runs polyseatd ${version}. ${when}`;
+    running.textContent = `This host runs polyseatd ${version}. ${when}`;
     button.hidden = updater.check_enabled === false;
   }
 
   return { node: box, update };
 }
 
-// -------------------------------------------- the machine, on the page itself
+// ----------------------------------------------- the host, on the page itself
 
 // Until this machine has been prepared, the panel that prepares it is on the
-// page rather than behind the Machine button.
+// page rather than behind the Host button.
 //
 // It was only in the dialog to begin with, and that is one place too far for
 // the one thing a new installation has to do: no seat can be built on a machine
@@ -2599,7 +2599,7 @@ function updatePanel(options) {
 // nothing under it can work yet. A machine with no seats shows it because that
 // is somebody's first look at this page, and "is this machine ready" is a
 // question they should not have to open a dialog to answer. Once a seat exists
-// it goes back to living behind the Machine button.
+// it goes back to living behind the Host button.
 //
 // After it has been used it stays until the page is reloaded, even when both
 // reasons have gone: it is holding the log of the run that just finished and
@@ -2627,8 +2627,8 @@ function renderFirstrun() {
         firstrunUsed = true;
       },
       readyText:
-        "This machine is ready, and seats can be built on it. What was loaded " +
-        "or installed just now reaches the daemon when it restarts. ",
+        "This host is ready, and seats can be built on it. What was loaded or " +
+        "installed just now reaches the daemon when it restarts. ",
     });
 
     const why = document.createElement("p");
@@ -2645,10 +2645,10 @@ function renderFirstrun() {
   why.hidden = false;
   why.className = prepare.needed ? "hint bad" : "hint";
   why.textContent = prepare.needed
-    ? "This machine has not been prepared yet" +
+    ? "This host has not been prepared yet" +
       (prepare.why ? ": " + prepare.why : "") +
       ". Nothing below can be built until that is done."
-    : "This machine is ready and has no seats yet. Preparing it again changes " +
+    : "This host is ready and has no seats yet. Preparing it again changes " +
       "nothing that is already right, so it is also how to check.";
 
   el("firstrun").className = prepare.needed ? "not-ready" : "";
@@ -2656,17 +2656,17 @@ function renderFirstrun() {
   firstrunView.update(state);
 }
 
-// ------------------------------------------------- the machine, as a dialog
+// ---------------------------------------------------- the host, as a dialog
 
-let machineViews = null;
+let hostViews = null;
 
-function openMachine() {
-  if (!machineViews) {
-    machineViews = [
+function openHost() {
+  if (!hostViews) {
+    hostViews = [
       preparePanel({
         refresh,
         readyText:
-          "This machine is ready. What was loaded or installed just now reaches " +
+          "This host is ready. What was loaded or installed just now reaches " +
           "the daemon when it restarts, and a restart is refused while somebody " +
           "is playing. ",
       }),
@@ -2674,22 +2674,22 @@ function openMachine() {
       removePanel({ refresh }),
     ];
 
-    el("machine-body").replaceChildren(...machineViews.map((view) => view.node));
+    el("host-body").replaceChildren(...hostViews.map((view) => view.node));
   }
 
-  updateMachine();
-  el("machine").showModal();
+  updateHost();
+  el("host").showModal();
 }
 
 // Called from render as well, so that a prepare running behind an open dialog
 // shows its log as it happens rather than when somebody closes and reopens it.
-function updateMachine() {
-  if (!machineViews || !state) return;
+function updateHost() {
+  if (!hostViews || !state) return;
 
-  for (const view of machineViews) view.update(state);
+  for (const view of hostViews) view.update(state);
 }
 
-// --------------------------------------------- the machine, as a whole page
+// ------------------------------------------------ the host, as a whole page
 
 // What a daemon serves when it came up without an Incus to talk to. On a
 // machine that has just installed the package that is the ordinary state and
@@ -2707,7 +2707,7 @@ function showSetup() {
 
   // The panels are on the page here, so the button that opens them in a dialog
   // would open a second copy of what is already being read.
-  el("machine-open").hidden = true;
+  el("host-open").hidden = true;
 
   el("observer").hidden = true;
   el("gpu").hidden = true;
@@ -2717,7 +2717,7 @@ function showSetup() {
       preparePanel({
         refresh: refreshSetup,
         readyText:
-          "This machine is ready. Polyseat restarts into its own interface by " +
+          "This host is ready. Polyseat restarts into its own interface by " +
           "itself once Incus answers, which is a moment from now; this does it " +
           "immediately. ",
       }),
@@ -2753,7 +2753,7 @@ async function refreshSetup() {
       "Polyseat is running, but it cannot reach Incus, which is what holds the " +
       "seats: " +
       (data.reason || "no reason given") +
-      ". On a machine that has just installed the package that is the ordinary " +
+      ". On a host that has just installed the package that is the ordinary " +
       "state rather than a fault, because Incus is one of the things preparing " +
       "it installs.";
 
@@ -2833,8 +2833,8 @@ el("password-form").onsubmit = submitPassword;
 el("password-cancel").onclick = () => el("password").close();
 el("logout").onclick = signOut;
 el("account").onclick = () => run(openAccount);
-el("machine-open").onclick = openMachine;
-el("machine-close").onclick = () => el("machine").close();
+el("host-open").onclick = openHost;
+el("host-close").onclick = () => el("host").close();
 // Says what it did. A button that silently changes nothing is indistinguishable
 // from a button that is broken, which is exactly how the per seat setting above
 // managed to hide.
