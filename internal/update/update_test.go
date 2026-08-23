@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"testing"
 )
 
@@ -309,5 +310,39 @@ func TestCheckNowRefusesRatherThanShrugging(t *testing.T) {
 
 	if _, err := development.CheckNow(context.Background()); err == nil {
 		t.Error("a build that cannot name itself as a release was compared with one")
+	}
+}
+
+// The bug this package did not catch for five releases, and the test that would
+// have.
+//
+// The interface's install button never worked once, on any machine. It said
+// "that release has no package attached to it", because the workflow publishes
+// the package under a version-less name — releases/latest/download/ is a
+// permanent link only while the name is — and the matcher here was written one
+// release earlier, against makepkg's own versioned name.
+//
+// The tests that existed did not notice, because the recording they used was
+// made before that rename: they agreed with the parser about a shape that had
+// stopped existing. A recording proves what GitHub said once, and only reading
+// the workflow proves what it says now. The daemon looks for a name, a workflow
+// in another language uploads one, and nothing in between made them agree until
+// this.
+func TestThePublishedNameIsTheNameThisLooksFor(t *testing.T) {
+	workflow, err := os.ReadFile("../../.github/workflows/package.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The line that decides the name, rather than the whole file: the workflow
+	// builds a versioned file and copies it to this one before uploading.
+	found := regexp.MustCompile(`(?m)^\s*stable=(\S+)\s*$`).FindSubmatch(workflow)
+	if found == nil {
+		t.Fatal("package.yml no longer says which name it publishes under, so this test cannot check it any more")
+	}
+
+	if got := string(found[1]); got != PublishedAsset {
+		t.Errorf("the workflow uploads %q and the daemon looks for %q, so the interface would say the release has no package",
+			got, PublishedAsset)
 	}
 }

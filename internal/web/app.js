@@ -117,29 +117,135 @@ function showError(message) {
   box.prepend(div);
 }
 
-// updateBanner says that a newer Polyseat has been published, and offers to
-// install it where that is possible.
+// What there is to say about a newer Polyseat, and what can be done about it.
 //
-// It used to say it and stop there, because installing meant rebuilding the
-// daemon from a checkout. A package install is a file and a pacman transaction,
-// which is something the daemon can do for itself.
+// Decided in one place for the two that offer it: the line at the top of the
+// page, and the Updates panel under Host. That used to be one place and a
+// sentence pointing at it, which is how somebody with the panel open was told
+// to press a button the panel itself was covering.
 //
-// The install and the restart are two buttons and not one, and that is the
-// whole design rather than an omission. Replacing the binary leaves the running
-// process exactly as it was, so the first button is safe at any moment, even
-// with two people playing. The second one ends every seat's input broker for a
-// moment, so it is offered separately and refused while anybody is streaming.
-// This is the one thing the interface does better than host/update.sh: that
-// script has to work out whether somebody is playing, and this page already
-// knows and already says so on every card.
+// The install and the restart are two actions and not one, and that is the
+// design rather than an omission. Replacing the binary leaves the running
+// process exactly as it was, so installing is safe at any moment, even with two
+// people playing. Restarting ends every seat's input broker for a moment, so it
+// is offered separately and refused while anybody is streaming. This is the one
+// thing the interface does better than host/update.sh: that script has to work
+// out whether somebody is playing, and this page already knows.
+// Takes the state rather than reading the page's, because one of its two
+// callers is a panel that is also built on the interface a daemon serves when
+// it has no state of that kind at all.
+function updateChoice(state) {
+  const release = state && state.update;
+  const updater = (state && state.updater) || {};
+
+  if (!release) return { kind: "none", updater };
+
+  if (updater.running) return { kind: "running", release, updater };
+  if (updater.error) return { kind: "failed", release, updater };
+
+  // Installed and waiting for a restart. The version on disk is the new one and
+  // the version serving is still the old one.
+  //
+  // Compared against what is on offer rather than assumed to be it. A newer
+  // release can appear between installing and restarting, and this used to read
+  // the version out of the offer, so it would have named a release that is not
+  // the one sitting on disk. When they differ, the offer is what matters and
+  // this falls through to installing again.
+  if (updater.installed && updater.installed === release.version) {
+    return { kind: "restart", release, updater };
+  }
+
+  // The three reasons there is no button, each with its own sentence. One is a
+  // setting somebody chose, one is how this was installed, and one is a release
+  // that has no package: telling them apart is the difference between knowing
+  // what to do and wondering what is broken.
+  let why = "";
+
+  if (!updater.enabled) {
+    why = 'Updating from here is off ("web_update" in polyseatd.json). Use host/update.sh.';
+  } else if (!updater.managed) {
+    why =
+      "This Polyseat was installed from a checkout rather than from the package, " +
+      "so pacman has nothing to replace. Use host/update.sh.";
+  } else if (!release.package) {
+    why = "That release has no package attached to it, so it cannot be installed from here.";
+  }
+
+  if (why) return { kind: "blocked", release, updater, why };
+
+  return { kind: "install", release, updater };
+}
+
+function installButton(choice) {
+  const button = document.createElement("button");
+  button.textContent = "Install it";
+
+  button.onclick = () => {
+    // Asked here rather than posted and refused, so that the one setting that
+    // exists to make somebody stop and think actually makes them stop and
+    // think. prompt() and not a field on the page: it cannot be filled in by
+    // something that is already on the page, and there is nowhere for a browser
+    // to have remembered it.
+    let password;
+
+    if (choice.updater.needs_password) {
+      password = window.prompt(
+        `Installing ${choice.release.version} runs pacman as root on this host. ` +
+          "Type the interface password to confirm.",
+      );
+
+      // Cancelled, which is a decision and not a failure. No error, no request.
+      if (password === null) return;
+    }
+
+    button.disabled = true;
+    run(async () => {
+      await api("POST", "/api/update", password === undefined ? undefined : { password });
+      await refresh();
+    });
+  };
+
+  return button;
+}
+
+function restartButton(choice) {
+  const streaming = choice.updater.streaming || [];
+  const button = document.createElement("button");
+
+  if (streaming.length) {
+    button.disabled = true;
+    button.textContent = "Restart when nobody is playing";
+    button.title =
+      streaming.length === 1
+        ? `${streaming[0]} is streaming right now`
+        : `${streaming.join(", ")} are streaming right now`;
+
+    return button;
+  }
+
+  button.textContent = "Restart now";
+  button.onclick = () => {
+    button.disabled = true;
+    run(async () => {
+      await api("POST", "/api/restart");
+      await refresh();
+    });
+  };
+
+  return button;
+}
+
+// updateBanner is the passive half: it appears when a release does, at the top
+// of the page, whether or not anybody went looking. The Updates panel is the
+// other half, for anybody who did.
 //
 // The link goes to the release rather than repeating its notes here. What
 // changed is worth reading before updating, and worth reading in full.
 function updateBanner() {
-  const release = state.update;
-  if (!release) return [];
+  const choice = updateChoice(state);
+  if (choice.kind === "none") return [];
 
-  const updater = state.updater || {};
+  const { release, updater } = choice;
 
   const div = document.createElement("div");
   div.className = "notice";
@@ -158,7 +264,7 @@ function updateBanner() {
   // While it runs, the lines the daemon reported, newest last. Shown rather
   // than a spinner because the slow part is a download and people reasonably
   // want to know it is moving.
-  if (updater.running) {
+  if (choice.kind === "running") {
     const log = document.createElement("div");
     log.className = "muted";
     log.textContent = (updater.log || []).join(" · ") || "starting";
@@ -167,7 +273,7 @@ function updateBanner() {
     return [div];
   }
 
-  if (updater.error) {
+  if (choice.kind === "failed") {
     div.className = "warning";
     const failed = document.createElement("div");
     failed.textContent = "The update failed: " + updater.error;
@@ -176,98 +282,25 @@ function updateBanner() {
     return [div];
   }
 
-  // Installed and waiting for a restart. The version on disk is the new one and
-  // the version serving is still the old one, which is exactly what the two
-  // buttons are for, so this says so rather than looking like nothing happened.
-  //
-  // Compared against what is on offer rather than assumed to be it. A newer
-  // release can appear between installing and restarting, and this used to read
-  // the version out of the offer, so it would have named a release that is not
-  // the one sitting on disk. When they differ, the offer is what matters and
-  // this falls through to the install button again.
-  if (updater.installed && updater.installed === release.version) {
+  if (choice.kind === "restart") {
     const done = document.createElement("span");
     done.textContent =
       ` ${updater.installed} is installed and takes effect when the daemon restarts. `;
 
-    const streaming = updater.streaming || [];
-    const button = document.createElement("button");
-
-    if (streaming.length) {
-      button.disabled = true;
-      button.textContent = "Restart when nobody is playing";
-      button.title =
-        streaming.length === 1
-          ? `${streaming[0]} is streaming right now`
-          : `${streaming.join(", ")} are streaming right now`;
-    } else {
-      button.textContent = "Restart now";
-      button.onclick = () => {
-        button.disabled = true;
-        run(async () => {
-          await api("POST", "/api/restart");
-          await refresh();
-        });
-      };
-    }
-
-    div.replaceChildren(text, link, done, button);
+    div.replaceChildren(text, link, done, restartButton(choice));
 
     return [div];
   }
 
-  // The three reasons there is no button, each with its own sentence. One is a
-  // setting somebody chose, one is how this was installed, and one is a release
-  // that has no package: telling them apart is the difference between knowing
-  // what to do and wondering what is broken.
-  let why = "";
-
-  if (!updater.enabled) {
-    why = 'Updating from here is off ("web_update" in polyseatd.json). Use host/update.sh. ';
-  } else if (!updater.managed) {
-    why =
-      "This Polyseat was installed from a checkout rather than from the package, " +
-      "so pacman has nothing to replace. Use host/update.sh. ";
-  } else if (!release.package) {
-    why = "That release has no package attached to it, so it cannot be installed from here. ";
-  }
-
-  if (why) {
+  if (choice.kind === "blocked") {
     const note = document.createElement("span");
-    note.textContent = why;
+    note.textContent = choice.why + " ";
     div.replaceChildren(text, note, link);
 
     return [div];
   }
 
-  const button = document.createElement("button");
-  button.textContent = "Install it";
-  button.onclick = () => {
-    // Asked here rather than posted and refused, so that the one setting that
-    // exists to make somebody stop and think actually makes them stop and
-    // think. prompt() and not a field on the page: it cannot be filled in by
-    // something that is already on the page, and there is nowhere for a browser
-    // to have remembered it.
-    let password;
-
-    if (updater.needs_password) {
-      password = window.prompt(
-        `Installing ${release.version} runs pacman as root on this host. ` +
-          "Type the interface password to confirm.",
-      );
-
-      // Cancelled, which is a decision and not a failure. No error, no request.
-      if (password === null) return;
-    }
-
-    button.disabled = true;
-    run(async () => {
-      await api("POST", "/api/update", password === undefined ? undefined : { password });
-      await refresh();
-    });
-  };
-
-  div.replaceChildren(text, link, button);
+  div.replaceChildren(text, link, installButton(choice));
 
   return [div];
 }
@@ -2524,8 +2557,17 @@ function updatePanel(options) {
   const button = document.createElement("button");
   button.textContent = "Check now";
 
-  const answer = document.createElement("div");
-  answer.className = "notice";
+  // Where the release on offer is dealt with, rather than a sentence about
+  // where else to deal with it. This panel is a dialog over the page, so the
+  // line at the top that used to carry the only button was behind it: being
+  // told to press something that is covered by the thing telling you is the
+  // whole reason this is here.
+  const offer = document.createElement("div");
+  offer.className = "notice";
+  offer.hidden = true;
+
+  const answer = document.createElement("p");
+  answer.className = "hint";
   answer.hidden = true;
 
   const error = document.createElement("div");
@@ -2546,16 +2588,16 @@ function updatePanel(options) {
 
     if (!went) return;
 
-    answer.hidden = false;
-    answer.textContent = found
-      ? `${found.version} was published${describeAge(found.published)}. ` +
-        "The line at the top of the page has the button that installs it."
-      : "This is the newest release.";
+    // Only for the answer the panel cannot show on its own. When there is a
+    // release, refreshing puts it in the box below with whatever can be done
+    // about it, and saying it twice would be one sentence too many.
+    answer.hidden = !!found;
+    answer.textContent = "This is the newest release.";
 
     await options.refresh();
   };
 
-  box.append(title, hint, running, button, answer, error);
+  box.append(title, hint, running, button, answer, offer, error);
 
   function update(state) {
     const updater = (state && state.updater) || {};
@@ -2579,6 +2621,12 @@ function updatePanel(options) {
 
     running.textContent = `This host runs polyseatd ${version}. ${when}`;
     button.hidden = updater.check_enabled === false;
+
+    drawOffer(state, offer);
+
+    // A release on offer answers the question the button asks, so the sentence
+    // that says there is nothing newer would be contradicting the box under it.
+    if (!offer.hidden) answer.hidden = true;
   }
 
   return { node: box, update };
@@ -2654,6 +2702,77 @@ function renderFirstrun() {
   el("firstrun").className = prepare.needed ? "not-ready" : "";
 
   firstrunView.update(state);
+}
+
+// drawOffer fills the box in the Updates panel from the same decision the line
+// at the top of the page draws from.
+//
+// The banner is one sentence and one button because it interrupts. This has
+// room, so it says what is on offer, what it costs, and carries the button
+// itself. Both are rebuilt from the state, so they cannot disagree about what
+// is possible: there is one updateChoice.
+function drawOffer(state, box) {
+  const choice = updateChoice(state);
+
+  if (choice.kind === "none") {
+    box.hidden = true;
+    box.replaceChildren();
+
+    return;
+  }
+
+  const { release, updater } = choice;
+
+  box.hidden = false;
+  box.className = choice.kind === "failed" ? "warning" : "notice";
+
+  const line = document.createElement("div");
+  line.textContent = `${release.version} was published${describeAge(release.published)}.`;
+
+  const link = document.createElement("a");
+  link.href = release.url;
+  link.target = "_blank";
+  link.rel = "noreferrer noopener";
+  link.textContent = "What changed";
+
+  const detail = document.createElement("div");
+  detail.className = "muted";
+
+  switch (choice.kind) {
+    case "running":
+      detail.textContent = (updater.log || []).join(" · ") || "starting";
+      box.replaceChildren(line, detail, link);
+
+      return;
+
+    case "failed":
+      detail.textContent = "The update failed: " + updater.error;
+      box.replaceChildren(line, detail, link);
+
+      return;
+
+    case "restart":
+      detail.textContent =
+        `${updater.installed} is on disk and takes effect when the daemon ` +
+        "restarts. Seats keep running through it; each seat's input broker " +
+        "restarts with the daemon, so a controller can drop for a moment.";
+      box.replaceChildren(line, detail, restartButton(choice), link);
+
+      return;
+
+    case "blocked":
+      detail.textContent = choice.why;
+      box.replaceChildren(line, detail, link);
+
+      return;
+
+    default:
+      detail.textContent =
+        "Installing replaces the binary on disk and leaves the running daemon " +
+        "alone, so it is safe while somebody is playing. It takes effect at the " +
+        "restart, which is a second button once this one has run.";
+      box.replaceChildren(line, detail, installButton(choice), link);
+  }
 }
 
 // ---------------------------------------------------- the host, as a dialog

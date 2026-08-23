@@ -70,6 +70,26 @@ type Release struct {
 	Package *Asset `json:"package,omitempty"`
 }
 
+// PublishedAsset is the name every release carries, and the only file the
+// workflow uploads.
+//
+// This is what the matcher below had wrong for five releases, and it is worth
+// writing down how. The name carries no version on purpose, because
+// releases/latest/download/<name> is a permanent link only while <name> is
+// permanent, and packaging/README.md publishes under a name that says nothing
+// so the documented curl command never has to be edited: pacman reads the real
+// name and version out of the file. The matcher was written one release before
+// that decision, against makepkg's own versioned name, and it was never
+// brought along.
+//
+// Nothing failed loudly. The interface said "that release has no package
+// attached to it, so it cannot be installed from here", which reads like a fact
+// about the release rather than a fault here, and the update button therefore
+// never worked once on any machine. Exported so that a test can hold it against
+// the workflow that does the uploading, which is the only way the two stay in
+// step: see TestThePublishedNameIsTheNameThisLooksFor.
+const PublishedAsset = "polyseat-x86_64.pkg.tar.zst"
+
 // Asset is the one file this daemon knows how to install.
 type Asset struct {
 	Name string `json:"name"`
@@ -321,11 +341,8 @@ func fetch(ctx context.Context, api string) (*Release, error) {
 		}
 
 		// The name is matched rather than the content type, because the debug
-		// package is the same type and is not the thing to install. Named
-		// against the tag so that a stray file left on an old release cannot be
-		// picked up as this one's package.
-		want := "polyseat-" + strings.TrimPrefix(body.TagName, "v") + "-"
-		if !strings.HasPrefix(a.Name, want) || !strings.HasSuffix(a.Name, "-x86_64.pkg.tar.zst") {
+		// package is the same type and is not the thing to install.
+		if a.Name != PublishedAsset {
 			continue
 		}
 

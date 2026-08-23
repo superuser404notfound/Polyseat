@@ -64,8 +64,19 @@ func TestFetchFindsThePackage(t *testing.T) {
 		t.Fatal("no package was found in a release that has one")
 	}
 
-	if rel.Package.Name != "polyseat-0.3.2-1-x86_64.pkg.tar.zst" {
+	// The name the workflow publishes under, which carries no version: the
+	// permanent download link is only permanent while the name is. Held against
+	// the constant rather than against a string typed here, because the two
+	// drifting apart is exactly what made this button fail on every machine for
+	// five releases. See TestThePublishedNameIsTheNameThisLooksFor.
+	if rel.Package.Name != PublishedAsset {
 		t.Errorf("name is %q", rel.Package.Name)
+	}
+
+	// A release whose asset the daemon would refuse to fetch is a release with
+	// no package, for all the difference it makes on the machine.
+	if err := allowed(rel.Package.URL); err != nil {
+		t.Errorf("the recorded asset would not be downloaded: %v", err)
 	}
 
 	if !strings.HasPrefix(rel.Package.Digest, "sha256:") {
