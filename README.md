@@ -28,7 +28,24 @@ input devices, shares the game library, and repairs what drifts.
 | **Filesystem** | btrfs, or XFS created with `reflink=1`, **and only for the shared game library**. `ext4` cannot share blocks, and neither can tmpfs or a network filesystem. Seats still work on those; the shared library simply stays off and every seat downloads its own games. The installer tests it and says which it found. |
 | **Network** | One wired interface, so each seat is a host of its own on the LAN and can use the standard Sunshine ports. Seats take a macvlan from it, or a port on it where it is a bridge, which is what `host/lan-bridge.sh` makes it and what local multiplayer between the host and a seat needs. Wireless cannot do either: 802.11 carries one MAC address per association. |
 
-**1. Install it, once per machine.** From a checkout:
+**1. Install it, once per machine.** There are two ways in and the package is
+the shorter one. It is attached to every release:
+
+```
+sudo pacman -U https://github.com/superuser404notfound/Polyseat/releases/download/v0.3.2/polyseat-0.3.2-1-x86_64.pkg.tar.zst
+sudo polyseat-prepare
+sudo systemctl enable --now polyseatd
+```
+
+`polyseat-prepare` is a second command because a package is not allowed to be
+one command. It may place files; it may not initialise Incus, write to
+`/etc/subuid` or put your account in a group. So that half is a command you run
+once, and it says what it finds either way and changes nothing that is already
+right.
+
+Or from a checkout, which does both halves in one go and is what to use to run a
+particular commit rather than a release, which is what testing on unusual
+hardware means:
 
 ```
 git clone --branch v0.3.2 https://github.com/superuser404notfound/Polyseat.git
@@ -41,12 +58,11 @@ A tag rather than `main`, because `main` is where the next version is being
 written and a machine that streams to other people is not the place to find out
 what changed today. Leave the `--branch` off to follow it anyway.
 
-This is the only way in at the moment. There is an Arch package in
-[`packaging/aur`](packaging/aur) and it is tested against a fresh machine on
-every release, but it has never been uploaded: new AUR accounts cannot be
-registered at present, so there is no account to publish it from. Nothing about
-the package is waiting on work, only on that. Until then `paru -S polyseat`
-finds nothing, and anything that does turn up under that name is not this.
+Not the AUR. New accounts cannot be registered at present, so there is nothing
+to publish from, and `paru -S polyseat` finds nothing: anything that does turn
+up under that name is not this. It matters less than it sounds, because the AUR
+distributes recipes rather than packages and installing from one means building
+it yourself, which is what the checkout above already does.
 
 The install does everything in one go: missing packages, the idmap range that
 every container start needs, bringing Incus up and initialising it if nobody
@@ -221,7 +237,22 @@ this machine's host name, its seat names and their private addresses, and it
 says so at the top, so read it before pasting it somewhere public.
 
 **Updating.** The interface says when a newer version has been published. Taking
-it is one command:
+it depends on which way it went in.
+
+From the package, the new one over the old one and then a restart at a moment
+you choose:
+
+```
+sudo pacman -U https://github.com/superuser404notfound/Polyseat/releases/download/v0.3.2/polyseat-0.3.2-1-x86_64.pkg.tar.zst
+sudo systemctl restart polyseatd
+```
+
+The restart is separate on purpose, and pacman will say so too. Replacing a
+binary does not disturb the process already using it, so the new version is on
+disk and the old one is still serving until you say otherwise. Nobody's game
+ends in the middle.
+
+From a checkout it is one command:
 
 ```
 sudo host/update.sh          # --check to look without changing anything
@@ -258,10 +289,15 @@ about the machine, and it never installs anything. `"update_check": false` in
 [`CHANGELOG.md`](CHANGELOG.md) is where the differences between versions are
 written down.
 
-**Removing it** leaves your seats alone: `sudo host/install.sh --uninstall`
-takes out the daemon, its unit, the udev rule and the helpers, and touches
-neither the containers nor `/var/lib/polyseat`. Install it again and the seats
-come back as they were.
+**Removing it** leaves your seats alone. From the package that is
+`sudo pacman -Rns polyseat`, and from a checkout
+`sudo host/install.sh --uninstall`. Either takes out the daemon, its unit, the
+udev rule and the helpers, and touches neither the containers nor
+`/var/lib/polyseat`. Install it again and the seats come back as they were.
+
+Neither stops the daemon for you, and pacman says so on the way out. A removed
+package is a binary that is no longer on disk, not a process that has ended, so
+`sudo systemctl stop polyseatd` is yours to give when the seats are not in use.
 
 To take the seats with it, `sudo host/install.sh --purge`, which asks first and
 keeps the shared game library so the games do not have to be downloaded again;

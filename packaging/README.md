@@ -1,18 +1,30 @@
 # Packaging
 
-## Not published yet
+## Where it is published, and where it is not
 
-**Nothing here has ever been uploaded.** New AUR accounts cannot be registered
-at present, so there is no account to publish from, and everything below waits
-on that one step and on nothing else. The package itself is finished and
-`host/test-package.sh` builds and installs it on a fresh machine on every
-release, which is worth keeping up: the day registration opens, the upload is
-the only thing left to do.
+**Not the AUR.** New accounts cannot be registered at present, so there is no
+account to publish from. That blocks less than it first appears, because the AUR
+distributes recipes and not packages: installing from it means building it
+yourself, which is what `host/install.sh` already does and does better, since it
+prepares the machine in the same run.
 
-The README and `docs/installation.md` say the checkout is the only way in, and
-they should keep saying it until the package is actually there. A README that
-offers `paru -S polyseat` while nothing answers to that name is worse than one
-that offers nothing, because somebody will find something else under it.
+**The built package is attached to every GitHub release**, by
+[`.github/workflows/package.yml`](../.github/workflows/package.yml), so the file
+somebody actually wants is one `pacman -U` away:
+
+```
+sudo pacman -U https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-X.Y.Z-1-x86_64.pkg.tar.zst
+```
+
+That covers installing, upgrading and removing through pacman, which is three
+things the shell scripts no longer have to be the only answer to. What it does
+not cover is `pacman -Syu` noticing a new version by itself. That wants a
+package repository of its own, which wants a signing key and somewhere to host
+it, and neither exists yet. Until then the daemon's own update check is what
+notices, and it already does.
+
+`paru -S polyseat` still finds nothing, and anything that does turn up under
+that name is not this.
 
 ## The AUR package
 
@@ -90,8 +102,9 @@ git push
 
 ## Cutting a release
 
-1. Tag and publish the release, as
-   [CONTRIBUTING.md](../CONTRIBUTING.md) describes.
+1. Write the CHANGELOG entry, point the README at the new tag, commit that as
+   `Release X.Y.Z`, tag it `vX.Y.Z` and push both. Then publish the GitHub
+   release, which is what creates the source tarball everything below needs.
 2. `pkgver=` to the new version, `pkgrel=1`.
 3. New checksum for the release tarball:
 
@@ -100,7 +113,19 @@ git push
    ```
 
    `updpkgsums` does the same thing if you have `pacman-contrib`.
-4. Prove it, against a virtual machine rather than against this one:
+4. Commit 2 and 3 as `Carry the package to X.Y.Z` and push. That commit is
+   what triggers
+   [`.github/workflows/package.yml`](../.github/workflows/package.yml), which
+   builds the package in an Arch container and attaches it to the release. It
+   is triggered by the PKGBUILD rather than by the tag because this is the
+   first moment the two agree: the checksum in step 3 is of a tarball that only
+   exists once the tag does.
+
+   A wrong checksum fails that build rather than shipping a package built from
+   something other than the tag it names, which is the one mistake this order
+   makes easy to make.
+
+5. Prove it, against a virtual machine rather than against this one:
 
    ```
    host/test-package.sh --rebuild
@@ -110,7 +135,9 @@ git push
    it on a fresh Arch machine, runs `polyseat-prepare`, starts the daemon and
    removes it again. It also checks the three things the package must **not** do,
    because that is the whole reason the installer is in two halves.
-5. Read what `namcap` makes of it, which is not the same as doing what it says:
+6. Read what `namcap` makes of it, which is not the same as doing what it says.
+   The workflow already prints both of these, so this is reading its log rather
+   than running anything, unless something needs looking at more closely:
 
    ```
    namcap packaging/aur/PKGBUILD
@@ -126,7 +153,7 @@ git push
    something else, which they are, by `base`. Anything beyond those six is
    worth reading.
 
-6. Push to the AUR:
+7. Push to the AUR, on the day there is an account to push from:
 
    ```
    git clone ssh://aur@aur.archlinux.org/polyseat.git aur-polyseat

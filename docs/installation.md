@@ -39,11 +39,16 @@ Both are tested against a fresh virtual machine, because neither can be
 exercised on a machine that already has them: `host/test-install.sh` for the
 checkout, `host/test-package.sh` for the package.
 
-**The package is not published**, so today the checkout is the only way anybody
-installs this. New AUR accounts cannot be registered at present and there is
-therefore no account to upload from. The split above is not waiting on that: it
-is what makes `polyseat-prepare` a command rather than a script in a checkout,
-and it was worth doing before the package existed.
+**The package is not in the AUR**, because new accounts cannot be registered at
+present and there is therefore no account to upload from. It is built and
+attached to every GitHub release instead, so `pacman -U` on that file is a real
+way in and not a promise, and it is the one most people should take. The AUR
+would have distributed the recipe rather than the package anyway: installing
+from it means building it yourself, which is what the checkout already does.
+
+The split above was not waiting on any of that. It is what makes
+`polyseat-prepare` a command rather than a script in a checkout, and it was
+worth doing before the package existed.
 
 ## What the installer must cover
 

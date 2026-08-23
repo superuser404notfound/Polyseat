@@ -1,0 +1,95 @@
+# Builds the Arch package and attaches it to the release it belongs to.
+#
+# The AUR distributes recipes, not packages: installing from it means building
+# it yourself. What somebody actually wants is a file they can install, and that
+# is what this makes, so the unavailable AUR account blocks less than it looks
+# like.
+#
+# The trigger is the commit that carries the PKGBUILD to a new version, and not
+# the tag or the release, because that is the first moment everything agrees.
+# The order in packaging/README.md is tag, publish, then bump the PKGBUILD, and
+# it has to be that way round: the checksum is of the tarball that only exists
+# once the tag does. On a tag push the PKGBUILD in the tree still names the
+# version before it.
+name: Package
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - packaging/aur/PKGBUILD
+      - packaging/aur/polyseat.install
+      - .github/workflows/package.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    # An Arch container rather than an Arch VM, because makepkg needs pacman and
+    # nothing here needs a kernel. host/test-package.sh covers what a container
+    # cannot: installing the result on a real machine and starting it.
+    container:
+      image: archlinux:base-devel
+
+    steps:
+      # base-devel carries makepkg and the compilers and none of these. git is
+      # for actions/checkout, which prefers it, and github-cli is what uploads.
+      - name: What base-devel does not carry
+        run: pacman -Syu --noconfirm --needed go git github-cli namcap
+
+      - uses: actions/checkout@v4
+
+      # makepkg refuses to run as root and is right to. It runs a PKGBUILD,
+      # which is a shell script from the internet as far as it knows.
+      - name: A user to build as
+        run: |
+          useradd -m builder
+          chown -R builder:builder .
+
+      # --nodeps skips the check for incus, bpftrace and python, which are what
+      # the daemon talks to at runtime and are not needed to compile it. Pulling
+      # Incus into a build container to satisfy a check would cost minutes per
+      # run and prove nothing that host/test-package.sh does not already prove
+      # against a real machine.
+      #
+      # The checksum in the PKGBUILD is verified here as a side effect, and that
+      # is worth having: a "Carry the package to X" commit with the wrong sum
+      # fails at this step rather than shipping a package built from something
+      # other than the tag it claims.
+      - name: Build
+        working-directory: packaging/aur
+        run: sudo -u builder makepkg --noconfirm --nodeps
+
+      # Printed, not enforced. packaging/README.md lists the six warnings that
+      # are expected and says why each one is the tool being wrong. A step that
+      # failed on them would train everyone to ignore it; a step that prints
+      # them means anything new gets seen.
+      - name: What namcap makes of it
+        working-directory: packaging/aur
+        run: |
+          namcap PKGBUILD || true
+          namcap ./*.pkg.tar.zst || true
+
+      - name: Attach it to the release
+        working-directory: packaging/aur
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # From the PKGBUILD rather than from the tag, so that this can only
+          # ever upload to the release the package says it is for.
+          pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)
+          tag="v$pkgver"
+
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::no release $tag to attach this to. Publish it first;"
+            echo "::error::packaging/README.md has the order."
+            exit 1
+          fi
+
+          gh release upload "$tag" ./*.pkg.tar.zst --clobber
+          echo "attached to $tag:"
+          ls -la ./*.pkg.tar.zst
