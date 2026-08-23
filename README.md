@@ -26,10 +26,9 @@ input devices, shares the game library, and repairs what drifts.
 | **Packages** | `incus`, `bpftrace` and `python`, plus `nvidia-container-toolkit` on NVIDIA. The installer works out which card is in the machine first and installs whichever of them are missing. A checkout install also needs `go`, because it builds the daemon; the package arrives built and does not. |
 | **GPU** | **NVIDIA**, with the driver installed and answering. `nvidia-utils` carries the two libraries NVENC needs, `libcuda.so.1` and `libnvidia-encode.so.1`, and the container toolkit injects them into every seat. `lib32-nvidia-utils` as well, or 32 bit games will not find the GPU. The `cuda` package is the toolkit and is **not** needed.<br><br>**AMD** works differently and is simpler: `amdgpu` on the host is the whole requirement, and Mesa goes into each seat as an ordinary package, so no host driver update can leave a seat behind. Encoding is VA-API, the only hardware path AMD has on Linux. **This path has never been run on real hardware**, see [docs/amd.md](docs/amd.md) for what was verified and what was not.<br><br>Either way the installer refuses rather than warns if the driver is missing, because a seat without it comes up, streams in software and looks perfectly healthy. |
 | **Filesystem** | btrfs, or XFS created with `reflink=1`, **and only for the shared game library**. `ext4` cannot share blocks, and neither can tmpfs or a network filesystem. Seats still work on those; the shared library simply stays off and every seat downloads its own games. The installer tests it and says which it found. |
-| **Network** | One wired interface, so each seat is a host of its own on the LAN and can use the standard Sunshine ports. Seats take a macvlan from it, or a port on it where it is a bridge, which is what `host/lan-bridge.sh` makes it and what local multiplayer between the host and a seat needs. Wireless cannot do either: 802.11 carries one MAC address per association. |
+| **Network** | One wired interface, so each seat is a host of its own on the LAN and can use the standard Sunshine ports. Seats take a macvlan from it, or a port on it where it is a bridge, which is what `polyseat-lan-bridge` makes it and what local multiplayer between the host and a seat needs. Wireless cannot do either: 802.11 carries one MAC address per association. |
 
-**1. Install it, once per machine.** There are two ways in and the package is
-the shorter one:
+**1. Install it, once per machine.**
 
 ```
 curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
@@ -47,55 +46,32 @@ key a package repository would need, and neither exists yet.
 
 That URL carries no version and never will: it is whatever the newest release
 is, and the version lives inside the file rather than in its name.
+`pacman -Qi polyseat` says which one arrived.
 
-Or from a checkout, which does both halves in one go and is what to use to run a
-particular commit rather than a release, which is what testing on unusual
-hardware means:
+**`polyseat-prepare` is its own command because a package may not be one.** It
+may place files, and it may not initialise Incus, write to `/etc/subuid` or put
+an account in a group. So that half is a command you run once: missing packages,
+the idmap range every container start needs, bringing Incus up and initialising
+it if nobody has, checking that the graphics driver really answers, loading the
+`uhid` module so the input observer has something to watch from the first boot
+onwards, and putting your account in the `input` group. It changes nothing that
+is already right and says what it found either way.
 
-```
-git clone --branch v0.3.3 https://github.com/superuser404notfound/Polyseat.git
-cd Polyseat
-sudo host/install.sh
-sudo systemctl enable --now polyseatd
-```
-
-A tag rather than `main`, because `main` is where the next version is being
-written and a machine that streams to other people is not the place to find out
-what changed today. Leave the `--branch` off to follow it anyway.
+The package itself places the daemon, the input helpers, the udev rule that
+keeps seat devices off the host desktop, and one systemd unit. It creates no
+seat, and both commands can be run again over themselves without undoing
+anything.
 
 Not the AUR. New accounts cannot be registered at present, so there is nothing
 to publish from, and `paru -S polyseat` finds nothing: anything that does turn
 up under that name is not this. It matters less than it sounds, because the AUR
-distributes recipes rather than packages and installing from one means building
-it yourself, which is what the checkout above already does.
+distributes recipes rather than packages, and installing from one means building
+it yourself.
 
-**Both ways do the same two halves**, in a different number of commands.
-
-Getting the machine ready is `polyseat-prepare` from the package and the first
-part of `host/install.sh` from a checkout, and it is the same script either way:
-missing packages, the idmap range every container start needs, bringing Incus up
-and initialising it if nobody has, checking that the graphics driver really
-answers, loading the `uhid` module so the input observer has something to watch
-from the first boot onwards, and putting your account in the `input` group. It
-changes nothing that is already right and says what it found either way.
-
-Putting Polyseat in place is the other half: the daemon, the input helpers, the
-udev rule that keeps seat devices off the host desktop, and one systemd unit.
-The package places them under `/usr` and a checkout builds them and places them
-under `/usr/local`; the daemon looks in both and prefers the local one.
-
-Neither creates a seat, and both can be run again over themselves without
-undoing anything.
-
-The split exists because a package is not allowed to do the first half. It may
-place files, and it may not initialise Incus, write to `/etc/subuid` or put an
-account in a group. That is why `host/prepare.sh` is a script of its own and
-ships as the `polyseat-prepare` command.
-
-Two things it reports rather than changes, because they are yours to decide:
-whether the filesystem holding the game library can share blocks, which it asks
-the filesystem by cloning a file rather than trusting its name, and whether
-there is a wired interface for the seats to take a macvlan from.
+**To run a particular commit rather than a release**, which is what testing on
+unusual hardware usually means, build it from a checkout instead:
+[CONTRIBUTING.md](CONTRIBUTING.md) has that and the rest of what a working copy
+is for.
 
 **2. Open `https://<this machine>:47800` and choose a password.** Nobody has
 claimed the machine yet, so the page asks you to set one rather than to type
@@ -165,7 +141,7 @@ compatibility tool, it keeps itself up to date, and it waits for a seat that is
 neither streaming nor holding the files open before it replaces anything.
 
 **A seat can be on the same network segment as the host, or behind a line.**
-Seats are hosts of their own on the LAN either way. `host/lan-bridge.sh` turns
+Seats are hosts of their own on the LAN either way. `polyseat-lan-bridge` turns
 the uplink into a bridge, which is what local multiplayer between the host and a
 seat needs, since those games find each other by broadcasting and a macvlan
 cannot hear its own parent. Whether a particular seat takes part in that is a
@@ -236,7 +212,7 @@ For the host itself:
 
 ```
 sudo polyseatd -report      # everything about this installation, in one go
-host/check-hardening.sh     # console and device exposures
+polyseat-check-hardening    # console and device exposures
 journalctl -fu polyseatd
 ```
 
@@ -264,8 +240,8 @@ found, from this project's own downloads, and checks it against the checksum the
 release states. [`docs/security.md`](docs/security.md) has what that is worth
 and what it is not.
 
-**By hand from the package**, which is the same two steps the buttons are, and
-the same unversioned URL:
+**By hand**, which is the same two steps the buttons are, and the same
+unversioned URL:
 
 ```
 curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
@@ -273,28 +249,11 @@ sudo pacman -U polyseat-x86_64.pkg.tar.zst
 sudo systemctl restart polyseatd
 ```
 
-**By hand from a checkout**, where `host/update.sh` is the one command:
-
-```
-sudo host/update.sh          # --check to look without changing anything
-```
-
-It refuses a checkout with uncommitted work in it, and it waits for a moment
-when nobody is streaming, because it rebuilds the daemon and restarts it in one
-go. `--now` skips the waiting and `--tag v0.1.0` goes to a particular release,
-older ones included. Doing it yourself is the same thing and stays supported:
-
-```
-git fetch --tags
-git checkout v0.3.3
-sudo host/install.sh
-```
-
-**The restart is what makes an update take effect**, on every one of these
-paths, and it is separate from installing on all but the last. Replacing a
-binary does not disturb the process already using it, so the new version waits
-on disk while the old one goes on serving. That is what lets an update be
-installed in the middle of somebody's game and finished afterwards.
+**The restart is what makes an update take effect**, and it is separate from
+installing on purpose. Replacing a binary does not disturb the process already
+using it, so the new version waits on disk while the old one goes on serving.
+That is what lets an update be installed in the middle of somebody's game and
+finished afterwards.
 
 **Seats are not touched.** If a new version builds them differently, the
 interface names the ones that are behind and offers one button to bring them up
@@ -311,29 +270,27 @@ about the machine, and it never installs anything. `"update_check": false` in
 [`CHANGELOG.md`](CHANGELOG.md) is where the differences between versions are
 written down.
 
-**Removing it** leaves your seats alone. From the package that is
-`sudo pacman -Rns polyseat`, and from a checkout
-`sudo host/install.sh --uninstall`. Either takes out the daemon, its unit, the
-udev rule and the helpers, and touches neither the containers nor
-`/var/lib/polyseat`. Install it again and the seats come back as they were.
+**Removing it** leaves your seats alone: `sudo pacman -Rns polyseat` takes out
+the daemon, its unit, the udev rule and the helpers, and touches neither the
+containers nor `/var/lib/polyseat`. Install it again and the seats come back as
+they were.
 
-Neither stops the daemon for you, and pacman says so on the way out. A removed
-package is a binary that is no longer on disk, not a process that has ended, so
-`sudo systemctl stop polyseatd` is yours to give when the seats are not in use.
+It does not stop the daemon for you, and pacman says so on the way out. A
+removed package is a binary that is no longer on disk, not a process that has
+ended, so `sudo systemctl stop polyseatd` is yours to give when the seats are
+not in use. It also leaves `/etc/modules-load.d/polyseat.conf`, which loads
+`uhid` at boot: `polyseat-prepare` wrote that file rather than the package, so
+nothing owns it and pacman will not remove it. The removal message names it and
+gives the one line that does. The module itself stays loaded, because something
+else on the machine may be using it.
 
-One difference between the two: `--uninstall` also removes
-`/etc/modules-load.d/polyseat.conf`, which is what loads `uhid` at boot. `pacman
--Rns` cannot, because `polyseat-prepare` wrote that file rather than the
-package, so nothing owns it. The removal message says so and gives the one line
-that takes it out. Neither unloads the module, which something else on the
-machine may be using.
-
-To take the seats with it, `sudo host/install.sh --purge`, which asks first and
-keeps the shared game library so the games do not have to be downloaded again;
-add `--library` to remove that too. It stops the daemon before touching anything
-it owns, which is the point of having it: deleting a container while the daemon
-is still reading inside it leaves Incus with a stop that never finishes. Neither
-command removes the packages or Incus, which are not Polyseat's to remove.
+**Taking the seats with it** is `host/install.sh --purge` from a checkout, which
+asks first and keeps the shared game library so the games do not have to be
+downloaded again; `--library` removes that too. It stops the daemon before
+touching anything it owns, which is the point of having it: deleting a container
+while the daemon is still reading inside it leaves Incus with a stop that never
+finishes. Nothing removes the packages or Incus, which are not Polyseat's to
+remove.
 
 ## What it does not do
 

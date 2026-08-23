@@ -14,6 +14,38 @@ That describes the machine in one go and is what to paste into an issue, whether
 something broke or nothing did. Read it first: it carries your host name, your
 seat names and their private addresses, and it says so at the top.
 
+## Running it from a checkout
+
+The readme installs the package, which is right for a machine somebody plays on
+and wrong for one you are changing Polyseat on. From a working copy:
+
+```
+git clone https://github.com/superuser404notfound/Polyseat.git
+cd Polyseat
+sudo host/install.sh
+sudo systemctl enable --now polyseatd
+```
+
+That does both halves in one command: it runs `host/prepare.sh` for you and then
+builds the daemon and places it, the input helpers, the udev rule and the unit
+under `/usr/local`. The daemon looks in `/usr/local` and in `/usr` and prefers
+the local one, the way a shell does, so a checkout install takes precedence over
+a package on the same machine. Run it again after any change; it undoes nothing.
+
+**Testing a particular release rather than `main`** is `--branch v0.3.4` on the
+clone, or `git checkout v0.3.4` in one you have. `main` is where the next
+version is being written, so a machine other people stream from should be on a
+tag. That is also what a hardware report should say it was running.
+
+`sudo host/update.sh` moves a checkout to the newest release and installs it,
+refusing a working copy with uncommitted work in it and waiting for a moment
+when nobody is streaming. `sudo host/install.sh --uninstall` takes it all out
+again and leaves the seats alone; `--purge` takes the seats too and asks first.
+
+The daemon installed this way is **not** updated by the button in the web
+interface, and the interface says so: there is no package for pacman to replace.
+That is deliberate rather than a gap.
+
 ## Running the tests
 
 ```

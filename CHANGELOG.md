@@ -10,6 +10,34 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.3.4
+
+The package standing on its own, which 0.3.3 assumed and did not arrange.
+
+- **One file on a release page, not two.** 0.3.3 published the package twice,
+  under makepkg's versioned name and under a name with no version in it, on the
+  reasoning that the second is what makes `releases/latest/download/` a
+  permanent link and the first is what tells two downloads apart. In practice it
+  is a question asked of everybody who arrives at the page, and the release
+  already says which version it is. Only the unversioned name is published now,
+  and `pacman -Qi polyseat` says which version arrived.
+
+- **`polyseat-lan-bridge` and `polyseat-check-hardening` are in the package.**
+  The readme named `host/lan-bridge.sh` and `host/check-hardening.sh`, and the
+  package shipped neither, so it named two files the machine did not have. That
+  went unnoticed while the readme offered a checkout as an equal way in. Neither
+  is a development aid: the first turns the uplink into a bridge, which is what
+  local multiplayer between the host and a seat needs, and the second reports
+  the console and device exposures. `docs/installation.md` now carries the
+  table of which script ships under which name.
+
+- **The readme describes one way in.** Installing from a checkout is how you run
+  a particular commit rather than a release, which is a thing contributors and
+  people testing unusual hardware do, and it is in
+  [CONTRIBUTING.md](CONTRIBUTING.md) with the rest of what a working copy is
+  for. `host/install.sh`, `host/update.sh` and `--purge` are unchanged and stay
+  supported.
+
 ## 0.3.3
 
 Two ways in and two ways to update, where before there was one of each. Nothing
@@ -56,11 +84,12 @@ more, and existing seats are untouched.
   would need. The daemon's own update button is unaffected: it downloads the
   file before it installs it, so it was always taking the local path.
 
-  The install URL carries no version and never will. Each release gets the
-  package twice, once under the name makepkg gave it and once under a name that
-  does not change, because `releases/latest/download/` only works as a permanent
-  link when the file name is permanent. A documented command that has to be
-  edited at every release is one that is eventually wrong.
+  The install URL carries no version and never will, and the file is published
+  under a name that carries none either, because `releases/latest/download/` is
+  a permanent link only while the file name is permanent. A documented command
+  that has to be edited at every release is one that is eventually wrong. Which
+  version a download turned out to be is inside the file, where pacman reads it
+  from and where `pacman -Qip` shows it.
 
 - **`--uninstall` now removes `/etc/modules-load.d/polyseat.conf`**, the file
   0.3.2 started writing. It is host configuration this installer put in `/etc`,
