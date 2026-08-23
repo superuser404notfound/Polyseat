@@ -10,6 +10,41 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.4.3
+
+**The install button in the interface had never worked once.** Everything else
+here is what made that hard to see.
+
+- **The daemon did not recognise its own package.** Every release publishes one
+  file, `polyseat-x86_64.pkg.tar.zst`, and the name carries no version on
+  purpose: `releases/latest/download/<name>` is a permanent link only while the
+  name is, which is what keeps the documented `curl` command from ever having to
+  be edited. The matcher in the daemon was written one release earlier, against
+  the versioned name makepkg produces, and it was not brought along when the
+  published name changed in 0.3.4.
+
+  Nothing failed loudly. The interface said "that release has no package
+  attached to it, so it cannot be installed from here", which reads like a fact
+  about the release rather than a fault in the reader, and every machine has
+  been told that about every release since.
+
+  **This release still has to be installed by hand**, because the daemon doing
+  the looking is the one with the fault. After it, the button works.
+
+- **The tests agreed with the parser about a shape that had stopped existing.**
+  The recording they used was made before the rename, so they proved the matcher
+  could read an answer GitHub no longer gives. The recording is now today's, and
+  there is a second test that reads `.github/workflows/package.yml` and holds the
+  name it uploads against the name the daemon looks for. A recording proves what
+  GitHub said once; only that proves what it says now.
+
+- **The Updates panel carries the buttons**, rather than a sentence saying where
+  else to press one. It was pointing at the line at the top of the page, which
+  is behind the dialog the panel is in: being told to press something that the
+  thing telling you is covering. Installing and restarting are both there now,
+  in the same states the banner shows, decided in one place so the two cannot
+  disagree.
+
 ## 0.4.2
 
 Words and the one place that cannot be looked up again. Nothing here changes how
