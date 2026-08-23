@@ -85,6 +85,11 @@ jobs:
         working-directory: packaging/aur
         env:
           GH_TOKEN: ${{ github.token }}
+          # Named rather than left to be worked out. Inside a container gh
+          # derives the repository from the git remote, and the checkout here
+          # belongs to another user by the time this step runs, so git declines
+          # to read it and gh concludes there is no such release.
+          GH_REPO: ${{ github.repository }}
         run: |
           # From the PKGBUILD rather than from the tag, so that this can only
           # ever upload to the release the package says it is for.
