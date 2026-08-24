@@ -36,10 +36,22 @@
 # keyboard attached to the machine and not over the connection it is changing.
 # Every step that can fail puts everything back, including the seats.
 #
+# One thing it changes outside the bridge: the uplink ends up with a saved
+# profile of its own, because it very likely had none. NetworkManager invents a
+# connection for an ethernet device with no profile, keeps it in /run and builds
+# it again at every boot, and a bridge cannot be put underneath something that
+# comes back every time. Deleting it is the supported way to stop that, and
+# --undo writes a real profile in its place rather than waiting for the invented
+# one to return.
+#
 # What this costs is written down in docs/security.md and is worth reading
 # first: a seat that can reach the host over the LAN can reach the services the
 # host is listening on.
 set -euo pipefail
+
+# Everything below reads nmcli, and nmcli translates. On a German desktop
+# connection.autoconnect answers "ja", which no comparison here expects.
+export LC_ALL=C
 
 BRIDGE=br0
 BRIDGE_CON=polyseat-bridge
@@ -103,6 +115,59 @@ seats_on() {
 
 running() { [[ $(incus info "$1" 2>/dev/null | awk '$1 == "Status:" { print tolower($2) }') == running ]]; }
 
+# con_file says where NetworkManager keeps a profile, which is the difference
+# between a setting that survives a reboot and one that does not. A path under
+# /run is not a saved profile: it is the default wired connection NetworkManager
+# invents for a managed ethernet device that has none, and it is invented again
+# from scratch at the next boot.
+con_file() {
+    nmcli -t -f UUID,FILENAME con show | awk -F: -v u="$1" '$1 == u { print $2; exit }'
+}
+
+generated() { [[ $(con_file "$1") == /run/* ]]; }
+
+# saved_wired_for names a saved ethernet profile belonging to $1, autoconnect or
+# not: on the way back it is the one that was switched off that has to be
+# switched on again, and being switched off is what makes it invisible to
+# claimants.
+saved_wired_for() {
+    local dev=$1 name uuid type ifname
+
+    while IFS=: read -r name uuid type; do
+        [[ $type == 802-3-ethernet ]] || continue
+        [[ $name == "$PORT_CON" ]] && continue
+
+        # An invented one does not count. Handing the interface back to a
+        # profile that only lives in /run is how the machine ends up with
+        # nothing to come up with after the next reboot, which is the whole
+        # fault being undone here.
+        generated "$uuid" && continue
+
+        ifname=$(nmcli -g connection.interface-name con show "$name")
+        [[ -z $ifname || $ifname == "$dev" ]] || continue
+
+        echo "$name"
+        return
+    done < <(nmcli -t -f NAME,UUID,TYPE con show)
+}
+
+# claimants lists the profiles that would bring $1 up by themselves at the next
+# boot: ethernet profiles with autoconnect on, bound either to that interface or
+# to no interface at all. More than one of them is a race.
+claimants() {
+    local dev=$1 name type autoconnect ifname
+
+    while IFS=: read -r name type autoconnect; do
+        [[ $type == 802-3-ethernet ]] || continue
+        [[ $autoconnect == yes ]] || continue
+
+        ifname=$(nmcli -g connection.interface-name con show "$name")
+        [[ -z $ifname || $ifname == "$dev" ]] || continue
+
+        echo "$name"
+    done < <(nmcli -t -f NAME,TYPE,AUTOCONNECT con show)
+}
+
 # ------------------------------------------------------------------- check
 
 UPLINK="$(uplink || true)"
@@ -139,6 +204,28 @@ if [[ $MODE == check ]]; then
         list=$(seats_on bridged "$BRIDGE" | paste -sd' ')
         [[ -n $list ]] && ok "bridged on $BRIDGE: $list"
     fi
+
+    step "The next boot"
+
+    # The uplink is brought up at boot by whatever profile claims it, and when
+    # two of them do, which one wins is a race. Losing it puts the address on
+    # the bare interface instead of the bridge: no network for the host, no
+    # seats on the segment, and somebody picking a connection by hand in the
+    # network settings to get out of it. This is the line to read after a
+    # reboot, and before trusting one.
+    PHYS=$(nmcli -g connection.interface-name con show "$PORT_CON" 2>/dev/null || true)
+    [[ -n $PHYS ]] || PHYS=$UPLINK
+
+    mapfile -t CLAIMS < <(claimants "$PHYS")
+
+    case ${#CLAIMS[@]} in
+        0) warn "no profile brings $PHYS up by itself, so a reboot leaves it down" ;;
+        1) ok "one profile brings $PHYS up at boot: ${CLAIMS[0]}" ;;
+        *) bad "${#CLAIMS[@]} profiles want $PHYS at boot: ${CLAIMS[*]}"
+           echo "    Which one wins is a race, and the boot that loses it comes up on"
+           echo "    the wrong interface. Delete the ones that are not Polyseat's."
+           ;;
+    esac
 
     exit 0
 fi
@@ -205,6 +292,69 @@ repoint() {
     ok "$name now takes its LAN interface as $kind from $parent"
 }
 
+# release_uplink takes the interface away from whatever holds it now, in the one
+# way that survives a reboot.
+#
+# connection.autoconnect=no is the obvious version, and for a saved profile it
+# is the right one. For the default wired connection NetworkManager invents it
+# is worse than doing nothing: that profile lives in /run, so the setting goes
+# with it at shutdown and the profile is built again at the next boot with
+# autoconnect back on. Two profiles then want the interface at boot, and the
+# boot that hands it to the wrong one is a machine with its address on the bare
+# interface. That is what this script did on its own, once per reboot, and it
+# looked like the bridge itself being unreliable.
+#
+# Deleting it is what NetworkManager understands: a default wired connection
+# that is deleted puts its device in /var/lib/NetworkManager/no-auto-default.state
+# and is never invented again, so from then on exactly one profile can claim the
+# interface.
+release_uplink() {
+    if [[ $CURRENT_GENERATED == yes ]]; then
+        nmcli con delete uuid "$CURRENT_UUID" >/dev/null 2>&1 || true
+
+        if nmcli -t -f UUID con show | grep -qxF "$CURRENT_UUID"; then
+            warn "$CURRENT could not be deleted, switching it off instead"
+        else
+            ok "$CURRENT is gone, and NetworkManager will not invent it again"
+            return 0
+        fi
+    fi
+
+    nmcli con mod "$CURRENT" connection.autoconnect no
+    nmcli con down "$CURRENT" >/dev/null 2>&1 || true
+    ok "$CURRENT does not come up on its own any more"
+}
+
+# restore_uplink gives $1 back a profile that brings it up by itself, and says
+# in $RESTORED which one that is.
+#
+# Where release_uplink deleted an invented profile there is nothing to switch
+# back on, and nothing will be invented again either, so one is written. Saved
+# this time, which is what the interface should have had all along: the reason
+# any of this was ever a race is that it had no profile of its own.
+restore_uplink() {
+    local dev=$1
+
+    if [[ -n ${CURRENT:-} && ${CURRENT_GENERATED:-yes} == no ]] &&
+       nmcli -t -f NAME con show | grep -qxF "$CURRENT"; then
+        RESTORED=$CURRENT
+        nmcli con mod "$CURRENT" connection.autoconnect yes >/dev/null 2>&1 || true
+        nmcli con up "$CURRENT" >/dev/null 2>&1
+        return
+    fi
+
+    RESTORED="wired-$dev"
+
+    nmcli -t -f NAME con show | grep -qxF "$RESTORED" ||
+        nmcli con add type ethernet ifname "$dev" con-name "$RESTORED" \
+            ipv4.method auto \
+            ipv6.method auto \
+            connection.autoconnect yes \
+            connection.autoconnect-retries 0 >/dev/null
+
+    nmcli con up "$RESTORED" >/dev/null 2>&1
+}
+
 # ------------------------------------------------------------------- undo
 
 if [[ $MODE == undo ]]; then
@@ -215,7 +365,11 @@ if [[ $MODE == undo ]]; then
         exit 0
     fi
 
-    PORT=$(ls /sys/class/net/"$BRIDGE"/brif 2>/dev/null | head -1)
+    # Asked of the port connection rather than of the bridge: a bridge with
+    # seats on it has their veths among its ports too, and the first name in
+    # that directory is not necessarily the wire.
+    PORT=$(nmcli -g connection.interface-name con show "$PORT_CON" 2>/dev/null || true)
+    [[ -n $PORT ]] || PORT=$(ls /sys/class/net/"$BRIDGE"/brif 2>/dev/null | head -1)
 
     if [[ -z $PORT ]]; then
         bad "$BRIDGE has no port, so there is no interface to give the address back to"
@@ -233,23 +387,24 @@ if [[ $MODE == undo ]]; then
 
     step "Putting the address back on $PORT"
 
-    original=$(nmcli -t -f NAME,TYPE con show | awk -F: '$2 == "802-3-ethernet" { print $1 }' \
-        | grep -vx "$PORT_CON" | head -1)
+    CURRENT=$(saved_wired_for "$PORT")
+
+    # No saved wired profile left is the normal case rather than a surprise:
+    # installing deleted the invented one and NetworkManager does not invent it
+    # again, so restore_uplink writes a real one.
+    CURRENT_GENERATED=no
+    [[ -n $CURRENT ]] || CURRENT_GENERATED=yes
 
     nmcli con delete "$PORT_CON" >/dev/null 2>&1 || true
     nmcli con delete "$BRIDGE_CON" >/dev/null 2>&1 || true
 
-    if [[ -n $original ]]; then
-        nmcli con mod "$original" connection.autoconnect yes
+    if restore_uplink "$PORT"; then
+        ok "$RESTORED is up"
     else
-        warn "no original wired connection left to restore, making one"
-        original="wired-$PORT"
-        nmcli con add type ethernet ifname "$PORT" con-name "$original" \
-            ipv4.method auto ipv6.method auto connection.autoconnect yes >/dev/null
+        bad "$RESTORED did not come up, the machine may be off the network"
+        echo "    By hand: nmcli con up \"$RESTORED\""
+        exit 1
     fi
-
-    nmcli con up "$original" >/dev/null
-    ok "$original is up"
 
     if ((${#SEATS[@]})); then
         step "Putting the seats back on macvlan"
@@ -308,6 +463,15 @@ fi
 
 ok "NetworkManager has it as \"$CURRENT\""
 
+CURRENT_UUID=$(nmcli -t -f UUID,DEVICE con show --active | awk -F: -v d="$UPLINK" '$2 == d { print $1; exit }')
+
+if generated "$CURRENT_UUID"; then
+    CURRENT_GENERATED=yes
+    warn "which NetworkManager invented, so it is not a profile that survives a reboot"
+else
+    CURRENT_GENERATED=no
+fi
+
 # ---- the seats have to let go of the interface before it can become a port
 
 mapfile -t SEATS < <(seats_on macvlan "$UPLINK")
@@ -330,13 +494,11 @@ rollback() {
     nmcli con delete "$PORT_CON" >/dev/null 2>&1 || true
     nmcli con delete "$BRIDGE_CON" >/dev/null 2>&1 || true
 
-    nmcli con mod "$CURRENT" connection.autoconnect yes >/dev/null 2>&1 || true
-
-    if nmcli con up "$CURRENT" >/dev/null 2>&1; then
-        ok "$CURRENT is up again"
+    if restore_uplink "$UPLINK"; then
+        ok "$RESTORED is up again"
     else
-        bad "$CURRENT did not come up, the machine may be off the network"
-        echo "    By hand: nmcli con up \"$CURRENT\""
+        bad "$RESTORED did not come up, the machine may be off the network"
+        echo "    By hand: nmcli con up \"$RESTORED\""
     fi
 
     start_seats
@@ -357,24 +519,32 @@ nmcli con add type bridge ifname "$BRIDGE" con-name "$BRIDGE_CON" \
     bridge.mac-address "$MAC" \
     ipv4.method auto \
     ipv6.method auto \
-    connection.autoconnect yes >/dev/null || rollback "the bridge connection could not be created"
+    connection.autoconnect yes \
+    connection.autoconnect-retries 0 >/dev/null || rollback "the bridge connection could not be created"
 
 ok "$BRIDGE created with $UPLINK's address $MAC"
 
+# The priority and the retries are what makes the next boot deterministic
+# rather than lucky. Anything else that ever turns up for this interface carries
+# the default priority of 0, or NetworkManager's -999 for one it invented, so
+# this profile wins; and a first attempt that fails because the switch is not
+# forwarding yet must not be the last attempt, which four and then nothing is.
 nmcli con add type ethernet ifname "$UPLINK" con-name "$PORT_CON" \
     controller "$BRIDGE_CON" \
     port-type bridge \
-    connection.autoconnect yes >/dev/null || rollback "the port connection could not be created"
+    connection.autoconnect yes \
+    connection.autoconnect-priority 100 \
+    connection.autoconnect-retries 0 >/dev/null || rollback "the port connection could not be created"
 
 ok "$UPLINK prepared as its port"
 
 step "Moving the address over"
 
 # The old connection is stopped from coming back before anything is taken down.
-# Left on autoconnect it would race the port connection for the interface on the
-# next boot, and which one won would decide whether the machine had a network.
-nmcli con mod "$CURRENT" connection.autoconnect no
-nmcli con down "$CURRENT" >/dev/null 2>&1 || true
+# Left able to come up it would race the port connection for the interface on
+# the next boot, and which one won would decide whether the machine had a
+# network. How it is stopped depends on what it is; see release_uplink.
+release_uplink
 
 nmcli con up "$BRIDGE_CON" >/dev/null 2>&1 ||
     rollback "$BRIDGE did not come up"
@@ -427,3 +597,7 @@ step "Done"
 echo "    The host and the seats are on one segment now. The daemon reads what"
 echo "    the uplink is, so seats provisioned from here get a bridged NIC by"
 echo "    themselves. sudo $0 --undo puts all of it back."
+echo
+echo "    The reboot is the part that used to go wrong, and --check reads it: it"
+echo "    counts the profiles that want $UPLINK at boot, and one is the only good"
+echo "    answer."
