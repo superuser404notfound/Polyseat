@@ -10,6 +10,40 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.7.1
+
+**The resolution and the Streaming row did not move when somebody started,
+paused or ended a stream.** They caught up whenever something else happened to
+change, which on a quiet host could be minutes.
+
+**Seats are not touched by this.** Nothing here changes how one is built, so an
+existing machine updates with a restart and no seat has to be provisioned again.
+
+- **A sweep pushes what it learned, not only what it renamed.** The page reloads
+  on a pushed change and on nothing else, and the sweep decided whether to push
+  by comparing the seat's *state* — which is precisely what does not move here.
+  The seat was running before the stream and is running after it. What moved was
+  the output, the session and whether somebody is connected, and none of the
+  three was ever compared. The seats named as in use under the daemon's own
+  restart button were stale for the same reason.
+
+  So the reading is compared rather than the state: everything a sweep learns
+  that the interface then shows, in one string. A field nobody remembers to
+  compare is how this reads wrong, and a field added to the sweep is added to the
+  comparison by being read at all. When the sweep is late, so is the whole card.
+
+- **A reading that failed no longer blanks the resolution.** Reading the output
+  answers with nothing for every failure it has, and that was written down
+  unconditionally. Harmless while nothing was pushed; with this release it would
+  have taken the resolution off the card on one exec that timed out and put it
+  back ten seconds later. It is the rule the stream is already read under: a seat
+  that was not asked successfully has not answered.
+
+- **A stopped seat no longer claims a resolution.** That field is what the screen
+  is running at *now*, so a seat that had been streaming at 2560x1600 went on
+  saying so after it stopped. A container that is not running has no output, the
+  same thing that is already said about its stream.
+
 ## 0.7.0
 
 **A seat being built for the first time could not finish.** It stopped on the
