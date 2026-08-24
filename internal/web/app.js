@@ -1994,31 +1994,66 @@ function openEditor(seat) {
   el("editor").showModal();
 }
 
-// Says what the network checkbox actually does here, which depends on something
-// the seat cannot decide: whether the uplink is a bridge.
+// Says what the network checkbox actually does here, which depends on two
+// things the seat cannot decide: whether the uplink is a bridge, and whether it
+// is an interface a seat can use at all.
 //
-// On a plain interface every seat gets a macvlan and a macvlan cannot talk to
-// the interface it hangs off, so the box is true but powerless and saying so is
-// the only honest thing the page can do. Disabling it would suggest the setting
-// does not exist.
+// The tick is stored either way, and the box stays usable on a plain interface
+// rather than being disabled. The preference is real; it is the host that is
+// not arranged for it yet, and the button that arranges it is offered here
+// because this is where somebody finds out they want it. The exception is a
+// wireless uplink, where nothing anybody ticks will ever work.
 function describeHostAccess() {
   const host = (state && state.host) || {};
+  const bridge = (state && state.lan_bridge) || {};
+  const config = (state && state.config) || {};
   const note = el("editor-host-access-note");
   const box = el("editor-form").host_access;
+  const button = el("editor-bridge");
 
-  if (!host.uplink_bridged) {
+  const offerable =
+    config.web_lan_bridge !== false && !!bridge.command && !bridge.running;
+
+  button.hidden = true;
+  button.disabled = false;
+
+  if (host.uplink_wireless) {
     box.disabled = true;
     note.textContent =
-      "Not available: " +
+      "Not available on this host: " +
       (host.uplink || "the uplink") +
-      " is not a bridge, so every seat takes a macvlan from it and a macvlan " +
-      "cannot reach the interface it hangs off. The Host dialog has a button " +
-      "for that, under \"The uplink\". Seats still reach each other and the " +
-      "rest of the network either way.";
+      " is wireless. 802.11 carries one MAC address per association, so a seat " +
+      "cannot have one of its own: a macvlan is refused by the driver, and a " +
+      "bridge would need 4-address mode at both ends, which ordinary access " +
+      "points do not do. Seats need a wired interface, and it does not have to " +
+      "be the one this host reaches the internet over.";
     return;
   }
 
   box.disabled = false;
+
+  if (!host.uplink_bridged) {
+    note.textContent = box.checked
+      ? "Stored, and doing nothing yet: " +
+        (host.uplink || "the uplink") +
+        " is a plain interface, so this seat takes a macvlan from it and a " +
+        "macvlan cannot reach the interface it hangs off. Making the uplink a " +
+        "bridge is what turns this on, here and for every other seat that asks " +
+        "for it." +
+        (offerable
+          ? " The button below does that and saves this seat first. Every seat " +
+            "is stopped for it and started again afterwards."
+          : " At a terminal: sudo polyseat-lan-bridge")
+      : "This seat takes a macvlan from " +
+        (host.uplink || "the uplink") +
+        ". It keeps its own address, reaches the rest of the network and the " +
+        "other seats, and cannot reach this host or be reached by it.";
+
+    button.hidden = !(box.checked && offerable);
+
+    return;
+  }
+
   note.textContent = box.checked
     ? "This seat is a port on " +
       host.uplink +
@@ -2049,9 +2084,14 @@ function describePointerSpeed() {
     (Math.abs(speed - DEFAULT_POINTER_SPEED) < 0.001 ? " This is the default." : "");
 }
 
-async function saveEditor(event) {
-  event.preventDefault();
-
+// saveSeat is the half of saving that talks to the daemon, apart from the half
+// that closes the dialog.
+//
+// Two callers. The Save button, and the button that bridges the uplink: that
+// one is pressed because somebody just ticked the box this dialog is about, and
+// the dialog goes away while the bridge is being built. Storing it first is the
+// difference between one step and two.
+async function saveSeat() {
   const form = el("editor-form");
   const body = {
     label: form.label.value.trim(),
@@ -2064,14 +2104,23 @@ async function saveEditor(event) {
     pointer_speed: Number(form.pointer_speed.value),
   };
 
+  if (editing) {
+    await api("PATCH", `/api/seats/${editing.name}`, body);
+
+    return;
+  }
+
+  body.name = form.name.value.trim();
+  if (!body.label) body.label = body.name;
+
+  await api("POST", "/api/seats", body);
+}
+
+async function saveEditor(event) {
+  event.preventDefault();
+
   try {
-    if (editing) {
-      await api("PATCH", `/api/seats/${editing.name}`, body);
-    } else {
-      body.name = form.name.value.trim();
-      if (!body.label) body.label = body.name;
-      await api("POST", "/api/seats", body);
-    }
+    await saveSeat();
 
     el("editor").close();
     await refresh();
@@ -2336,6 +2385,14 @@ function networkPanel(options) {
   why.className = "hint";
   why.hidden = true;
 
+  // Which interface, and why that one. Worth its own line since the daemon
+  // started choosing: a host that reaches the network over wifi and hands its
+  // seats the ethernet port beside it is doing something nobody typed, and a
+  // name on its own would look like a setting somebody had forgotten making.
+  const source = document.createElement("p");
+  source.className = "hint";
+  source.hidden = true;
+
   const cost = document.createElement("small");
   cost.className = "standalone";
 
@@ -2387,7 +2444,7 @@ function networkPanel(options) {
     }
   };
 
-  box.append(title, hint, why, cost, button, error, log, failed);
+  box.append(title, hint, source, why, cost, button, error, log, failed);
 
   function update(state) {
     const host = (state && state.host) || {};
@@ -2397,7 +2454,9 @@ function networkPanel(options) {
     const running = !!bridge.running;
     const uplink = host.uplink || "the uplink";
 
-    hint.textContent = host.uplink_bridged
+    hint.textContent = host.uplink_wireless
+      ? uplink + " is wireless, which is the one uplink a seat cannot use."
+      : host.uplink_bridged
       ? `${uplink} is a bridge. This host and the seats are devices on one ` +
         "segment: they hear each other's broadcasts, which is what a local " +
         "multiplayer game looks for, and a seat can be given the host in its " +
@@ -2406,6 +2465,11 @@ function networkPanel(options) {
         "and a macvlan cannot reach the interface it hangs off, so no seat " +
         "can see this host on the LAN however its own checkbox is set. Seats " +
         "still reach each other and the rest of the network.";
+
+    source.hidden = !host.uplink_reason;
+    source.textContent = host.uplink_reason
+      ? "Chosen because " + host.uplink_reason + "."
+      : "";
 
     cost.textContent = host.uplink_bridged
       ? "Taking it back off stops every seat, moves the address back onto " +
@@ -2420,11 +2484,21 @@ function networkPanel(options) {
         "worth reading first — a seat that can reach this host over the LAN " +
         "can reach what this host is listening on.";
 
-    // Two reasons there is no button, and they want different sentences: one
-    // is a setting somebody chose, the other is how this was installed.
+    // Three reasons there is no button, and they want different sentences: one
+    // is a fact about the hardware, one is a setting somebody chose, and one is
+    // how this was installed.
     let blocked = "";
 
-    if (!allowed) {
+    if (host.uplink_wireless) {
+      blocked =
+        uplink +
+        " is wireless, and there is no arrangement here that works. 802.11 " +
+        "carries one MAC address per association, so it cannot be bridged and " +
+        "no seat can take a macvlan from it either. Seats need a wired " +
+        "interface, and it does not have to be the one this host reaches the " +
+        'internet over: point "uplink" in /etc/polyseat/polyseatd.json at a ' +
+        "wired card on the same network and this works on that.";
+    } else if (!allowed) {
       blocked =
         'Changing the uplink from here is off ("web_lan_bridge" in ' +
         "polyseatd.json). At a terminal it is: sudo polyseat-lan-bridge";
@@ -3105,6 +3179,43 @@ el("editor-cancel").onclick = () => el("editor").close();
 el("editor-form").onsubmit = saveEditor;
 el("editor-form").pointer_speed.oninput = describePointerSpeed;
 el("editor-form").host_access.onchange = describeHostAccess;
+
+// Bridging the uplink from the seat that wants it.
+//
+// The same endpoint and the same question as the panel in the host dialog,
+// because it is the same action; what is different is that the seat being
+// edited is saved first, so the tick that led to this being pressed is not lost
+// with the dialog. The log belongs to the panel that owns it, so this hands
+// over to it rather than growing a second one.
+el("editor-bridge").onclick = async () => {
+  const button = el("editor-bridge");
+
+  const password = window.prompt(
+    "Bridging the uplink stops every seat, moves this host's address onto the " +
+      "bridge, and lets every seat that asks reach this host over the LAN. " +
+      "Type the interface password to confirm.",
+  );
+
+  // Cancelled, which is a decision and not a failure.
+  if (password === null) return;
+
+  button.disabled = true;
+  el("editor-error").textContent = "";
+
+  try {
+    await saveSeat();
+    await api("POST", "/api/lan-bridge", { undo: false, password });
+  } catch (err) {
+    button.disabled = false;
+    el("editor-error").textContent = err.message;
+
+    return;
+  }
+
+  el("editor").close();
+  await refresh();
+  openHost();
+};
 el("login-form").onsubmit = submitLogin;
 el("setup-form").onsubmit = submitSetup;
 el("password-form").onsubmit = submitPassword;

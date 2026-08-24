@@ -275,18 +275,10 @@ func (o *out) storage(cfg config.Config) {
 func (o *out) network(cfg config.Config) {
 	o.section("Network")
 
-	uplink := cfg.Uplink
-	source := "from the configuration"
-
-	if uplink == "" {
-		source = "not configured, taken from the default route"
-
-		if guess, err := config.DefaultUplink(); err == nil {
-			uplink = guess
-		} else {
-			source = "not configured, and no default route to take one from"
-		}
-	}
+	// The same function the daemon and host/lan-bridge.sh get their answer
+	// from, so a report cannot describe a machine differently from the way it
+	// is being run.
+	uplink, source := seat.Uplink(cfg)
 
 	if uplink == "" {
 		o.line("uplink", source)
@@ -305,7 +297,7 @@ func (o *out) network(cfg config.Config) {
 			o.line("is a bridge", "no, so every seat is isolated from this machine")
 		}
 
-		if wireless(uplink) {
+		if config.Wireless(uplink) {
 			o.line("wireless", "yes, and macvlan cannot work on it at all")
 		}
 	}
@@ -542,24 +534,6 @@ func space(path string) string {
 	}
 
 	return gib(st.Bavail) + " free of " + gib(st.Blocks)
-}
-
-// wireless answers the question macvlan cares about. 802.11 carries one MAC
-// address per association, so a seat cannot have one of its own on a wireless
-// interface, and the installer refuses rather than producing seats with no
-// network.
-func wireless(iface string) bool {
-	if iface != filepath.Base(iface) {
-		return false
-	}
-
-	if _, err := os.Stat(filepath.Join("/sys/class/net", iface, "wireless")); err == nil {
-		return true
-	}
-
-	_, err := os.Stat(filepath.Join("/sys/class/net", iface, "phy80211"))
-
-	return err == nil
 }
 
 func yesno(b bool) string {

@@ -36,6 +36,7 @@ func main() {
 	listen := flag.String("listen", "", "override the listen address from the configuration")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	writeReport := flag.Bool("report", false, "describe this installation on stdout and exit, for a bug report")
+	showUplink := flag.Bool("uplink", false, "print the interface the seats hang off, and why, then exit")
 	flag.Parse()
 
 	if *showVersion {
@@ -59,6 +60,34 @@ func main() {
 		}
 
 		report.Write(os.Stdout, cfg, version.Version, time.Now())
+
+		return
+	}
+
+	// For host/lan-bridge.sh, which has to work on the same interface this
+	// daemon does and used to work it out for itself in shell. It got it wrong
+	// on the one machine where the two answers differ, so there is one answer
+	// now and this is where it is read from. The name on stdout and the reason
+	// on stderr, so a caller can use the first without parsing past the second.
+	//
+	// Up here with the report, before the root check: what it answers does not
+	// depend on being root, and a script that has to run as root should not
+	// have to be root twice to ask a question.
+	if *showUplink {
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			cfg = config.Default()
+		}
+
+		name, why := seat.Uplink(cfg)
+
+		fmt.Fprintln(os.Stderr, why)
+
+		if name == "" {
+			os.Exit(1)
+		}
+
+		fmt.Println(name)
 
 		return
 	}

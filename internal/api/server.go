@@ -532,6 +532,21 @@ type hostInfo struct {
 	// that silently does nothing is worse than one that says why.
 	Uplink        string `json:"uplink"`
 	UplinkBridged bool   `json:"uplink_bridged"`
+
+	// UplinkWireless is the third thing worth knowing about it, and the one
+	// the interface used to be silent about while prepare.sh and
+	// `polyseatd -report` both said it plainly. A seat cannot take a macvlan
+	// from a wireless interface and the interface cannot be bridged either, so
+	// a machine whose uplink is wireless has no working arrangement at all,
+	// rather than the isolated one it looks like from here.
+	UplinkWireless bool `json:"uplink_wireless"`
+
+	// UplinkReason is why that one and not another, which became worth sending
+	// when the daemon started choosing. A machine that reaches the network over
+	// wifi and hands its seats the ethernet port beside it is doing something
+	// nobody asked it to, and the page should be able to say so rather than
+	// showing a name that matches nothing the operator set.
+	UplinkReason string `json:"uplink_reason"`
 }
 
 func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
@@ -551,12 +566,14 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 		Config:          s.manager.Config(),
 		Uplinks:         config.Uplinks(),
 		Host: hostInfo{
-			Hostname:      hostname,
-			Version:       version.Version,
-			GPU:           s.manager.GPU().String(),
-			GPUVendor:     string(s.manager.GPU().Vendor),
-			Uplink:        s.manager.Uplink(),
-			UplinkBridged: s.manager.UplinkBridged(),
+			Hostname:       hostname,
+			Version:        version.Version,
+			GPU:            s.manager.GPU().String(),
+			GPUVendor:      string(s.manager.GPU().Vendor),
+			Uplink:         s.manager.Uplink(),
+			UplinkBridged:  s.manager.UplinkBridged(),
+			UplinkWireless: s.manager.UplinkWireless(),
+			UplinkReason:   s.manager.UplinkReason(),
 		},
 		Update:    s.updates.Available(),
 		Updater:   s.updaterState(),
@@ -673,6 +690,28 @@ func (s *Server) warnings() []string {
 	// that this machine is the first, and to ask for what comes back. It goes
 	// away when somebody confirms it, which is a change to this line and not to
 	// the code it describes.
+	// The two ways an uplink can be no uplink. Both were quiet here: the page
+	// showed the interface name and whether it was a bridge, which on a
+	// wireless machine reads as "your seats are isolated" when the truth is
+	// that no seat on this machine can have a network at all. prepare.sh has
+	// warned about it since it existed and `polyseatd -report` prints it, and
+	// neither is where somebody looks after pressing a button that failed.
+	switch {
+	case s.manager.Uplink() == "":
+		out = append(out, "No seat on this host can be given a network: "+
+			s.manager.UplinkReason()+".")
+
+	case s.manager.UplinkWireless():
+		out = append(out, s.manager.Uplink()+" is wireless, and no seat can use "+
+			"it. 802.11 carries one MAC address per association, so a seat cannot "+
+			"have one of its own: a macvlan is refused by the driver and bridging "+
+			"would need 4-address mode at both ends, which ordinary access points "+
+			"do not do. Seats need a wired interface. It does not have to be the "+
+			`one this host reaches the internet over: set "uplink" in `+
+			"/etc/polyseat/polyseatd.json to a wired card on the same network and "+
+			"the seats will use that while this host stays on wifi.")
+	}
+
 	if s.manager.GPU().Vendor == seat.VendorAMD {
 		out = append(out, "This is an AMD machine, and Polyseat's AMD support "+
 			"has never been run on real hardware by its author. It is expected "+

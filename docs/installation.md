@@ -370,6 +370,56 @@ macvlan cannot work at all because 802.11 does not carry more than one MAC
 address per association, and where bridging a station interface does not work
 either for the same reason.
 
+The interface says both of these now as well. It used to show the uplink's name
+and whether it was a bridge, which on a wireless machine reads as "your seats
+are isolated" when the truth is that no seat on it can have a network at all.
+
+### A machine on wifi
+
+Polyseat needs a wired interface for the seats, and that is not the same as
+needing the machine to be on a cable. **The interface the seats hang off does
+not have to be the one this machine reaches the internet over**, and on a
+machine that reaches it over wifi nothing has to be typed for that.
+
+The choice is made in one place, `seat.Uplink`, in this order:
+
+1. `"uplink"` in `/etc/polyseat/polyseatd.json`, when it names one. Followed to
+   its bridge if that interface has since been made a port of one, because
+   bridging changes which name is right without changing the file that named it.
+2. The interface carrying the default route, when a seat can use it.
+3. A wired card with a cable in it, when the default route is wireless. Nearly
+   every machine on wifi still has an ethernet port, and that port is all a seat
+   needs: what it wants from the card is a segment to be a host on, not a way to
+   the internet.
+
+Step 3 happens only where there is one answer. Two wired cards with cables in
+them is a decision about which network the seats belong on, and guessing it
+produces seats Moonlight cannot see; the interface then says so and names them,
+and `"uplink"` settles it. A card with no cable is never chosen: a seat given
+one comes up, looks healthy and never gets an address.
+
+`polyseatd -uplink` prints what was chosen, with the reason on standard error,
+and needs neither root nor a running daemon. `host/lan-bridge.sh` asks that
+binary rather than working it out again, which is how the script and the daemon
+stopped being able to disagree.
+
+So the seats take their macvlans from `enp4s0` and get their addresses from the
+same DHCP server everything else on that network uses, while the machine itself
+keeps routing over wifi. Bridging works there too: the bridge is built over the
+seats' card, and it leaves the routing where it found it — a bridge over an
+interface that was never the way out does not become the way out, and the run is
+not judged on whether a gateway answers over it.
+
+What has no answer is a machine with **only** wifi. Every seat is a host of its
+own on the LAN with its own address and its own Sunshine ports, and 802.11
+cannot carry a second MAC address for a station. Making that work would mean
+giving that design up: seats on the Incus bridge behind NAT, a distinct Sunshine
+port range per seat, forwarding on the host, and every Moonlight client told a
+port rather than an address. That is a different product and not a setting, so
+the honest answer for a wifi-only machine today is a cable — including a USB
+ethernet adapter, which is enough, because what the seats need from it is a
+segment to be hosts on and not bandwidth to the internet.
+
 ### Optional hardening
 
 `polyseat-check-hardening --fix` pins `kernel.sysrq`. Everything else it finds is

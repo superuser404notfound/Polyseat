@@ -85,10 +85,111 @@ command -v incus >/dev/null || {
     exit 1
 }
 
-# The interface carrying the default route, which is the one the seats hang off.
-# Read the same way the daemon reads it, so the two cannot disagree.
-uplink() {
+CONFIG=/etc/polyseat/polyseatd.json
+
+# ask_daemon gets the uplink from the binary that owns the choice.
+#
+# There is one policy and it is written in Go: the configuration, then the
+# interface carrying the default route, then a wired card with a cable in it
+# when that route is wireless. This script used to work a smaller version of
+# that out for itself and got it wrong on precisely the machine the last case
+# exists for. Asking beats reimplementing, and the name is on stdout with the
+# reason on stderr so both can be had without parsing either.
+#
+# It writes $UPLINK and $UPLINK_SOURCE and answers whether it managed.
+ask_daemon() {
+    local polyseatd why
+
+    for polyseatd in /usr/local/bin/polyseatd /usr/bin/polyseatd; do
+        [[ -x $polyseatd ]] || continue
+
+        why=$(mktemp)
+        status=0
+
+        UPLINK=$("$polyseatd" -uplink 2>"$why") || status=$?
+        UPLINK_SOURCE=$(<"$why")
+
+        rm -f "$why"
+
+        if ((status == 0)) && [[ -n $UPLINK ]]; then
+            return 0
+        fi
+
+        # Exit 1 is this daemon saying there is no uplink, which is a fact about
+        # the machine: reading it here again would only disagree with it more
+        # politely. Anything else is a binary that does not know the question,
+        # which an older one does not, and then working it out here is right.
+        if ((status == 1)); then
+            UPLINK=""
+
+            return 0
+        fi
+
+        UPLINK=""
+        UPLINK_SOURCE=""
+
+        return 1
+    done
+
+    return 1
+}
+
+# configured_uplink reads the "uplink" key, and prints nothing when there is
+# none, which is the ordinary case.
+#
+# With python, because that is what prepare.sh reads this file with and one JSON
+# parser on the machine beats two. A file that cannot be read is reported rather
+# than skipped: an uplink that is named and quietly ignored is exactly the
+# disagreement this exists to end.
+configured_uplink() {
+    [[ -r $CONFIG ]] || return 0
+
+    local python
+    for python in python3 python; do
+        command -v "$python" >/dev/null 2>&1 || continue
+
+        "$python" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("uplink") or "")' \
+            "$CONFIG" 2>/dev/null
+
+        return 0
+    done
+
+    grep -q '"uplink"' "$CONFIG" 2>/dev/null &&
+        warn "$CONFIG names an uplink and there is no python here to read it with" >&2
+
+    return 0
+}
+
+# default_route_device is the interface the machine's way out goes over, which
+# is not always the one the seats hang off.
+default_route_device() {
     awk '$2 == "00000000" { print $1; exit }' /proc/net/route
+}
+
+# enslaved names the interface $1 is a port of, and nothing when it is a port of
+# nothing.
+#
+# The daemon does the same thing with a configured uplink, and both do it for
+# one reason: bridging changes which name is right without changing the
+# configuration that named it. A machine that says "uplink": "enp4s0" and then
+# has enp4s0 made a port of br0 still says enp4s0, and every question worth
+# asking from here on — is it a bridge, which seats hang off it — has to be
+# asked of br0. Without this the script and the daemon disagree again, one step
+# further along than they used to.
+enslaved() {
+    # The name comes out of a configuration file and is about to be joined onto
+    # a path.
+    [[ -n $1 && $1 == "${1##*/}" && $1 != "." && $1 != ".." ]] || return 0
+
+    # readlink and not readlink -f. With -f a path whose last component does not
+    # exist still resolves and prints, so every interface on the machine would
+    # come back as a port of something called "master".
+    local master
+    master=$(readlink "/sys/class/net/$1/master" 2>/dev/null) || return 0
+
+    [[ -n $master ]] || return 0
+
+    basename "$master"
 }
 
 is_bridge() { [[ -d /sys/class/net/$1/bridge ]]; }
@@ -170,15 +271,69 @@ claimants() {
 
 # ------------------------------------------------------------------- check
 
-UPLINK="$(uplink || true)"
+DEFAULT_DEV="$(default_route_device || true)"
+
+UPLINK=""
+UPLINK_SOURCE=""
+
+# The binary first, and only when there is none does this answer the question
+# itself: the configuration, then the default route.
+#
+# The smaller answer is what this script used to have all of, under a comment
+# claiming it read the uplink "the same way the daemon reads it, so the two
+# cannot disagree". They could and did, on a machine whose route out is wireless
+# and whose seats hang off a wired card. A checkout that has this file and no
+# polyseatd yet still gets the smaller answer, which is right for it: without a
+# daemon there are no seats to disagree about.
+if ! ask_daemon; then
+    CONFIGURED="$(configured_uplink || true)"
+
+    if [[ -n $CONFIGURED ]]; then
+        UPLINK=$CONFIGURED
+        UPLINK_SOURCE="\"uplink\" in $CONFIG"
+
+        # Followed to its bridge when it has become a port of one, which is
+        # what this script does to it and what the daemon reads afterwards.
+        MASTER="$(enslaved "$CONFIGURED" || true)"
+
+        if [[ -n $MASTER ]] && is_bridge "$MASTER"; then
+            UPLINK=$MASTER
+            UPLINK_SOURCE="\"uplink\" in $CONFIG, now a port of $MASTER"
+        fi
+    else
+        UPLINK=$DEFAULT_DEV
+        UPLINK_SOURCE="the default route"
+    fi
+fi
 
 if [[ -z $UPLINK ]]; then
-    bad "no default route, so there is no uplink to work on"
+    bad "there is no uplink to work on"
+    echo "    ${UPLINK_SOURCE:-Nothing is configured and there is no default route.}"
     exit 1
 fi
 
+if [[ ! -e /sys/class/net/$UPLINK ]]; then
+    bad "$UPLINK does not exist on this machine, and it is what was chosen"
+    echo "    Chosen because $UPLINK_SOURCE."
+    exit 1
+fi
+
+# Whether this uplink is also the way out decides what "it worked" means below.
+CARRIES_DEFAULT=no
+[[ $UPLINK == "$DEFAULT_DEV" ]] && CARRIES_DEFAULT=yes
+
 if [[ $MODE == check ]]; then
     step "Uplink"
+
+    ok "$UPLINK, because $UPLINK_SOURCE"
+
+    if [[ $CARRIES_DEFAULT == no ]]; then
+        echo "    The way out of this machine goes over ${DEFAULT_DEV:-nothing},"
+        echo "    which is a different interface. That is a supported arrangement"
+        echo "    and the usual reason for it is a wireless machine with a wired"
+        echo "    card for the seats, since neither macvlan nor a bridge works on"
+        echo "    802.11."
+    fi
 
     if is_bridge "$UPLINK"; then
         ports=$(ls /sys/class/net/"$UPLINK"/brif 2>/dev/null | paste -sd' ')
@@ -444,7 +599,7 @@ if is_bridge "$UPLINK"; then
     exit 0
 fi
 
-ok "$UPLINK carries the default route"
+ok "$UPLINK, because $UPLINK_SOURCE"
 
 if [[ -d /sys/class/net/$UPLINK/wireless ]] || [[ -e /sys/class/net/$UPLINK/phy80211 ]]; then
     bad "$UPLINK is wireless and cannot be bridged"
@@ -513,7 +668,19 @@ step "Building the bridge"
 # the seats to the segment, not to make the host a different machine on it.
 MAC=$(cat /sys/class/net/"$UPLINK"/address)
 
+# A bridge over an interface that was never the way out does not become the way
+# out. Left to take a default route from its lease it would quietly move the
+# machine's routing onto the card the seats hang off, which is a bigger change
+# than the one being asked for and not one anybody would connect to this script.
+ROUTING=()
+
+if [[ $CARRIES_DEFAULT == no ]]; then
+    ROUTING=(ipv4.never-default yes ipv6.never-default yes)
+    ok "and it is not the way out, so $BRIDGE will not take the default route"
+fi
+
 nmcli con add type bridge ifname "$BRIDGE" con-name "$BRIDGE_CON" \
+    "${ROUTING[@]}" \
     bridge.stp no \
     bridge.forward-delay 0 \
     bridge.mac-address "$MAC" \
@@ -573,12 +740,20 @@ done
 
 ok "$BRIDGE holds $ADDRESS"
 
-GATEWAY=$(ip -4 route show default dev "$BRIDGE" | awk '{ print $3; exit }')
+# Only when this uplink is the way out. Asking a bridge over a card that never
+# carried the default route to answer for the gateway is asking the wrong
+# question, and rolling a correct run back on the answer would make the
+# supported wireless arrangement impossible to set up.
+if [[ $CARRIES_DEFAULT == yes ]]; then
+    GATEWAY=$(ip -4 route show default dev "$BRIDGE" | awk '{ print $3; exit }')
 
-if [[ -n $GATEWAY ]] && ping -c1 -W2 "$GATEWAY" >/dev/null 2>&1; then
-    ok "the gateway $GATEWAY answers over $BRIDGE"
+    if [[ -n $GATEWAY ]] && ping -c1 -W2 "$GATEWAY" >/dev/null 2>&1; then
+        ok "the gateway $GATEWAY answers over $BRIDGE"
+    else
+        rollback "nothing answers over $BRIDGE, so the machine is not really on the network"
+    fi
 else
-    rollback "nothing answers over $BRIDGE, so the machine is not really on the network"
+    ok "the way out stays on ${DEFAULT_DEV:-nothing}, which this did not touch"
 fi
 
 # ---- the seats come back on the bridge

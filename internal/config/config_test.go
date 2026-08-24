@@ -101,3 +101,40 @@ func TestLoadWithoutAFile(t *testing.T) {
 		t.Error("update checking is meant to be on by default")
 	}
 }
+
+// The uplink question neither macvlan nor a bridge can be answered around. The
+// paths are the two the kernel offers, and both are checked because which one
+// exists depends on the driver.
+func TestWirelessAsksBothPaths(t *testing.T) {
+	for _, name := range []string{"", ".", "..", "../../etc", "eth0/../wlan0"} {
+		if Wireless(name) {
+			t.Errorf("%q was called wireless", name)
+		}
+	}
+
+	var wired, wifi string
+
+	for _, iface := range Uplinks() {
+		if Wireless(iface) {
+			wifi = iface
+		} else if wired == "" {
+			wired = iface
+		}
+	}
+
+	if wired == "" && wifi == "" {
+		t.Skip("this machine has no interface to ask about")
+	}
+
+	if wifi != "" {
+		if _, err := os.Stat(filepath.Join("/sys/class/net", wifi, "wireless")); err != nil {
+			if _, err := os.Stat(filepath.Join("/sys/class/net", wifi, "phy80211")); err != nil {
+				t.Errorf("%s was called wireless with neither path present", wifi)
+			}
+		}
+	}
+
+	if wired != "" && Wireless(wired) {
+		t.Errorf("%s was called wireless", wired)
+	}
+}

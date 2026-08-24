@@ -288,6 +288,53 @@ func DefaultUplink() (string, error) {
 	return "", fmt.Errorf("no default route found")
 }
 
+// Wireless answers the question both macvlan and a bridge care about.
+//
+// 802.11 carries one MAC address per association, so a station cannot present
+// a second one for a seat: macvlan is refused by the driver, and bridging would
+// need 4-address mode at both ends, which ordinary access points do not do. A
+// wireless uplink is therefore not a degraded arrangement, it is none at all,
+// and the only thing worth doing about it is saying so early.
+//
+// Here rather than beside its one caller because there are three now: the
+// report, the interface's warnings, and prepare.sh asks the same two paths in
+// shell. Two of those can share a function.
+func Wireless(iface string) bool {
+	if iface == "" || iface != filepath.Base(iface) || iface == "." || iface == ".." {
+		return false
+	}
+
+	if _, err := os.Stat(filepath.Join("/sys/class/net", iface, "wireless")); err == nil {
+		return true
+	}
+
+	_, err := os.Stat(filepath.Join("/sys/class/net", iface, "phy80211"))
+
+	return err == nil
+}
+
+// Carrier reports whether there is a cable in the interface.
+//
+// The question that separates a wired card somebody plugged into the network
+// from a wired card nothing is attached to, which matters the moment this
+// starts choosing one on its own: a seat given an uplink with no cable is a
+// seat that comes up, looks healthy and never gets an address.
+//
+// A read that fails is a no. carrier is EINVAL on an interface that is down,
+// and down with nothing to say for itself is not something to hand seats to.
+func Carrier(iface string) bool {
+	if iface == "" || iface != filepath.Base(iface) || iface == "." || iface == ".." {
+		return false
+	}
+
+	data, err := os.ReadFile(filepath.Join("/sys/class/net", iface, "carrier"))
+	if err != nil {
+		return false
+	}
+
+	return strings.TrimSpace(string(data)) == "1"
+}
+
 // Uplinks lists the candidate interfaces for the web interface to offer.
 func Uplinks() []string {
 	ifaces, err := net.Interfaces()
