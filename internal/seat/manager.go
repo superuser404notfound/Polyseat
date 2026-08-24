@@ -604,12 +604,14 @@ func (m *Manager) reconcile(ctx context.Context, name string) {
 	switch status {
 	case "":
 		m.stopBroker(name)
+		m.forgetStream(name)
 		m.setState(name, StateAbsent)
 
 		return
 	case "Running":
 	default:
 		m.stopBroker(name)
+		m.forgetStream(name)
 		m.setState(name, StateStopped)
 
 		return
@@ -644,7 +646,8 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		stream  streamState
 	)
 
-	if sunshine == "active" {
+	switch {
+	case sunshine == "active":
 		m.mu.Lock()
 		known := rt.encodersOnRecord(sunshineStarted)
 		m.mu.Unlock()
@@ -655,6 +658,20 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 
 		output = m.readOutput(ctx, name)
 		session, stream = m.readSession(ctx, name)
+
+	case sunshine == "unknown":
+		// The seat was not asked successfully, so the last thing known about
+		// it still stands. streamUnknown is the zero value and this branch
+		// changes nothing; it is written out because the one below is the
+		// change, and the difference between them is the whole point.
+
+	default:
+		// Sunshine is not running in this seat, and a seat with no Sunshine
+		// has no stream. That is an answer rather than the absence of one: the
+		// seat was asked and what it said settles the question. Left to the
+		// zero value, as it was, every seat spent the whole of its build being
+		// treated as one somebody might be playing in.
+		stream = streamIdle
 	}
 
 	m.checkOrigins(ctx, name, addresses)
@@ -1126,6 +1143,39 @@ func (m *Manager) sessionEnded(ctx context.Context, name string) {
 		m.logf(name, "the stream ended, updating the app list now")
 		m.refreshApps(ctx, name)
 	}
+}
+
+// forgetStream drops what was believed about a stream in a seat that has
+// stopped.
+//
+// Both flags are latched. They are set from a reading of the seat and changed
+// only by another one, and the poll above returns before reading anything when
+// the container is not running. So whatever was believed at the moment a seat
+// stopped went on being believed for as long as the daemon lived.
+//
+// The value that gets stuck is "cannot tell", and every seat passes through it:
+// during its own build the container runs and Sunshine does not, which is not a
+// stream but did not look like an answer either. A build that failed, or a seat
+// stopped before Sunshine came up, left it set for good.
+//
+// That is not cosmetic, because everything that must not disturb a stream
+// treats "cannot tell" exactly like "somebody is playing". One seat in that
+// state was enough to grey out the daemon's own restart button on a host where
+// nothing was running at all, under the words "Restart when nobody is playing",
+// and to hold back that seat's app list and its software management with it.
+//
+// A container that is not running has no stream. It is the one thing here that
+// can be said without asking anybody.
+func (m *Manager) forgetStream(name string) {
+	rt := m.runtimeOf(name)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	rt.streaming = false
+	rt.unclear = false
+	rt.quiet = time.Time{}
+	rt.session = nil
 }
 
 // observeStream folds one reading of a seat into what the daemon believes about

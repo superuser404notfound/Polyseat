@@ -382,3 +382,74 @@ func TestEncodersAreReadAgainWhenSunshineRestarted(t *testing.T) {
 		t.Error("a missing start time sent it back to reading the journal every tick")
 	}
 }
+
+// ---------------------------------------------------------------- streaming
+
+// A seat that is not running cannot be streaming, and saying otherwise stops
+// the daemon being restarted from its own interface.
+//
+// The value that used to get stuck is "cannot tell", and every seat passes
+// through it: while a seat is being built its container runs and Sunshine does
+// not. A build that failed left it set, the poll stopped reading a seat that
+// was no longer running, and nothing ever set it back. One such seat greyed out
+// "Restart when nobody is playing" on a host with nothing playing at all.
+func TestAStoppedSeatIsNotStreaming(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+
+	rt := m.runtimeOf("vince")
+	rt.unclear = true
+	rt.streaming = true
+	rt.quiet = time.Now()
+	rt.session = &Session{}
+
+	if got := m.Streaming(); len(got) != 1 {
+		t.Fatalf("Streaming() = %v before the seat stopped, wanted it to count", got)
+	}
+
+	m.forgetStream("vince")
+
+	if got := m.Streaming(); len(got) != 0 {
+		t.Errorf("Streaming() = %v after the seat stopped, wanted nothing", got)
+	}
+
+	if rt.unclear || rt.streaming || rt.session != nil || !rt.quiet.IsZero() {
+		t.Errorf("something was left behind: unclear=%v streaming=%v session=%v quiet=%v",
+			rt.unclear, rt.streaming, rt.session, rt.quiet)
+	}
+}
+
+// Both halves of Streaming still count while the seat is up. "Cannot tell" has
+// to keep meaning "do not disturb this seat" for a seat that is running, which
+// is the reason it exists.
+func TestStreamingCountsASeatThatCannotAnswer(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+
+	m.runtimeOf("one").unclear = true
+	m.runtimeOf("two").streaming = true
+	m.runtimeOf("three")
+
+	got := m.Streaming()
+
+	if len(got) != 2 || got[0] != "one" || got[1] != "two" {
+		t.Errorf("Streaming() = %v, wanted [one two]", got)
+	}
+}
+
+// The reading that produced the stuck state, kept apart from the reading that
+// genuinely says nothing. A seat whose Sunshine is not running is idle; a seat
+// that could not be asked is unknown and leaves what was believed alone.
+func TestObserveStreamSeparatesIdleFromUnanswered(t *testing.T) {
+	var rt runtime
+
+	rt.observeStream(streamIdle, nil, time.Now())
+
+	if rt.unclear {
+		t.Error("a seat with no Sunshine was recorded as one that could not answer")
+	}
+
+	rt.observeStream(streamUnknown, nil, time.Now())
+
+	if !rt.unclear {
+		t.Error("a seat that could not answer was recorded as one that had")
+	}
+}
