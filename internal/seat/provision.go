@@ -148,6 +148,110 @@ func (p *Provisioner) sh(ctx context.Context, script string) (string, error) {
 	return p.Client.Run(ctx, p.name(), "sh", "-c", script)
 }
 
+// ------------------------------------------------------------- package runs
+
+// packageAttempts is how many times a package transaction is tried.
+//
+// What this exists for is not a broken machine. It is a mirror that stops in
+// the middle of a transfer:
+//
+//	error: failed retrieving file 'speexdsp-1.2.1-2-x86_64.pkg.tar.zst' from
+//	mirrors.kernel.org : Operation too slow. Less than 1 bytes/sec transferred
+//	the last 10 seconds
+//	warning: too many errors from mirrors.kernel.org, skipping for the
+//	remainder of this transaction
+//	error: failed to commit transaction (failed to retrieve some files)
+//
+// pacman is already doing the right thing there: it gives up on a mirror that
+// has gone quiet rather than hanging on it forever. What ends the transaction
+// is that some of the files it still wanted were only on that mirror, and
+// "for the remainder of this transaction" is a promise that expires when the
+// transaction does. A second attempt gets a fresh choice.
+//
+// Without this, ten minutes of building a seat are thrown away by a stall
+// somewhere on the internet, and what a person does about it is press the
+// button again. This is that, done by the thing that noticed.
+//
+// Three and not more, so that a machine with no network at all says so in
+// under a minute rather than in five.
+const packageAttempts = 3
+
+// packageRetryPause is how long to wait before trying again. A variable so that
+// a test does not have to sit through it.
+var packageRetryPause = 5 * time.Second
+
+// retryPackages runs a package transaction and runs it again when what went
+// wrong was somebody else's network.
+//
+// A function of the run rather than a method, so that what it decides can be
+// checked without an Incus and a container behind it. The policy is the whole
+// of the value here, and it is otherwise exercised only when a mirror fails at
+// exactly the right moment.
+func retryPackages(ctx context.Context, log Logger, run func() (string, error)) (string, error) {
+	var (
+		out string
+		err error
+	)
+
+	for attempt := 1; ; attempt++ {
+		out, err = run()
+		if err == nil {
+			return out, nil
+		}
+
+		if attempt >= packageAttempts || !transientDownload(out+err.Error()) {
+			return out, err
+		}
+
+		if log != nil {
+			log("a mirror stopped mid transfer, trying again (attempt %d of %d)",
+				attempt+1, packageAttempts)
+		}
+
+		select {
+		case <-ctx.Done():
+			return out, err
+
+		case <-time.After(packageRetryPause):
+		}
+	}
+}
+
+// transientDownload says whether a failed transaction looks like the network
+// rather than the machine.
+//
+// Read out of what pacman said, because its exit status is 1 for everything it
+// dislikes. Trying a real conflict three times — a package that does not
+// exist, a file another package already owns — would take three times as long
+// to report the same thing and would bury it under two misleading lines saying
+// it was being retried.
+func transientDownload(text string) bool {
+	for _, phrase := range []string{
+		"failed retrieving file",
+		"failed to retrieve some files",
+		"Operation too slow",
+		"Could not resolve host",
+		"Connection timed out",
+		"Connection reset by peer",
+		"Temporary failure in name resolution",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// runPackages is run with that policy around it. Every transaction that
+// downloads goes through here; the ones that install a file already on disk do
+// not, because there is no mirror in them to fail.
+func (p *Provisioner) runPackages(ctx context.Context, argv ...string) (string, error) {
+	return retryPackages(ctx, p.Log, func() (string, error) {
+		return p.run(ctx, argv...)
+	})
+}
+
 // ------------------------------------------------------------------ container
 
 func (p *Provisioner) stepContainer(ctx context.Context) error {
@@ -458,7 +562,7 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		"mesa", "vulkan-tools", "mesa-utils",
 		"python", "sudo", "which")
 
-	out, err := p.run(ctx, argv...)
+	out, err := p.runPackages(ctx, argv...)
 	if err != nil {
 		return err
 	}
@@ -612,7 +716,7 @@ func (p *Provisioner) stepSteam(ctx context.Context) error {
 		"steam", "lib32-libglvnd", "lib32-vulkan-icd-loader",
 		"ttf-liberation", "zenity")
 
-	_, err := p.run(ctx, argv...)
+	_, err := p.runPackages(ctx, argv...)
 
 	return err
 }
@@ -1467,7 +1571,7 @@ func (p *Provisioner) stepNvidiaUserspace(ctx context.Context) error {
 	argv := append([]string{"pacman", "-S", "--noconfirm", "--needed"}, driverFlags...)
 	argv = append(argv, "egl-gbm", "egl-wayland", "egl-x11")
 
-	if _, err := p.run(ctx, argv...); err != nil {
+	if _, err := p.runPackages(ctx, argv...); err != nil {
 		return err
 	}
 
