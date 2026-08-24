@@ -10,6 +10,46 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.6.2
+
+**A seat no longer stops being built because a mirror went quiet.** That was the
+most common way for a build to fail and it never had anything to do with the
+seat.
+
+- **A package transaction is tried three times**, five seconds apart, with a line
+  in the seat log each time so it is not done behind anybody's back. The failure
+  it is for:
+
+  ```
+  error: failed retrieving file 'speexdsp-1.2.1-2-x86_64.pkg.tar.zst' from
+  mirrors.kernel.org : Operation too slow. Less than 1 bytes/sec transferred
+  the last 10 seconds
+  warning: too many errors from mirrors.kernel.org, skipping for the remainder
+  of this transaction
+  error: failed to commit transaction (failed to retrieve some files)
+  ```
+
+  pacman is doing the right thing there — it gives up on a mirror that has gone
+  quiet rather than hanging on it — and the transaction ends because the files
+  it still wanted were only on that one. What followed was ten minutes of
+  provisioning thrown away and a person pressing the button again. "For the
+  remainder of this transaction" expires when the transaction does, so a second
+  attempt gets a fresh choice of mirror.
+
+  Only when the output looks like the network. A package that does not exist, a
+  file another package owns, a signature that does not check out: those are
+  answered once, because trying them three times would take three times as long
+  to say the same thing. The three transactions that download go through it; the
+  one that installs a file already on disk does not.
+
+- **The uplink tests from 0.6.0 were reading this machine's network.** They fake
+  the four questions the choice asks and it asks five: whether an interface is a
+  port of a bridge went to the real `/sys`. They passed until a machine had
+  `lan-bridge.sh` run on it, at which point the `enp4s0` they invent collided
+  with a real card that had become a port of `br0`, dropped out of its own
+  candidate list, and two tests quietly started proving something else. Both CI
+  runs before this were green, because a GitHub runner has no `enp4s0`.
+
 ## 0.6.1
 
 **The interface could be showing a state from minutes ago and had no way to
