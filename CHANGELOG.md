@@ -10,6 +10,69 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.6.0
+
+**A machine on wifi with an ethernet port can run Polyseat, and nothing has to
+be typed for it.** Which is most machines: the port is all a seat needs, since
+what it wants from the card is a segment to be a host on and not a way to the
+internet.
+
+**Seats are not touched by this.** Nothing here changes how one is built, so an
+existing machine updates with a restart and no seat has to be provisioned again.
+
+- **The uplink is chosen in one place**, `seat.Uplink`, and three things used to
+  choose it separately. The daemon read `"uplink"` and fell back to the default
+  route; `polyseatd -report` worked it out again in its own words;
+  `host/lan-bridge.sh` read only the default route, under a comment claiming it
+  read the uplink "the same way the daemon reads it, so the two cannot
+  disagree". On a machine whose route out is wireless and whose seats hang off a
+  wired card, they disagreed completely: the script worked on the wifi and
+  refused.
+
+  `polyseatd -uplink` prints the answer, with the reason on standard error, and
+  needs neither root nor a running daemon. The script asks it and only works the
+  question out itself when there is no binary to ask. A binary too old to know
+  the flag is told apart from one saying there is no uplink, by the exit status,
+  so an upgrade halfway through falls back rather than concluding the machine has
+  no network.
+
+- **A wired card with a cable in it is taken when the default route is
+  wireless.** That is the whole feature above, and it happens only where there
+  is one answer. Two wired cards with cables is a decision about which network
+  the seats belong on, and guessing it produces seats Moonlight cannot see, so
+  the interface names them and `"uplink"` settles it. A card with no cable is
+  never chosen: a seat given one comes up, looks healthy and never gets an
+  address.
+
+- **Bridging works in that arrangement too.** The bridge is built over the
+  seats' card rather than over whatever carries the route out; it is given
+  `never-default`, so the machine keeps routing over wifi instead of quietly
+  moving onto the card the seats hang off; and it is no longer judged on whether
+  a gateway answers over it, which would have rolled a correct run back. What
+  the daemon reads afterwards follows by itself, whichever way the uplink was
+  decided: a configured interface is followed to the bridge it has become a port
+  of, and an automatic choice sees the port drop out of the candidates while the
+  bridge stays.
+
+- **The interface says when the uplink is one no seat can use.** It showed the
+  name and whether it was a bridge, which on a wireless machine reads as "your
+  seats are isolated" when the truth is that no seat on it can have a network at
+  all. 802.11 carries one MAC address per association, so a macvlan is refused by
+  the driver and bridging would need 4-address mode at both ends, which ordinary
+  access points do not do. `prepare.sh` has warned about this since it existed
+  and `polyseatd -report` prints it; neither is where somebody looks after
+  pressing a button that did nothing. The warning names the way out, and the
+  state carries the reason as well as the name, because a host that hands its
+  seats the ethernet port beside its wifi is doing something nobody typed.
+
+- **The seat editor offers the bridge instead of pointing at another dialog.**
+  The checkbox is no longer disabled on a plain interface. The preference is
+  real and is stored; what a bridge decides is whether it does anything, and
+  saying so is more honest than a box that cannot be ticked. Ticking it offers
+  the button, which saves the seat first — the tick that led to pressing it
+  would otherwise go with the dialog — and then hands the log to the panel that
+  owns it rather than growing a second one.
+
 ## 0.5.0
 
 **The uplink can be bridged from the interface.** It was a script, a terminal
