@@ -178,11 +178,18 @@ func TestEnslavedFollowsAPortToItsBridge(t *testing.T) {
 func machine(t *testing.T, route string, wireless []string, wired map[string]bool) {
 	t.Helper()
 
-	oldRoute, oldWireless, oldCarrier, oldList := defaultRoute, isWireless, hasCarrier, interfaces
+	oldRoute, oldWireless, oldCarrier, oldList, oldMaster :=
+		defaultRoute, isWireless, hasCarrier, interfaces, portMaster
 
 	t.Cleanup(func() {
-		defaultRoute, isWireless, hasCarrier, interfaces = oldRoute, oldWireless, oldCarrier, oldList
+		defaultRoute, isWireless, hasCarrier, interfaces, portMaster =
+			oldRoute, oldWireless, oldCarrier, oldList, oldMaster
 	})
+
+	// Nothing here is a port of anything unless a test says so. Without this
+	// the invented names are looked up in the real /sys, and whether these
+	// pass depends on what the machine running them has been bridged onto.
+	portMaster = func(name string) string { return name }
 
 	defaultRoute = func() (string, error) {
 		if route == "" {

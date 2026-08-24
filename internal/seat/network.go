@@ -59,11 +59,20 @@ var (
 	isWireless   = config.Wireless
 	hasCarrier   = config.Carrier
 	interfaces   = config.Uplinks
+
+	// The fourth question, and the one that was missing here: whether an
+	// interface is a port of a bridge. Left reading the real /sys, these tests
+	// passed on a machine with a plain uplink and failed on the same machine
+	// once lan-bridge.sh had run on it, because the enp4s0 they invent is also
+	// the name of a card that had since become a port of br0. A test that
+	// depends on the network it happens to be run on proves nothing about the
+	// two arrangements it names.
+	portMaster = enslaved
 )
 
 func Uplink(cfg config.Config) (string, string) {
 	if cfg.Uplink != "" {
-		name := enslaved(cfg.Uplink)
+		name := portMaster(cfg.Uplink)
 		if name != cfg.Uplink {
 			return name, fmt.Sprintf("%q in the configuration names %s, which is now a port of %s",
 				"uplink", cfg.Uplink, name)
@@ -112,7 +121,7 @@ func wiredCandidates(except string) []string {
 			continue
 		}
 
-		if enslaved(name) != name {
+		if portMaster(name) != name {
 			continue
 		}
 
