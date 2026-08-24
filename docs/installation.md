@@ -190,13 +190,18 @@ because somebody who installed the package has no checkout to find them in:
 | `host/lan-bridge.sh` | `polyseat-lan-bridge` |
 | `host/check-hardening.sh` | `polyseat-check-hardening` |
 
-The first two are also placed by `install.sh`, into `/usr/local/bin`, which the
-other two are not. That is not symmetry for its own sake: the daemon looks those
-two up by name, `/usr/local` first and `/usr` second, the same order it uses for
-the input helpers, and a daemon built from a checkout has no way to find the
-checkout it came from. Without them the two buttons in the interface would have
-nothing to run. Nothing looks the other two up, and whoever has a checkout has
-them under `host/` already.
+The first three are also placed by `install.sh`, into `/usr/local/bin`, which
+`polyseat-check-hardening` is not. That is not symmetry for its own sake: the
+daemon looks those three up by name, `/usr/local` first and `/usr` second, the
+same order it uses for the input helpers, and a daemon built from a checkout has
+no way to find the checkout it came from. Without them the buttons in the
+interface would have nothing to run. Nothing looks the last one up, and whoever
+has a checkout has it under `host/` already.
+
+`polyseat-lan-bridge` joined that list when the interface learned to run it, and
+the rule is the one above rather than a judgement about which scripts are
+important: a script goes into `/usr/local/bin` when something looks for it by
+name.
 
 The rest stay in the repository, because they are about the repository:
 `install.sh` and `update.sh` are the checkout's own way in and out,

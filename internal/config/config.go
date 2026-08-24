@@ -120,6 +120,25 @@ type Config struct {
 	// seats are going too.
 	WebUninstall bool `json:"web_uninstall"`
 
+	// WebLanBridge lets the interface put the uplink on a bridge, and take it
+	// off again, by running polyseat-lan-bridge.
+	//
+	// Its own switch, because it is the only thing the page does that changes
+	// what a seat can reach. Everything else here decides what a seat is given;
+	// this decides whether a seat and this machine are on one network segment,
+	// and docs/security.md calls that the deliberate removal of an isolation
+	// property rather than a setting. A machine whose seats are not all for
+	// people in the same room should be able to say no to it once, in the file,
+	// rather than trusting that nobody presses it.
+	//
+	// On by default, because on the machine this is built for the answer is
+	// yes and the alternative is a terminal. The password is asked every time
+	// regardless of UpdateNeedsPassword, for a reason that is about where the
+	// page can be: a seat's own browser reaches this interface over the
+	// management bridge, so without that question a session opened from a seat
+	// could give that seat the LAN it did not have.
+	WebLanBridge bool `json:"web_lan_bridge"`
+
 	// GPURenderNode picks the card the seats render and encode on, for example
 	// /dev/dri/renderD129. Empty means the daemon finds it itself, which is the
 	// right answer on a machine with one card.
@@ -153,6 +172,7 @@ func Default() Config {
 		UpdateCheck:  true,
 		WebUpdate:    true,
 		WebUninstall: true,
+		WebLanBridge: true,
 
 		// Empty on purpose: the daemon looks at the machine. See GPURenderNode.
 		GPURenderNode: "",

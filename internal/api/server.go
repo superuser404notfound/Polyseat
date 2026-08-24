@@ -21,6 +21,7 @@ import (
 
 	"github.com/superuser404notfound/Polyseat/internal/auth"
 	"github.com/superuser404notfound/Polyseat/internal/config"
+	"github.com/superuser404notfound/Polyseat/internal/lanbridge"
 	"github.com/superuser404notfound/Polyseat/internal/library"
 	"github.com/superuser404notfound/Polyseat/internal/prepare"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
@@ -55,6 +56,12 @@ type Server struct {
 	// modes rather than made per server, so that the one-run-at-a-time rule
 	// holds across a restart into the other one.
 	prepare *prepare.Runner
+
+	// lanbridge runs host/lan-bridge.sh for the interface. Not shared with
+	// setup mode the way prepare is: that mode exists because there is no Incus
+	// to talk to, so it has no seats, and the uplink only means anything to a
+	// machine that has some.
+	lanbridge *lanbridge.Runner
 
 	// removing is set once the removal has been handed to systemd, for the
 	// couple of seconds this process has left. Without it the page has nothing
@@ -134,7 +141,7 @@ func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker
 
 	s := &Server{
 		manager: manager, auth: credentials, updates: updates,
-		prepare: preparer, log: logger,
+		prepare: preparer, lanbridge: &lanbridge.Runner{}, log: logger,
 
 		// Asked once, here, and not on every request. It runs pacman, which
 		// takes about a tenth of a second, and the interface asks for its state
@@ -166,6 +173,7 @@ func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker
 	guarded.HandleFunc("POST /api/restart", s.restart)
 	guarded.HandleFunc("POST /api/prepare", s.prepareHost)
 	guarded.HandleFunc("POST /api/uninstall", s.removeHost)
+	guarded.HandleFunc("POST /api/lan-bridge", s.bridgeUplink)
 	guarded.HandleFunc("PATCH /api/seats/{name}", s.updateSeat)
 	guarded.HandleFunc("DELETE /api/seats/{name}", s.deleteSeat)
 	guarded.HandleFunc("GET /api/seats/{name}/log", s.seatLog)
@@ -461,6 +469,14 @@ type stateResponse struct {
 	Prepare prepare.State `json:"prepare"`
 	Remove  removeState   `json:"remove"`
 
+	// LanBridge is the third, and the one whose result is already reported
+	// twice over: host.uplink_bridged says what the machine looks like now, and
+	// this says what the last attempt to change it did. Both, because between
+	// pressing the button and the address arriving on the bridge there are
+	// several seconds in which the first field is still answering the old
+	// question truthfully.
+	LanBridge lanbridge.State `json:"lan_bridge"`
+
 	Warnings []string  `json:"warnings"`
 	Now      time.Time `json:"now"`
 }
@@ -542,13 +558,14 @@ func (s *Server) getState(w http.ResponseWriter, r *http.Request) {
 			Uplink:        s.manager.Uplink(),
 			UplinkBridged: s.manager.UplinkBridged(),
 		},
-		Update:   s.updates.Available(),
-		Updater:  s.updaterState(),
-		Ready:    true,
-		Prepare:  s.prepare.State(),
-		Remove:   s.removeState(),
-		Warnings: s.warnings(),
-		Now:      time.Now(),
+		Update:    s.updates.Available(),
+		Updater:   s.updaterState(),
+		Ready:     true,
+		Prepare:   s.prepare.State(),
+		Remove:    s.removeState(),
+		LanBridge: s.lanbridge.State(),
+		Warnings:  s.warnings(),
+		Now:       time.Now(),
 	}
 
 	// Always send arrays, never null. A client that has to guard every list

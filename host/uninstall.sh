@@ -272,6 +272,7 @@ if $checkout; then
     rm -fv /usr/local/bin/polyseatd \
            /usr/local/bin/polyseat-prepare \
            /usr/local/bin/polyseat-uninstall \
+           /usr/local/bin/polyseat-lan-bridge \
            /etc/systemd/system/polyseatd.service \
            /etc/systemd/system/polyseat-uhid-observer.service \
            /etc/systemd/system/polyseat-broker@.service

@@ -10,9 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/superuser404notfound/Polyseat/internal/auth"
 	"github.com/superuser404notfound/Polyseat/internal/config"
+	"github.com/superuser404notfound/Polyseat/internal/lanbridge"
 	"github.com/superuser404notfound/Polyseat/internal/prepare"
 	"github.com/superuser404notfound/Polyseat/internal/uninstall"
 	"github.com/superuser404notfound/Polyseat/internal/update"
@@ -30,6 +32,7 @@ func host(t *testing.T, cfg config.Config) *Server {
 		log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		setupConfig: cfg,
 		prepare:     &prepare.Runner{},
+		lanbridge:   &lanbridge.Runner{},
 	}
 }
 
@@ -383,5 +386,180 @@ func TestTheStateCarriesWhatTheCheckKnows(t *testing.T) {
 
 	if got.Checked != nil {
 		t.Errorf("it has never asked and the state says it asked at %v", got.Checked)
+	}
+}
+
+// --------------------------------------------------------------- lan bridge
+
+// bridgeScript points the lookup at a stand-in and hands back the file it
+// records its arguments in.
+//
+// The real script takes this machine off the network, so what is tested here is
+// the handler: what it refuses, and whether the one thing it tells the script —
+// which direction to go — arrives.
+func bridgeScript(t *testing.T, body string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	seen := filepath.Join(dir, "args")
+
+	script := "#!/bin/sh\necho \"$*\" > " + seen + "\n" + body
+
+	if err := os.WriteFile(filepath.Join(dir, lanbridge.Name), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	old := lanbridge.Dirs
+	lanbridge.Dirs = []string{dir}
+
+	t.Cleanup(func() { lanbridge.Dirs = old })
+
+	return seen
+}
+
+// settled waits for the run the handler started, which is a goroutine rather
+// than the request: the reply is written while the script is still going.
+func settled(t *testing.T, s *Server) {
+	t.Helper()
+
+	deadline := time.Now().Add(30 * time.Second)
+
+	for s.lanbridge.Running() {
+		if time.Now().After(deadline) {
+			t.Fatal("the run never finished")
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestBridgingIsRefusedWhenTheSettingSaysSo(t *testing.T) {
+	bridgeScript(t, "true\n")
+
+	cfg := config.Default()
+	cfg.WebLanBridge = false
+
+	w := httptest.NewRecorder()
+	s := host(t, cfg)
+	s.bridgeUplink(w, post("/api/lan-bridge", `{"password":"the right one"}`, "10.2.0.1"))
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("answered %d, wanted 403", w.Code)
+	}
+
+	if s.lanbridge.State().Running {
+		t.Error("something ran anyway")
+	}
+}
+
+// Asked every time, whatever update_needs_password says. Not because this
+// cannot be undone, but because of where the page can be: a seat's own browser
+// reaches this interface, and this is the button that would hand that seat the
+// LAN it was kept off.
+func TestBridgingAsksForThePasswordEvenWhenUpdatesDoNot(t *testing.T) {
+	bridgeScript(t, "true\n")
+
+	cfg := config.Default()
+	cfg.UpdateNeedsPassword = false
+
+	s := host(t, cfg)
+
+	for i, body := range []string{`{}`, `{"password":""}`, `{"password":"the wrong one"}`, ``} {
+		w := httptest.NewRecorder()
+		s.bridgeUplink(w, post("/api/lan-bridge", body, "10.2.1."+string(rune('1'+i))))
+
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%q answered %d, wanted 401", body, w.Code)
+		}
+	}
+
+	if s.lanbridge.State().Running || s.lanbridge.State().Done {
+		t.Error("something ran without a password")
+	}
+}
+
+// The direction is the only thing the browser decides here, and it decides it
+// for a script that takes the machine's address off one interface and puts it
+// on another. Carrying it the wrong way round would undo the bridge somebody
+// asked to build.
+func TestBridgingCarriesTheDirection(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "bridging", body: `{"password":"the right one"}`, want: ""},
+		{name: "undoing", body: `{"password":"the right one","undo":true}`, want: "--undo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seen := bridgeScript(t, "true\n")
+
+			w := httptest.NewRecorder()
+			s := host(t, config.Default())
+			s.bridgeUplink(w, post("/api/lan-bridge", tc.body, "10.2.2.1"))
+
+			if w.Code != http.StatusAccepted {
+				t.Fatalf("answered %d, wanted 202: %s", w.Code, w.Body)
+			}
+
+			settled(t, s)
+
+			args, err := os.ReadFile(seen)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if got := strings.TrimSpace(string(args)); got != tc.want {
+				t.Errorf("the script was given %q, wanted %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// One at a time, because two of these at once is a machine with its address on
+// neither interface. A conflict rather than a server error: it is a fact about
+// what this machine is doing, not a malformed request.
+func TestBridgingIsRefusedWhileOneIsGoing(t *testing.T) {
+	bridgeScript(t, "sleep 1\n")
+
+	s := host(t, config.Default())
+
+	first := httptest.NewRecorder()
+	s.bridgeUplink(first, post("/api/lan-bridge", `{"password":"the right one"}`, "10.2.3.1"))
+
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("the first answered %d, wanted 202: %s", first.Code, first.Body)
+	}
+
+	second := httptest.NewRecorder()
+	s.bridgeUplink(second, post("/api/lan-bridge", `{"password":"the right one"}`, "10.2.3.1"))
+
+	if second.Code != http.StatusConflict {
+		t.Errorf("the second answered %d, wanted 409", second.Code)
+	}
+
+	settled(t, s)
+}
+
+// A checkout install did not place this command until the interface learned to
+// run it, so an older one has the daemon and not the script. That is a sentence
+// about this machine rather than a fault in the request, and it has to say
+// which of the two it is.
+func TestBridgingSaysWhenThereIsNothingToRun(t *testing.T) {
+	old := lanbridge.Dirs
+	lanbridge.Dirs = []string{t.TempDir()}
+
+	defer func() { lanbridge.Dirs = old }()
+
+	w := httptest.NewRecorder()
+	s := host(t, config.Default())
+	s.bridgeUplink(w, post("/api/lan-bridge", `{"password":"the right one"}`, "10.2.4.1"))
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("answered %d, wanted 409", w.Code)
+	}
+
+	if state := s.lanbridge.State(); state.Command != "" || state.Reason == "" {
+		t.Errorf("the state does not say there is nothing to run: %+v", state)
 	}
 }

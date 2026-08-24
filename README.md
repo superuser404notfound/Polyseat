@@ -200,9 +200,9 @@ keeping itself up to date, and waiting for a seat that is neither streaming nor
 using the files before it replaces anything.
 
 **A seat can share the network with the host, or stay behind a line.** Local
-multiplayer between the host and a seat needs the first, which is what
-`polyseat-lan-bridge` sets up; whether a particular seat takes part is a
-checkbox on its card. Turned off, the seat reaches the gateway and the other
+multiplayer between the host and a seat needs the first, which is a button in
+the interface under "The uplink", or `sudo polyseat-lan-bridge` at a terminal;
+whether a particular seat takes part is a checkbox on its card. Turned off, the seat reaches the gateway and the other
 seats, but not this machine, and this machine not it.
 
 **A seat is something you can sit down in front of.** Connecting lands on a

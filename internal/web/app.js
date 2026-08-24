@@ -2012,9 +2012,9 @@ function describeHostAccess() {
       "Not available: " +
       (host.uplink || "the uplink") +
       " is not a bridge, so every seat takes a macvlan from it and a macvlan " +
-      "cannot reach the interface it hangs off. Run host/lan-bridge.sh on the " +
-      "host to change that. Seats still reach each other and the rest of the " +
-      "network either way.";
+      "cannot reach the interface it hangs off. The Host dialog has a button " +
+      "for that, under \"The uplink\". Seats still reach each other and the " +
+      "rest of the network either way.";
     return;
   }
 
@@ -2308,6 +2308,164 @@ function preparePanel(options) {
 
     done.hidden = !(prepare.done && !running);
     doneText.textContent = options.readyText;
+  }
+
+  return { node: box, update };
+}
+
+// The uplink, as a panel.
+//
+// The one control in this interface that changes the network the interface is
+// reached over, and it says so before it is pressed rather than after. For a
+// few seconds this host has its address on neither interface; every seat is
+// stopped first, because the kernel refuses to make an interface a bridge port
+// while a macvlan hangs off it; and a browser watching this from inside a seat
+// is watching from something that is about to be stopped. None of that is a
+// reason not to offer it, and all of it is a reason to say it out loud.
+function networkPanel(options) {
+  const box = document.createElement("section");
+  box.className = "panel";
+
+  const title = document.createElement("h3");
+  title.textContent = "The uplink";
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+
+  const why = document.createElement("p");
+  why.className = "hint";
+  why.hidden = true;
+
+  const cost = document.createElement("small");
+  cost.className = "standalone";
+
+  const button = document.createElement("button");
+  button.className = "primary";
+
+  const error = document.createElement("div");
+  error.className = "warning";
+  error.hidden = true;
+
+  const log = document.createElement("pre");
+  log.className = "log";
+  log.hidden = true;
+
+  const failed = document.createElement("div");
+  failed.className = "warning";
+  failed.hidden = true;
+
+  button.onclick = async () => {
+    const undo = button.dataset.undo === "yes";
+
+    // prompt() rather than a field on the panel, the same way preparing asks:
+    // it cannot be filled in by something already on the page, and there is
+    // nowhere for a browser to have remembered it. Asked every time, whatever
+    // update_needs_password says, because this page may be open in a seat and
+    // this is the button that would hand that seat the host.
+    const password = window.prompt(
+      undo
+        ? "Taking the uplink off the bridge stops every seat and moves this " +
+            "host's address back. Type the interface password to confirm."
+        : "Bridging the uplink stops every seat, moves this host's address " +
+            "onto the bridge, and lets every seat reach this host over the " +
+            "LAN. Type the interface password to confirm.",
+    );
+
+    // Cancelled, which is a decision and not a failure.
+    if (password === null) return;
+
+    button.disabled = true;
+
+    const went = await runHost(error, () =>
+      api("POST", "/api/lan-bridge", { undo, password }),
+    );
+
+    if (went) {
+      await options.refresh();
+    } else {
+      button.disabled = false;
+    }
+  };
+
+  box.append(title, hint, why, cost, button, error, log, failed);
+
+  function update(state) {
+    const host = (state && state.host) || {};
+    const bridge = (state && state.lan_bridge) || {};
+    const config = (state && state.config) || {};
+    const allowed = config.web_lan_bridge !== false;
+    const running = !!bridge.running;
+    const uplink = host.uplink || "the uplink";
+
+    hint.textContent = host.uplink_bridged
+      ? `${uplink} is a bridge. This host and the seats are devices on one ` +
+        "segment: they hear each other's broadcasts, which is what a local " +
+        "multiplayer game looks for, and a seat can be given the host in its " +
+        "own settings."
+      : `${uplink} is a plain interface. Every seat takes a macvlan from it, ` +
+        "and a macvlan cannot reach the interface it hangs off, so no seat " +
+        "can see this host on the LAN however its own checkbox is set. Seats " +
+        "still reach each other and the rest of the network.";
+
+    cost.textContent = host.uplink_bridged
+      ? "Taking it back off stops every seat, moves the address back onto " +
+        `${uplink}, and puts the seats on macvlans again. They are started ` +
+        "again from here when it is done."
+      : "It stops every seat, because the kernel will not make an interface " +
+        "a bridge port while a macvlan hangs off it, then moves this host's " +
+        "address onto the bridge and puts the seats on it. The seats are " +
+        "started again from here when it is done, and this host is off the " +
+        "network for a few seconds in the middle: a page open in a seat will " +
+        "go quiet and come back. What it costs is in docs/security.md and is " +
+        "worth reading first — a seat that can reach this host over the LAN " +
+        "can reach what this host is listening on.";
+
+    // Two reasons there is no button, and they want different sentences: one
+    // is a setting somebody chose, the other is how this was installed.
+    let blocked = "";
+
+    if (!allowed) {
+      blocked =
+        'Changing the uplink from here is off ("web_lan_bridge" in ' +
+        "polyseatd.json). At a terminal it is: sudo polyseat-lan-bridge";
+    } else if (!bridge.command) {
+      blocked = bridge.reason || "polyseat-lan-bridge is not installed on this host.";
+    }
+
+    why.hidden = !blocked;
+    why.textContent = blocked;
+
+    cost.hidden = !!blocked;
+    button.hidden = !!blocked;
+    button.disabled = running;
+    button.dataset.undo = host.uplink_bridged ? "yes" : "no";
+    button.className = host.uplink_bridged ? "" : "primary";
+
+    button.textContent = running
+      ? bridge.undo
+        ? "Taking the uplink off the bridge"
+        : "Bridging the uplink"
+      : host.uplink_bridged
+        ? "Take the uplink off the bridge"
+        : "Put the uplink on a bridge";
+
+    const lines = (bridge.log || []).join("\n");
+    log.hidden = !lines;
+
+    if (lines && log.textContent !== lines) {
+      log.textContent = lines;
+      // Only while it runs. Scrolling somebody back to the bottom of a
+      // finished log they were reading is how a page argues with its reader.
+      if (running) log.scrollTop = log.scrollHeight;
+    }
+
+    failed.hidden = !bridge.error;
+    failed.textContent = bridge.error
+      ? "It stopped: " +
+        bridge.error +
+        ". Everything it had changed was put back, and the seats above were " +
+        "started again either way."
+      : "";
   }
 
   return { node: box, update };
@@ -2789,6 +2947,7 @@ function openHost() {
           "the daemon when it restarts, and a restart is refused while somebody " +
           "is playing. ",
       }),
+      networkPanel({ refresh }),
       updatePanel({ refresh }),
       removePanel({ refresh }),
     ];

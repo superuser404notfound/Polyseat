@@ -9,7 +9,7 @@ where they belong; the rest are run by hand, when you want them.
 | `prepare.sh` | gets the machine ready and installs nothing: packages, the idmap range, Incus, the driver check, the group. The half a package may not do, so both installers ship it as `polyseat-prepare` and the web interface runs it |
 | `uninstall.sh` | takes Polyseat off the machine, in the order the seats have to come apart in. Shipped as `polyseat-uninstall`, run by `install.sh --uninstall` and by the web interface. `--seats`, `--library`, `--yes` |
 | `update.sh` | moves the checkout to the newest release and hands over to `install.sh`. Refuses a checkout with uncommitted work, waits for nobody to be streaming. `--check`, `--now`, `--tag`, `--yes` |
-| `lan-bridge.sh` | turns the uplink into a bridge, which is what local multiplayer between the host and a seat needs. `--undo` puts it back |
+| `lan-bridge.sh` | turns the uplink into a bridge, which is what local multiplayer between the host and a seat needs. `--undo` puts it back, `--check` says what is in place and changes nothing. Shipped as `polyseat-lan-bridge` and run by the web interface under "The uplink", which is also the only way the seats it stops are started again properly |
 | `reset-machine.sh` | puts the machine back the way it was before Polyseat, keeping the game library |
 | `check-hardening.sh` | reports host-side exposures that no seat-side measure can close |
 | (`polyseatd -report`) | not in this directory, but this is where people look: one description of the whole installation, for a bug report. Runs without the daemon |

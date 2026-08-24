@@ -329,7 +329,8 @@ what is left holding. Worth it for a machine whose seats are for people in the
 same room, which is what this is for; not worth it for a seat handed to somebody
 you do not trust, and that was already the case before this existed.
 
-`sudo polyseat-lan-bridge --undo` puts the macvlan arrangement back.
+`sudo polyseat-lan-bridge --undo` puts the macvlan arrangement back, and so does
+the same button in the interface. That it is a button is its own entry below.
 
 ### Per seat, and the isolated state is still available
 
@@ -575,6 +576,40 @@ Removing is handed to systemd as a transient unit rather than run here, because
 the first thing that script does is stop the process that started it. That also
 means the interface stops answering partway through and the rest of the run is
 in the journal, under `polyseat-uninstall`.
+
+### And it can put the uplink on a bridge, as root
+
+The third of those, and the only one that changes what a seat can reach rather
+than what it is given. The interface runs `host/lan-bridge.sh` as
+`polyseat-lan-bridge`, both directions, under `"web_lan_bridge"`.
+
+What it costs is the section "Bridging the uplink gives that last line away
+deliberately" above, unchanged: after it, a seat reaches everything this host is
+listening on. What the button adds is who can decide that, and the answer has to
+account for where the page can be. **A seat's own browser reaches this interface
+over the management bridge.** So a session opened from inside a seat is, without
+another question, a session that could give that seat the LAN it was kept off.
+
+Three things stand between those:
+
+* **The interface password, every time**, whatever `update_needs_password` says.
+  The same rule removal follows, for a different reason: not that this cannot be
+  undone — it is the one host action that is undone by pressing the other button
+  — but that this is the one that widens what a seat can reach.
+* **`"web_lan_bridge": false`** takes it off the page entirely, for a machine
+  whose seats are not all for people in the same room. The script still works at
+  a terminal, where whoever runs it already has root.
+* **The browser still never says what to run.** The request carries one boolean,
+  the direction. No path, no interface name, no command. A stolen session can
+  ask this machine to bridge its uplink or to stop; it cannot ask it to run
+  something else, and it cannot point the bridge at a different interface,
+  because the script reads the uplink off the routing table itself.
+
+The seats are stopped for the duration either way, since the kernel refuses to
+make an interface a bridge port while a macvlan hangs off it. The daemon starts
+them again when the run is over, including when it failed: a failed run has
+already stopped them and put the network back, and seats left down afterwards is
+the worse outcome rather than the safer one.
 
 ### The kernel console
 

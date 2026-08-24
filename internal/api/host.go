@@ -1,16 +1,22 @@
-// The two things the interface does to the machine rather than to a seat:
-// getting it ready, and taking Polyseat off it again.
+// The things the interface does to the machine rather than to a seat: getting
+// it ready, putting the uplink on a bridge, and taking Polyseat off it again.
 //
-// Both exist for one reason. Everything else Polyseat does is already done from
+// The first and the last exist for one reason. Everything else Polyseat does is already done from
 // this page, and the two ends of its life were the exception: a terminal to
 // prepare the machine, a terminal to remove it. Neither can be moved into the
 // package itself, because an Arch package may place files and may not
 // initialise Incus, write to /etc/subuid or put an account in a group, and
 // pacman knows nothing about the order seats have to be taken apart in.
 //
-// Neither does the work here. Both run the same script somebody at a terminal
-// would run, which is what keeps one procedure rather than two: host/prepare.sh
-// as polyseat-prepare, and host/uninstall.sh as polyseat-uninstall.
+// The bridge is here for a different one. It could be run from a terminal and
+// was, but the script stops every seat to do its work and then refuses to start
+// them again, because starting a seat properly is this daemon's job and not a
+// shell script's. Doing it from here is the only way the two halves meet.
+//
+// None of the three does the work itself. All three run the same script
+// somebody at a terminal would run, which is what keeps one procedure rather
+// than two: host/prepare.sh as polyseat-prepare, host/uninstall.sh as
+// polyseat-uninstall, host/lan-bridge.sh as polyseat-lan-bridge.
 
 package api
 
@@ -18,6 +24,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -27,6 +34,7 @@ import (
 	"github.com/superuser404notfound/Polyseat/internal/auth"
 	"github.com/superuser404notfound/Polyseat/internal/config"
 	"github.com/superuser404notfound/Polyseat/internal/prepare"
+	"github.com/superuser404notfound/Polyseat/internal/seat"
 	"github.com/superuser404notfound/Polyseat/internal/uninstall"
 	"github.com/superuser404notfound/Polyseat/internal/update"
 	"github.com/superuser404notfound/Polyseat/internal/version"
@@ -50,6 +58,12 @@ type hostRequest struct {
 
 	Seats   bool `json:"seats"`
 	Library bool `json:"library"`
+
+	// Undo asks for the uplink to be put back on a plain interface, rather than
+	// made a bridge. One field and not two endpoints: it is the same script,
+	// the same lock and the same sentence about the seats either way, and the
+	// direction is the only thing that differs.
+	Undo bool `json:"undo"`
 
 	// Confirm is the word typed out before seats are deleted. Checked here as
 	// well as in the page, because a check that only exists in the browser
@@ -370,4 +384,133 @@ func (s *Server) setupState(w http.ResponseWriter, r *http.Request) {
 // talking to before it has a session at all.
 func (s *Server) ready() bool {
 	return s.manager != nil
+}
+
+// --------------------------------------------------------------- lan bridge
+
+// bridgeUplink runs polyseat-lan-bridge and streams what it says into the state.
+//
+// The one thing in this interface that changes the network underneath the
+// connection it was asked over. That is not a reason to refuse it: every step
+// in the script that can fail puts everything back, and the run is a goroutine
+// rather than the request, so it finishes whether or not the browser that
+// started it is still there to watch. It is the reason the page says plainly
+// what is about to happen, and the reason this handler reads the seats first.
+func (s *Server) bridgeUplink(w http.ResponseWriter, r *http.Request) {
+	if !s.config().WebLanBridge {
+		fail(w, http.StatusForbidden, errors.New(`changing the uplink from the interface is off. Set "web_lan_bridge": true in /etc/polyseat/polyseatd.json, or run: sudo polyseat-lan-bridge`))
+
+		return
+	}
+
+	req, err := readHostRequest(r)
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	// Every time, whatever update_needs_password says. Not because this cannot
+	// be undone — it is the one host action that can, by pressing the other
+	// button — but because of where the page can be: a seat's own browser
+	// reaches this interface over the management bridge, and this is the button
+	// that would hand that seat the LAN it was kept off.
+	if err := confirmPassword(s.auth, true, r); err != nil {
+		s.log.Warn("changing the uplink was asked for with the wrong password",
+			"source", auth.Source(r))
+		fail(w, http.StatusUnauthorized, err)
+
+		return
+	}
+
+	// Read before anything starts, because once the script has stopped them
+	// there is nothing left to tell a seat somebody was playing on from one
+	// that was already down.
+	running := s.runningSeats()
+
+	// Conflict rather than a server error, whichever of the two it is: a run
+	// already going and a script that is not installed are both facts about
+	// this machine rather than a malformed request, and the page prints the
+	// sentence either way.
+	if err := s.lanbridge.Start(req.Undo, s.notify, s.resumeSeats(running)); err != nil {
+		fail(w, http.StatusConflict, err)
+
+		return
+	}
+
+	s.log.Info("changing the uplink from the interface",
+		"undo", req.Undo, "seats", running, "source", auth.Source(r))
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"running": true,
+		"undo":    req.Undo,
+		"seats":   running,
+	})
+}
+
+// runningSeats names the seats that are up, or on their way up.
+//
+// Starting counts. A seat halfway through coming up is stopped by the script
+// exactly like one that is up, and leaving it out here would mean the one seat
+// that was in the middle of something is the one that stays down afterwards.
+func (s *Server) runningSeats() []string {
+	if s.manager == nil {
+		return nil
+	}
+
+	seats, err := s.manager.List()
+	if err != nil {
+		// Not fatal, and not silent either: the run is still the right thing to
+		// do, it just cannot promise to put anything back.
+		s.log.Warn("the seats could not be listed before changing the uplink", "error", err)
+
+		return nil
+	}
+
+	out := []string{}
+
+	for _, status := range seats {
+		if status.State == seat.StateRunning || status.State == seat.StateStarting {
+			out = append(out, status.Name)
+		}
+	}
+
+	return out
+}
+
+// resumeSeats builds the half of the run the script deliberately leaves out.
+//
+// lan-bridge.sh stops every seat, because the kernel refuses to make an
+// interface a bridge port while a macvlan hangs off it, and then prints the
+// names instead of starting them again. That is not laziness in the script and
+// undoing it there would be wrong: `incus start` brings a container up and
+// leaves the compositor, Sunshine, the audio stack, the Moonlight app list and
+// the wait for an encoder to whoever knows about them. This does.
+//
+// It runs after a failed run as well as a successful one, and that is the
+// point rather than an oversight: a run that failed put the network back and
+// left the seats stopped in exactly the same way, and seats left down after a
+// failure is the worse of the two outcomes, not the safer one.
+func (s *Server) resumeSeats(names []string) func(func(string)) {
+	return func(log func(string)) {
+		if s.manager == nil || len(names) == 0 {
+			return
+		}
+
+		log("")
+		log("Starting the seats that were up before this:")
+
+		for _, name := range names {
+			if err := s.manager.Start(name); err != nil {
+				log(fmt.Sprintf("  ! %s did not start: %s", name, err))
+
+				continue
+			}
+
+			log("  " + name)
+		}
+
+		log("")
+		log("Each of them reports the rest of the way up on its own card.")
+	}
 }

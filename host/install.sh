@@ -144,18 +144,20 @@ for f in broker.py device_owner.py uhid_observer.py fakeudev.py; do
 done
 
 step "Host commands"
-# Two of the scripts in host/ go in as commands here as well as in the package,
-# and the reason is not tidiness: the daemon looks for them by name. The web
-# interface runs polyseat-prepare when somebody presses "Prepare this machine"
-# and polyseat-uninstall when somebody removes Polyseat from the page, and a
-# daemon built from a checkout has no way to find the checkout it came from. The
-# same lookup serves both installs, /usr/local first and /usr second, which is
-# the order the helpers already use.
+# Three of the scripts in host/ go in as commands here as well as in the
+# package, and the reason is not tidiness: the daemon looks for them by name.
+# The web interface runs polyseat-prepare when somebody presses "Prepare this
+# machine", polyseat-uninstall when somebody removes Polyseat from the page and
+# polyseat-lan-bridge when somebody puts the uplink on a bridge from the host
+# dialog, and a daemon built from a checkout has no way to find the checkout it
+# came from. The same lookup serves both installs, /usr/local first and /usr
+# second, which is the order the helpers already use.
 #
-# The other two the package ships, polyseat-lan-bridge and
-# polyseat-check-hardening, are deliberately not here. Nothing looks for those
-# by name, and whoever has a checkout has them under host/ already.
-for cmd in prepare uninstall; do
+# lan-bridge was not here until the interface learned to run it, and that is the
+# rule rather than an exception: a script goes in when something looks for it by
+# name. The last one the package ships, polyseat-check-hardening, still does not,
+# and whoever has a checkout has it under host/ already.
+for cmd in prepare uninstall lan-bridge; do
     install -m 0755 "$HERE/$cmd.sh" "$BINDIR/polyseat-$cmd"
     ok "$BINDIR/polyseat-$cmd"
 done
