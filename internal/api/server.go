@@ -1381,6 +1381,25 @@ func value[T any](p *T, fallback T) T {
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
+
+	// Every answer this interface gives about the machine goes out through
+	// here, and a browser that keeps one is a page that never changes again.
+	//
+	// These carried no cache headers at all: no Cache-Control, no ETag, no
+	// Last-Modified. That is an invitation to a heuristic, and Firefox took it.
+	// The daemon found a new release, said so on every ask, and the page went
+	// on showing the state from before its first check. Nothing failed and
+	// nothing was logged: the button's POST reached the daemon, because a POST
+	// is never served from a cache, and the state that would have shown the
+	// answer came off disk. It made the update button do nothing at all, which
+	// is the same symptom as the release before last and a different cause.
+	//
+	// no-store rather than no-cache, and the same header the static files have
+	// carried all along. There is nothing here worth keeping for a second: the
+	// body is what one machine is doing right now, and half of it is only true
+	// for the session that asked.
+	w.Header().Set("Cache-Control", "no-store")
+
 	w.WriteHeader(status)
 
 	if err := json.NewEncoder(w).Encode(body); err != nil {

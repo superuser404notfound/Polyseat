@@ -563,3 +563,36 @@ func TestBridgingSaysWhenThereIsNothingToRun(t *testing.T) {
 		t.Errorf("the state does not say there is nothing to run: %+v", state)
 	}
 }
+
+// ------------------------------------------------------------------ caching
+
+// The interface reads everything it knows out of these replies, so one kept in
+// a browser cache is a page frozen at the moment it loaded.
+//
+// Found the hard way: /api/state carried no cache headers, Firefox applied a
+// heuristic, and a machine that had just been told about a new release went on
+// saying the check had never managed to ask. The POST behind "Check now"
+// reached the daemon every time — a POST is never served from a cache — so the
+// journal showed a working check while the page showed nothing at all.
+func TestJSONRepliesAreNeverCached(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(w http.ResponseWriter)
+	}{
+		{name: "an answer", write: func(w http.ResponseWriter) {
+			writeJSON(w, http.StatusOK, map[string]any{"ready": true})
+		}},
+		{name: "a refusal", write: func(w http.ResponseWriter) {
+			fail(w, http.StatusConflict, errors.New("busy"))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			tc.write(w)
+
+			if got := w.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control is %q, wanted no-store", got)
+			}
+		})
+	}
+}
