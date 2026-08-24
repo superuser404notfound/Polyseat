@@ -10,6 +10,30 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.6.1
+
+**The interface could be showing a state from minutes ago and had no way to
+know.** `/api/state` went out with no cache headers at all, so a browser was
+free to keep it — and Firefox did.
+
+- **Every API reply now says `no-store`**, the same header the static files have
+  carried all along. Without it the page read its whole picture of the machine
+  out of a cached copy: the daemon found 0.6.0, logged it, and answered every
+  "Check now" with the release, while the page went on saying *"It has not
+  managed to ask yet"* from before its first check.
+
+  The two halves disagreed because only one of them was live. A POST is never
+  served from a cache, so the button reached the daemon every time and the
+  journal showed a working check; the refresh that would have shown the answer
+  came off disk. Nothing failed and nothing was logged, which is why this took a
+  while to find — it was proved in the end from the page itself, by making the
+  same request twice with `cache: "reload"` on the second.
+
+  It made the update button do nothing at all, which is the symptom 0.4.3 had
+  and an unrelated cause. A page open on any earlier version needs one reload
+  with the cache bypassed, or a daemon carrying this fix, before it will show
+  anything new again.
+
 ## 0.6.0
 
 **A machine on wifi with an ethernet port can run Polyseat, and nothing has to
