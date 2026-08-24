@@ -624,6 +624,13 @@ func (m *Manager) reconcile(ctx context.Context, name string) {
 func (m *Manager) refreshSession(ctx context.Context, name string) {
 	rt := m.runtimeOf(name)
 
+	// What the interface is showing about this seat before the sweep reads it
+	// again, so that the end of this can tell whether there is anything to
+	// push. See reading.
+	m.mu.Lock()
+	before := rt.reading()
+	m.mu.Unlock()
+
 	addresses, err := m.client.Addresses(name)
 	if err == nil {
 		m.mu.Lock()
@@ -752,7 +759,14 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		rt.encodersFrom = sunshineStarted
 	}
 
-	rt.output = output
+	// A reading that brought nothing does not blank what is known, which is the
+	// rule the stream is already read under: the seat was not asked
+	// successfully, so the last answer still stands. What does clear it is the
+	// seat not running at all, see forgetStream, and that is an answer rather
+	// than a silence.
+	if output != "" {
+		rt.output = output
+	}
 
 	state := StateStarting
 	if up {
@@ -767,13 +781,47 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		defer m.sessionEnded(ctx, name)
 	}
 
-	changed := rt.state != state
 	rt.state = state
+
+	changed := rt.reading() != before
 	m.mu.Unlock()
 
 	if changed {
 		m.notify()
 	}
+}
+
+// reading is everything a sweep learns about a seat that the interface then
+// shows, in one comparable string.
+//
+// Taken before and after a sweep to decide whether the change is worth pushing
+// to the page. The state alone used to decide it, and the state is precisely
+// what does not move when somebody starts, pauses or ends a stream: the seat
+// was running before and is running after. So nothing was pushed, and the page
+// only ever reloads when something is, which left the resolution saying what
+// the screen had been at before the client connected and the Streaming row
+// saying nobody was there — until a log line or an unrelated seat happened to
+// push and carried the truth along with it.
+//
+// A string rather than a comparison per field, because a field nobody
+// remembered to compare is how this reads wrong, and a field added to the sweep
+// is added to this by being read at all.
+//
+// checked is deliberately not in it. It moves on every sweep by definition and
+// the interface does not show it, so including it would push a change every ten
+// seconds and rebuild every card with it.
+//
+// Called with the lock held.
+func (rt *runtime) reading() string {
+	session := "none"
+	if rt.session != nil {
+		session = fmt.Sprintf("%+v", *rt.session)
+	}
+
+	return fmt.Sprintf("%v %v %v %v %v %v %v %v %v %v %v %v",
+		rt.state, rt.container, rt.addresses, rt.sway, rt.sunshine,
+		rt.encoder, rt.codecs, rt.output, rt.devices,
+		rt.streaming, rt.unclear, session)
 }
 
 // checkOrigins notices a seat whose address moved under it.
@@ -1176,6 +1224,11 @@ func (m *Manager) forgetStream(name string) {
 	rt.unclear = false
 	rt.quiet = time.Time{}
 	rt.session = nil
+
+	// And no output. The card reads this as "what the screen is running at
+	// now", against the resolution the seat is configured with, so a stopped
+	// seat went on claiming a live mode it no longer had one of.
+	rt.output = ""
 }
 
 // observeStream folds one reading of a seat into what the daemon believes about

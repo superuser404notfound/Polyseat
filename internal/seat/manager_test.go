@@ -453,3 +453,88 @@ func TestObserveStreamSeparatesIdleFromUnanswered(t *testing.T) {
 		t.Error("a seat that could not answer was recorded as one that had")
 	}
 }
+
+// The bug this is about. Somebody starts a stream and the seat's state does not
+// move — it was running before and it is running after — so the old comparison
+// found nothing to push and the page, which only reloads when something is
+// pushed, went on showing the idle resolution and no Streaming row at all.
+func TestTheReadingMovesWhenAStreamStartsThoughTheStateDoesNot(t *testing.T) {
+	rt := &runtime{state: StateRunning, output: "1920x1080@60Hz"}
+
+	idle := rt.reading()
+
+	rt.observeStream(streamBusy, &Session{App: "Steam", Width: 2560, Height: 1600}, time.Now())
+	rt.output = "2560x1600@120Hz"
+
+	if rt.state != StateRunning {
+		t.Fatal("the state moved, which is not the case this is about")
+	}
+
+	if rt.reading() == idle {
+		t.Error("a stream started and the reading did not move, so nothing is pushed")
+	}
+}
+
+// And when it ends. The grace period is what decides the moment; this is that
+// the moment reaches the page at all.
+func TestTheReadingMovesWhenAStreamEnds(t *testing.T) {
+	rt := &runtime{state: StateRunning}
+	rt.observeStream(streamBusy, &Session{App: "Steam"}, time.Now())
+
+	streaming := rt.reading()
+
+	now := time.Now()
+	rt.observeStream(streamIdle, nil, now)
+
+	if !rt.observeStream(streamIdle, nil, now.Add(sessionGrace+time.Second)) {
+		t.Fatal("the stream did not end, which is not what this is testing")
+	}
+
+	if rt.reading() == streaming {
+		t.Error("a stream ended and the reading did not move, so nothing is pushed")
+	}
+}
+
+// The other half, and the one that decides whether this is usable: a sweep that
+// found nothing new must push nothing, or every seat's card is rebuilt every ten
+// seconds for the rest of the daemon's life. checked moves on every sweep and is
+// the field that would do it.
+func TestASweepThatFoundNothingNewPushesNothing(t *testing.T) {
+	rt := &runtime{
+		state:     StateRunning,
+		container: "Running",
+		addresses: map[string][]string{"eth1": {"192.168.1.50"}},
+		sway:      "active",
+		sunshine:  "active",
+		encoder:   "hevc_nvenc",
+		codecs:    []string{"h264", "hevc"},
+		output:    "1920x1080@60Hz",
+		devices:   []InputDevice{{Node: "event5", Name: "X-Box pad"}},
+		session:   &Session{App: "Steam", Width: 1920, Height: 1080},
+		streaming: true,
+	}
+
+	before := rt.reading()
+
+	rt.checked = time.Now().Add(time.Minute)
+
+	if rt.reading() != before {
+		t.Error("a sweep that read the same thing twice would push a change")
+	}
+}
+
+// A seat that is not running has no output, the same thing that is said about
+// its stream. The card reads output as "what the screen is running at now", so
+// a stopped seat went on claiming a live mode.
+func TestAStoppedSeatHasNoResolutionOfItsOwn(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+
+	rt := m.runtimeOf("vince")
+	rt.output = "2560x1600@120Hz"
+
+	m.forgetStream("vince")
+
+	if rt.output != "" {
+		t.Errorf("a stopped seat still claims to be running at %q", rt.output)
+	}
+}
