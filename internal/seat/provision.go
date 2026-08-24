@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 32
+const Generation = 33
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -925,12 +925,11 @@ func (p *Provisioner) stepSteamPlay(ctx context.Context) error {
 		}
 	}
 
-	owner := strconv.FormatInt(p.uid, 10)
-
-	if _, err := p.run(ctx, "install", "-d", "-o", owner, "-g", owner, steamRoot+"/config"); err != nil {
-		return err
-	}
-
+	// The directory comes from PushFile, which creates every missing component
+	// as the player. It used to be `install -d -o uid -g uid`, and that is the
+	// bug takeHomeBack exists to repair: install applies the ownership it is
+	// given to the last component only, so a seat being built for the first
+	// time got .local, .local/share and Steam belonging to root.
 	if err := p.Client.PushFile(p.name(), steamConfigPath, updated, 0o644, p.uid, p.uid); err != nil {
 		return err
 	}
@@ -1202,7 +1201,89 @@ func (p *Provisioner) stepUser(ctx context.Context) error {
 		return err
 	}
 
-	return p.readUID(ctx)
+	if err := p.readUID(ctx); err != nil {
+		return err
+	}
+
+	return p.takeHomeBack(ctx)
+}
+
+// playerHome is the player's home directory inside a seat.
+const playerHome = "/home/" + Player
+
+// playerDirs are the directories between the player's home and Steam's
+// configuration file: .local, .local/share, Steam and Steam/config.
+//
+// Derived from the path rather than written out, so that moving the file moves
+// this with it.
+func playerDirs() []string {
+	parts := strings.Split(strings.TrimPrefix(steamConfigPath, playerHome+"/"), "/")
+	parts = parts[:len(parts)-1] // the file itself is not a directory
+
+	dirs := make([]string, 0, len(parts))
+	for i := range parts {
+		dirs = append(dirs, playerHome+"/"+strings.Join(parts[:i+1], "/"))
+	}
+
+	return dirs
+}
+
+// giveBackHome is run inside the seat, over playerDirs.
+const giveBackHome = `set -e
+for d in "$@"; do
+	if [ -d "$d" ] && [ "$(stat -c %U "$d")" != "` + Player + `" ]; then
+		chown ` + Player + `:` + Player + ` "$d"
+		echo "$d"
+	fi
+done
+`
+
+// takeHomeBack gives the player the directories in their own home that an
+// earlier daemon created as root.
+//
+// The daemon wrote Steam's compatibility tool setting with `install -d -o uid
+// -g uid` in front of it, and install applies the ownership it is given to the
+// last component only: every parent it had to create came out owned by whoever
+// ran it, which is root. On a seat that had already run Steam none of them had
+// to be created and nothing was ever wrong. On a seat being built for the first
+// time all of .local, .local/share and Steam came out as root, and the player
+// then could not add anything of their own beside what the daemon had put
+// there. Both of the things that do exactly that broke at once:
+//
+//	! Flathub could not be added, installing new software in this seat will not work yet
+//	  error: mkdirat: Permission denied
+//	! starting failed: library: taking over Steam's library folder: mkdir:
+//	  cannot create directory '/home/player/.local/share/Steam/steamapps': Permission denied
+//
+// The write itself is fixed where it is made, so no new seat arrives here with
+// anything to do. This is for the seats that were built while it was broken,
+// which cannot be repaired by writing the file differently now: the directories
+// are already there and already root's.
+//
+// Not recursive, and that is deliberate. These four directories are the whole
+// of what the bug could create; everything written inside them went through the
+// file API with the player's uid already on it, and Steam's steamapps is where
+// the shared library is mounted, which belongs to the host and to every other
+// seat sharing it.
+func (p *Provisioner) takeHomeBack(ctx context.Context) error {
+	argv := append([]string{"sh", "-c", giveBackHome, "sh"}, playerDirs()...)
+
+	out, code, err := p.Client.Try(ctx, p.name(), argv...)
+	if err != nil {
+		return err
+	}
+
+	if code != 0 {
+		return fmt.Errorf("give %s their home back: %s", Player, lastLines(out, 2))
+	}
+
+	// Silent on a seat that had nothing wrong with it, which after this release
+	// is every seat built from scratch.
+	for _, dir := range strings.Fields(out) {
+		p.Log("%s belonged to root and belongs to %s now", dir, Player)
+	}
+
+	return nil
 }
 
 // stepFlatpak gives the player a way to install software.

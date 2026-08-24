@@ -221,3 +221,63 @@ func TestCompatToolRefusesWhatItCannotUnderstand(t *testing.T) {
 		}
 	}
 }
+
+// The bug this is about: `install -d -o uid -g uid` applies the ownership to
+// the last component only, so the parents it had to create on a seat being
+// built for the first time came out as root, and the player could then add
+// nothing of their own to their own home. Flathub and the shared library both
+// stopped on it in the same run. Nothing on the daemon's side may create a
+// directory under the player's home as root; the file API is what does it, and
+// that carries the uid down every component it makes.
+func TestNothingInstallsDirectoriesIntoThePlayersHome(t *testing.T) {
+	source, err := os.ReadFile("provision.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, line := range strings.Split(string(source), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+
+		if strings.Contains(line, `"install", "-d"`) && strings.Contains(line, "steam") {
+			t.Errorf("a directory under %s is created with install -d: %s",
+				playerHome, strings.TrimSpace(line))
+		}
+	}
+}
+
+// What the repair covers. Every directory between the player's home and the
+// file, and not the file, and not the home itself, which useradd made and which
+// belongs to them already.
+func TestTheRepairCoversEveryDirectoryOnTheWayToSteamsConfiguration(t *testing.T) {
+	want := []string{
+		playerHome + "/.local",
+		playerHome + "/.local/share",
+		steamRoot,
+		steamRoot + "/config",
+	}
+
+	got := playerDirs()
+
+	if len(got) != len(want) {
+		t.Fatalf("the repair covers %v, wanted %v", got, want)
+	}
+
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("the repair covers %s where %s was wanted", got[i], want[i])
+		}
+	}
+}
+
+// The mount point of the shared library is not repaired, because it is not the
+// seat's to give away: those files are on the host and every other seat sharing
+// the pool sees the same ones.
+func TestTheRepairLeavesTheSharedLibraryAlone(t *testing.T) {
+	for _, dir := range playerDirs() {
+		if dir == steamApps || dir == LibraryMount {
+			t.Errorf("the repair reaches %s, which is a mount, not the seat's own", dir)
+		}
+	}
+}
