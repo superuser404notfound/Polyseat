@@ -10,6 +10,79 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.5.0
+
+**The uplink can be bridged from the interface.** It was a script, a terminal
+and a warning to run it from a keyboard attached to the machine, and its last
+word was a list of seats it had stopped and deliberately would not start again.
+Both halves are gone. The button is in the host dialog under *The uplink*, and
+the thing that starts a seat properly is the thing that presses it.
+
+**Seats are not touched by this.** Nothing here changes how one is built, so an
+existing machine updates with a restart and no seat has to be provisioned again.
+
+- **Put the uplink on a bridge**, and take it off again, from the host dialog.
+  It runs `host/lan-bridge.sh` as `polyseat-lan-bridge` and reports it a line at
+  a time, the same way preparing a machine does and for the same reason: the
+  script is the one copy of the procedure, it is where the rollback lives, and a
+  second implementation of it in Go would mean one of the two is wrong and
+  nobody knows which.
+
+  `"web_lan_bridge": false` takes it off the page for a machine whose seats are
+  not all for people in the same room. The interface password is asked every
+  time regardless of `update_needs_password`, and the reason is not that this
+  cannot be undone — it is the one host action that is undone by pressing the
+  other button. It is where the page can be. A seat's own browser reaches this
+  interface over the management bridge, so without that question a session
+  opened inside a seat is a session that could hand that seat the LAN it was
+  kept off.
+
+- **The seats come back on their own, and after a failed run too.** The script
+  stops every seat before it touches the interface, because the kernel refuses
+  to make an interface a bridge port while a macvlan hangs off it, and a seat's
+  macvlan counts even from inside its own network namespace. It then prints the
+  names rather than starting them, because `incus start` brings a container up
+  and leaves the compositor, Sunshine, the audio stack, the Moonlight app list
+  and the wait for an encoder to somebody else.
+
+  That somebody is the daemon, which is the whole reason this is worth a button
+  rather than a shortcut for typing. It reads which seats are up before anything
+  starts, and starts them again through its own start path when the run is over.
+  Including when the run failed: a failed run has already stopped them and put
+  the network back, and seats left down after a failure is the worse outcome
+  rather than the safer one.
+
+- **A bridged uplink survived a reboot by luck, and the luck has run out.** This
+  is the fault behind "the internet was gone after a restart and I had to pick
+  the right adapter by hand", and it was in the script rather than in the
+  bridge.
+
+  Most machines have no saved NetworkManager profile for their wired interface.
+  NetworkManager invents one, keeps it in `/run`, and builds it again from
+  scratch at every boot. The script wrote `connection.autoconnect no` to exactly
+  that profile, with a comment explaining that this was to stop it racing the
+  bridge port at the next boot. The comment described the intention correctly
+  and the setting was thrown away with the file at shutdown. What came up next
+  boot was two profiles wanting the same interface, and whichever won decided
+  whether the address landed on the bridge or on the bare card.
+
+  It is deleted now instead of switched off, which is what NetworkManager itself
+  understands: a default wired connection that is deleted puts its device in
+  `/var/lib/NetworkManager/no-auto-default.state` and is never invented again.
+  Exactly one profile can claim the uplink after that. `--undo` writes a real
+  saved profile in its place rather than waiting for the invented one to come
+  back, the port connection carries a priority and unlimited retries so a switch
+  that is not forwarding yet costs a second attempt rather than the network, and
+  `--check` has gained the line that would have found this in the first place:
+  how many profiles want the uplink at boot, where one is the only good answer.
+
+- **`polyseat-lan-bridge` is placed by the checkout installer too**, into
+  `/usr/local/bin`. Not tidiness: the daemon looks it up by name, `/usr/local`
+  first and `/usr` second, and a daemon built from a checkout has no way to find
+  the checkout it came from. The rule is the same one `polyseat-prepare` and
+  `polyseat-uninstall` follow — a script goes in when something looks for it —
+  and `polyseat-check-hardening` still does not, because nothing does.
+
 ## 0.4.3
 
 **The install button in the interface had never worked once.** Everything else
