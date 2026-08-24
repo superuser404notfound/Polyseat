@@ -10,6 +10,34 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.6.3
+
+**The daemon greyed out its own restart button on a host where nothing was
+running.** Under the words *"Restart when nobody is playing"*, with one seat,
+stopped, never built.
+
+- **A seat that is not running is no longer counted as somebody playing.**
+  `streamUnknown` is the zero value of the type, and the reading was only ever
+  assigned inside the branch that runs when Sunshine is active, so a seat whose
+  Sunshine was not up recorded "cannot tell" instead of "not streaming". Every
+  seat passes through exactly that state: while one is being built its container
+  runs and Sunshine does not.
+
+  Then it latched. The poll returns before reading anything when the container
+  is not running, so a seat that stopped in that state was never read again and
+  went on saying "cannot tell" for the life of the daemon. Everything that must
+  not disturb a stream treats that like a live one, which is right while a seat
+  is up and wrong once it has stopped — so one seat whose build had failed was
+  enough to block the restart, that seat's app list and its software management
+  at the same time.
+
+  A container that is not running has no stream, which is the one thing here
+  that can be said without asking anybody, so stopping and disappearing both
+  drop what was believed. And Sunshine not running is now an answer rather than
+  a silence: the seat was asked and what it said settles the question. Only a
+  seat that could not be asked at all leaves the last belief standing, which is
+  the caution that was meant there and had been guarding the wrong case.
+
 ## 0.6.2
 
 **A seat no longer stops being built because a mirror went quiet.** That was the
