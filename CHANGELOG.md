@@ -10,6 +10,55 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.7.0
+
+**A seat being built for the first time could not finish.** It stopped on the
+shared library, and Flathub had quietly gone the same way four seconds before
+that:
+
+```
+! Flathub could not be added, installing new software in this seat will not work yet
+  error: mkdirat: Permission denied
+! starting failed: library: taking over Steam's library folder: mkdir: cannot
+  create directory '/home/player/.local/share/Steam/steamapps': Permission denied
+```
+
+**Seats have to be provisioned again.** The provisioning generation went up, so
+the interface marks every existing seat stale and offers to build it again. That
+is a few minutes per seat rather than a restart, and it is how a seat built while
+this was broken gets repaired.
+
+- **The player owns their own home again.** Setting Steam's default Proton wrote
+  its configuration with `install -d -o uid -g uid` in front of it, and install
+  applies the ownership it is given to the last component only. Every parent it
+  had to create came out belonging to whoever ran it, which is the daemon, which
+  is root — so `.local`, `.local/share` and `Steam` were root's, the player owned
+  nothing but the leaf, and the two things in a seat that add something of their
+  own beside what the daemon put there failed on the same permission at once.
+
+  Only ever on a first build, which is why it went unseen for as long as it did.
+  A seat that had already run Steam had those directories from Steam itself and
+  there was nothing left for install to create.
+
+  The call is gone rather than corrected. Writing the file already creates every
+  missing directory through the Incus file API, and that carries the player's uid
+  down all of them.
+
+- **A seat built while it was broken is repaired when it is provisioned again**,
+  before the flatpak step and before the library, by handing back the four
+  directories on the way to Steam's configuration wherever they are not the
+  player's already. Each one is named in the seat log as it is handed back.
+
+  Not recursive, deliberately: those four are the whole of what the bug could
+  create, everything written inside them went in through the file API with the
+  right uid on it, and Steam's `steamapps` is where the shared pool is mounted,
+  which belongs to the host and to every other seat sharing it.
+
+  This is also why the generation went up rather than leaving it to the seats
+  that visibly failed. With the shared library off, the step that stopped the
+  build here returns early, so a seat could come up working and silently without
+  Flathub, and would never have been provisioned again on its own.
+
 ## 0.6.3
 
 **The daemon greyed out its own restart button on a host where nothing was
