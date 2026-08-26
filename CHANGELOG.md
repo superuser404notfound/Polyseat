@@ -10,6 +10,57 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.8.1
+
+**A seat's Updates row said things that had stopped being true.** Two ways into
+the same fault, both reported from a running machine within an hour of 0.8.0.
+
+**Seats are not touched by this.** Nothing here changes how one is built, so an
+existing machine updates with a restart and no seat has to be provisioned again.
+
+- **An updated seat went on listing what it had just installed as waiting.** The
+  update did the work, restarted the session, and never looked again, so the
+  card kept drawing the reading taken before it until the six hour timer came
+  round or somebody pressed the button. Three moments take a look and the third
+  was added last and forgotten. They now go through one place that writes the
+  answer and the time together, and the update reads the seat again rather than
+  assuming: a package that did not upgrade, or one published in the minutes the
+  update took, is still reported.
+
+- **A started seat went on saying it was switched off.** Worse than the first,
+  because it was never a finding. "The seat is not running" is a fact about the
+  present, and a fact about the present goes out of date the moment the present
+  moves. It is no longer written into a reading at all: the check answers with
+  a refusal instead, which cannot outlive anything.
+
+- **A stopped seat now keeps what was last found in it**, with the row saying
+  how long ago. Old is not the same as wrong, and a usable answer was previously
+  replaced with a note about the seat being off.
+
+- **A seat that comes up having never been asked is asked shortly after**,
+  rather than waiting out the rest of a six hour interval it spent switched off.
+  In the background and one pass at a time, because the sweep that notices runs
+  every ten seconds and must not do network work.
+
+- **Both buttons appear only on a running seat.** Neither can do anything to a
+  container that is not up, and Update software could previously be offered to a
+  stopped seat on the strength of a reading from when it last ran.
+
+- **Waiting looks like waiting.** Checking a seat spins inside its own button,
+  which is where the wait belongs: the check reads one seat and leaves the rest
+  of the interface usable, so it deliberately does not mark the card busy.
+  Restarting the daemon takes the whole page instead, with a note on what a
+  restart does to a seat and a reload when it is back — that one takes the API
+  with it, so every card behind it stops being true and none of them know.
+  Before this the cards stayed up and a pill in the corner said "reconnecting".
+
+- **Coming back is not the same question as answering.** The restart is
+  scheduled a second out through a transient systemd unit so the request is
+  answered before the process dies, which means the first reply comes from the
+  old process. A reload against that lands on a page whose daemon vanishes
+  underneath it, so a success counts only once the daemon has been seen to go.
+  After two minutes it stops waiting and says which commands to look with.
+
 ## 0.8.0
 
 **A seat now says when the software inside it has fallen behind, and can be
