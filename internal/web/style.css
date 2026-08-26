@@ -674,3 +674,71 @@ dialog .panel + .panel { border-top: 1px solid var(--line); padding-top: 1.2rem;
    there is nothing wrong with it. */
 #firstrun.not-ready .panel { border-color: var(--warn); }
 #firstrun > .hint.bad { color: var(--warn); }
+
+/* A button that is waiting for an answer.
+ *
+ * The spinner goes inside the button rather than over the page, because what is
+ * waiting is one button: checking a seat for updates reads that seat and leaves
+ * the rest of the interface usable and true. It can take most of a minute when
+ * the mirrors are slow, and a button that only greys out for that long reads as
+ * a click that did not land.
+ *
+ * The label stays. Swapping it for "Checking" would move the text under the
+ * pointer and change the button's width mid-press.
+ */
+.spinner {
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  margin-right: 0.45em;
+  vertical-align: -0.05em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* The daemon going away and coming back.
+ *
+ * Over the whole page rather than in the button, and this is the difference
+ * that matters: a restart takes every seat's broker with it and the API with
+ * it, so nothing else on the page is usable or true while it happens. Leaving
+ * the cards up would leave somebody looking at states that stopped being real
+ * the moment they pressed the button.
+ */
+.restarting {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  padding: 2rem;
+  text-align: center;
+  background: var(--bg);
+}
+
+.restarting .spinner {
+  width: 2rem;
+  height: 2rem;
+  margin: 0;
+  border-width: 3px;
+  color: var(--accent);
+}
+
+.restarting h2 { margin: 0; font-size: 1.1rem; font-weight: 600; }
+.restarting p { margin: 0; max-width: 26rem; color: var(--dim); font-size: 0.9rem; }
+.restarting .waited { font-variant-numeric: tabular-nums; }
+
+/* Anything that spins has to stop for somebody who asked for that. The border
+ * stays, so the shape still reads as a thing in progress rather than vanishing.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 4s; }
+}

@@ -208,6 +208,101 @@ function installButton(choice) {
   return button;
 }
 
+// awaitRestart takes the page over while the daemon goes away and comes back.
+//
+// Over the whole page rather than in the button, because a restart takes the
+// API with it: every card behind it stops being true the moment it is asked
+// for, and the cards do not know that. Before this the page kept them up, the
+// event stream dropped, the pill in the corner said "reconnecting" and that was
+// the whole of what anybody was told.
+//
+// The restart is scheduled a second out through a transient systemd unit, so
+// the request that asks for it is answered before the process dies. That is
+// also why "is the API answering" is not on its own enough to say it came back:
+// for the first second it is the old process answering, and reloading against
+// that lands on a page whose daemon disappears underneath it. So a success only
+// counts once the daemon has been seen to go, or once long enough has passed
+// that it must have gone and come back.
+//
+// It gives up rather than spinning forever. A restart that has not finished in
+// two minutes is not a slow restart, it is one that failed, and a machine
+// somebody has to go and look at should say so instead of animating.
+async function awaitRestart() {
+  if (stream) {
+    stream.close();
+    stream = null;
+  }
+
+  const overlay = document.createElement("div");
+  overlay.className = "restarting";
+
+  const spinner = document.createElement("div");
+  spinner.className = "spinner";
+
+  const title = document.createElement("h2");
+  title.textContent = "Polyseat is restarting";
+
+  const text = document.createElement("p");
+  text.textContent =
+    "It is going down and coming back. Seats keep running: a restart takes " +
+    "each seat's input broker for a moment and puts it back, so a controller " +
+    "may go quiet and return. This page reloads by itself when it is up.";
+
+  const waited = document.createElement("p");
+  waited.className = "waited";
+
+  overlay.append(spinner, title, text, waited);
+  document.body.append(overlay);
+
+  const started = Date.now();
+  const tick = setInterval(() => {
+    const seconds = Math.round((Date.now() - started) / 1000);
+    waited.textContent = `${seconds}s`;
+  }, 1000);
+
+  const reachable = () =>
+    fetch("/api/session", { credentials: "same-origin" }).then(
+      (r) => r.ok || r.status === 401,
+      () => false,
+    );
+
+  let sawDown = false;
+
+  for (;;) {
+    await new Promise((done) => setTimeout(done, 1000));
+
+    const elapsed = Date.now() - started;
+    const up = await reachable();
+
+    if (!up) {
+      sawDown = true;
+    } else if (sawDown || elapsed > 8000) {
+      clearInterval(tick);
+      location.reload();
+
+      return;
+    }
+
+    if (elapsed > 120000) {
+      clearInterval(tick);
+      spinner.remove();
+      title.textContent = "The daemon has not come back";
+      text.textContent =
+        "Two minutes without an answer. It is worth looking at the machine " +
+        "itself: systemctl status polyseatd, and journalctl -u polyseatd for " +
+        "why it stopped. Nothing here can say more than that.";
+      waited.textContent = "";
+
+      const again = document.createElement("button");
+      again.textContent = "Reload anyway";
+      again.onclick = () => location.reload();
+      overlay.append(again);
+
+      return;
+    }
+  }
+}
+
 function restartButton(choice) {
   const streaming = choice.updater.streaming || [];
   const button = document.createElement("button");
@@ -224,12 +319,29 @@ function restartButton(choice) {
   }
 
   button.textContent = "Restart now";
-  button.onclick = () => {
+  button.onclick = async () => {
     button.disabled = true;
-    run(async () => {
+
+    // The overlay goes up only once the daemon has agreed to restart. Asking
+    // can be refused — somebody started streaming between the page being drawn
+    // and the button being pressed, or this machine is in the middle of being
+    // prepared — and covering the page before knowing that would hide the
+    // refusal behind an animation of something that is not happening.
+    try {
       await api("POST", "/api/restart");
-      await refresh();
-    });
+    } catch (err) {
+      button.disabled = false;
+
+      if (err.unauthorized) {
+        showLogin();
+      } else {
+        alert(err.message);
+      }
+
+      return;
+    }
+
+    await awaitRestart();
   };
 
   return button;
@@ -342,6 +454,32 @@ function behind(updates) {
     updates.sunshine !== updates.sunshine_latest;
 
   return Boolean(sunshine) || (updates.packages || 0) > 0;
+}
+
+// whileWaiting puts a spinner in a button until whatever it started comes back.
+//
+// The label is kept and the spinner goes in front of it, so the button neither
+// changes width nor moves its text out from under the pointer mid-press. The
+// button is disabled meanwhile, which is what stops a second request being sent
+// while the first is still out.
+//
+// The restore is in a finally, because the failure case is the one that needs
+// it most: a check that could not reach the mirrors leaves a button somebody
+// has to be able to press again.
+async function whileWaiting(button, work) {
+  const label = button.textContent;
+  const spinner = document.createElement("span");
+  spinner.className = "spinner";
+
+  button.disabled = true;
+  button.replaceChildren(spinner, document.createTextNode(label));
+
+  try {
+    await work();
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
 }
 
 // describeChecked says how long ago the seat was asked.
@@ -1787,8 +1925,14 @@ function actions(seat) {
   // does nothing would teach people to press it to find out, which on a machine
   // other people are playing on costs somebody their session.
   if (seat.built) {
-    button("Check for updates", () =>
-      api("POST", `/api/seats/${seat.name}/check-updates`),
+    // Its own spinner rather than the card's busy flag, because this operation
+    // deliberately does not set one: it reads the seat and changes nothing, so
+    // marking the whole card busy would grey out Stop and Start for the minute
+    // the mirrors can take to answer.
+    const check = button("Check for updates", () =>
+      whileWaiting(check, () =>
+        api("POST", `/api/seats/${seat.name}/check-updates`),
+      ),
     );
   }
 
@@ -2382,7 +2526,15 @@ function preparePanel(options) {
       restart.disabled = false;
       restart.textContent = "Restart the daemon";
       alert(err.message);
+
+      return;
     }
+
+    // The same action as the banner's, so the same waiting. This one is
+    // reached after preparing the machine, where the restart is the step that
+    // makes Incus and the observer reachable at all, so leaving somebody
+    // guessing whether it worked is worse here rather than better.
+    await awaitRestart();
   };
 
   done.append(doneText, restart);
