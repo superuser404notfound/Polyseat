@@ -263,26 +263,105 @@ func TestCheckingIsRefusedWhileASeatIsBusy(t *testing.T) {
 	}
 }
 
-// A seat that is switched off cannot be asked, and that is an ordinary answer
-// rather than a fault: switched off is the normal state of a seat nobody is
-// playing in, and a card that shows an error for it teaches people to ignore
-// the place errors appear.
-func TestASwitchedOffSeatSaysSoRatherThanFailing(t *testing.T) {
+// "The seat is not running" is a fact about now, and storing a fact about now
+// is how the card came to say a seat was off while it was running: the reading
+// was taken while it was stopped, the seat was started, and nothing replaced
+// what had been written down. So it is refused rather than recorded.
+func TestAStoppedSeatIsRefusedRatherThanDescribed(t *testing.T) {
 	m := &Manager{rt: map[string]*runtime{}, sunshine: &sunshineCache{}}
 
-	m.runtimeOf("seat1").state = StateStopped
+	rt := m.runtimeOf("seat1")
+	rt.state = StateStopped
 
-	f := m.Freshness(context.Background(), "seat1")
+	// Something worth keeping, from when the seat was last up.
+	known := Freshness{Sunshine: "2026.8.1", SunshineLatest: "2026.8.1"}
+	m.record("seat1", known)
 
-	if f.Problem == "" {
-		t.Error("a stopped seat gave no reason for having no answer")
+	if _, err := m.CheckFreshness("seat1"); !errors.Is(err, ErrNotRunning) {
+		t.Errorf("CheckFreshness on a stopped seat = %v, want ErrNotRunning", err)
 	}
 
-	if f.Behind() {
-		t.Error("a seat that could not be asked is reported as behind")
+	// And the refusal changed nothing. What was found while the seat was up is
+	// old, which the card says, and old is not the same as wrong.
+	if rt.fresh.Sunshine != known.Sunshine || rt.freshChecked.IsZero() {
+		t.Error("the refusal overwrote what was known from when the seat was up")
 	}
 
-	if f.Checked.IsZero() {
-		t.Error("the seat was asked, so the time it was asked should be set")
+	if rt.fresh.Problem != "" {
+		t.Errorf("a reason about the seat's current state was stored: %q", rt.fresh.Problem)
+	}
+
+	// Started, and the same call now goes through to the seat rather than
+	// being turned away by the state.
+	rt.state = StateRunning
+
+	if m.running("seat1") != true {
+		t.Error("a running seat is not reported as running")
+	}
+}
+
+// The bug this exists for: a seat was updated, the work finished, and the card
+// went on listing the versions that had just been installed as waiting. The
+// reading it draws from was the one taken before the update, and nothing
+// replaced it until the six hour pass came round or somebody pressed the
+// button. Three moments take a look and only two of them wrote it down.
+func TestALookIsWrittenDownWhereverItWasTaken(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+
+	behind := Freshness{Sunshine: "2025.122.4", SunshineLatest: "2026.8.1", Packages: 12}
+	m.record("seat1", behind)
+
+	rt := m.runtimeOf("seat1")
+
+	if !rt.fresh.Behind() {
+		t.Fatal("the first look was not stored")
+	}
+
+	if rt.freshChecked.IsZero() {
+		t.Error("the reading was stored without the time it was taken")
+	}
+
+	// What an update does when it has finished: ask again and write down what
+	// came back. The card has to stop saying the old thing.
+	m.record("seat1", Freshness{Sunshine: "2026.8.1", SunshineLatest: "2026.8.1"})
+
+	if rt.fresh.Behind() {
+		t.Error("after a second look found nothing waiting, the seat is still reported as behind")
+	}
+
+	if rt.fresh.Summary() != "" {
+		t.Errorf("the old summary survived the new look: %q", rt.fresh.Summary())
+	}
+}
+
+// The log line is worth one appearance, not four a day for as long as a seat
+// stays behind. It says something when the answer changes and nothing when it
+// repeats.
+func TestTheSameAnswerIsNotLoggedTwice(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+
+	behind := Freshness{Sunshine: "2025.122.4", SunshineLatest: "2026.8.1"}
+
+	lines := func() int { return len(m.runtimeOf("seat1").log.Lines()) }
+
+	m.record("seat1", behind)
+
+	after := lines()
+	if after == 0 {
+		t.Fatal("a seat found to be behind said nothing about it")
+	}
+
+	m.record("seat1", behind)
+	m.record("seat1", behind)
+
+	if lines() != after {
+		t.Errorf("the same answer was logged again: %d lines, want %d", lines(), after)
+	}
+
+	// A different answer is news again.
+	m.record("seat1", Freshness{Sunshine: "2025.122.4", SunshineLatest: "2026.9.1", Packages: 3})
+
+	if lines() == after {
+		t.Error("a changed answer was not logged")
 	}
 }

@@ -220,6 +220,35 @@ pacman -Sy --dbpath "$db" --logfile /dev/null >/dev/null 2>&1 || exit 3
 pacman -Qu --dbpath "$db" 2>/dev/null || true
 `
 
+// record stores what a look found, and is the only thing that does.
+//
+// One place because there are three moments that take a look — the six hour
+// pass, the button, and the end of an update — and the third was added last and
+// forgotten. The seat finished updating, the session came back, and the card
+// went on listing the versions that had just been installed as waiting, because
+// the reading it draws from was the one taken before the work.
+//
+// Anything that asks a seat has to come through here, so that the answer and
+// the time it was taken are written together and neither can be left behind.
+func (m *Manager) record(name string, f Freshness) Freshness {
+	rt := m.runtimeOf(name)
+
+	m.mu.Lock()
+	was := rt.fresh
+	rt.fresh = f
+	rt.freshChecked = time.Now()
+	m.mu.Unlock()
+
+	// Said once when it becomes true rather than on every look, so that a seat
+	// nobody has updated does not write the same line into its log four times a
+	// day for as long as it stays behind.
+	if f.Behind() && f.Summary() != was.Summary() {
+		m.logf(name, "this seat is behind: %s", f.Summary())
+	}
+
+	return f
+}
+
 // freshInterval is how often a seat is asked what it is behind on.
 //
 // Slow on purpose. The answer changes when somebody else publishes something,
@@ -234,29 +263,36 @@ const freshInterval = 6 * time.Hour
 // Read rather than remembered: the seat is the authority on what is installed
 // in it, and a value cached here would go wrong the moment somebody updated
 // something from inside the seat's own desktop, which they can.
+// ErrNotRunning is the refusal for a question only a running seat can answer.
+//
+// An error rather than a Problem written into the reading, and the difference
+// is the whole of a bug this had. "The seat is not running" is a fact about the
+// seat's state right now, not something a look found out, and a fact about the
+// present goes out of date the moment the present moves: stored, it survived
+// the seat being started and the card went on saying the seat was off while it
+// was running. What describes the current state has to be read from the current
+// state, so this never becomes a stored answer at all.
+var ErrNotRunning = errors.New("the seat is not running, so what is installed in it cannot be read")
+
+// running reports whether the seat is up enough to be asked anything.
+func (m *Manager) running(name string) bool {
+	rt := m.runtimeOf(name)
+
+	// Read under the lock the way every other reader of this field does. It is
+	// written by the sweep from a goroutine of its own.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return rt.state == StateRunning
+}
+
 func (m *Manager) Freshness(ctx context.Context, name string) Freshness {
 	var f Freshness
 
+	// Set here rather than on the way out, so that a look which ends in a
+	// Problem still says when it was taken. Only an answer is ever recorded,
+	// and this is what makes it one.
 	f.Checked = time.Now()
-
-	// A seat that is not running cannot be asked. Said plainly rather than
-	// reported as an error, because switched off is the normal state of a seat
-	// nobody is playing in and an interface that shows a fault for it teaches
-	// people to ignore the place faults appear.
-	//
-	// Read under the lock the way every other reader of this field does. It is
-	// written by the sweep from a goroutine of its own.
-	rt := m.runtimeOf(name)
-
-	m.mu.Lock()
-	state := rt.state
-	m.mu.Unlock()
-
-	if state != StateRunning {
-		f.Problem = "the seat is not running, so what is installed in it cannot be read"
-
-		return f
-	}
 
 	out, code, err := m.client.Try(ctx, name, "pacman", "-Q", "sunshine")
 	switch {
@@ -386,7 +422,30 @@ func (m *Manager) UpdateSoftware(name string) error {
 		// same path a provisioning run ends on.
 		m.sunshine.forget()
 
-		return m.startSession(ctx, name)
+		if err := m.startSession(ctx, name); err != nil {
+			return err
+		}
+
+		// And read the seat again, because nothing else was going to.
+		//
+		// rt.fresh is what the card shows, and it was written by whichever look
+		// happened last. Without this that is the look from *before* the
+		// update: the seat finishes, the session comes back, and the row still
+		// lists the versions that were just installed as waiting, until the six
+		// hour timer or somebody pressing Check for updates replaces it. The
+		// work was done and the interface went on saying it was not.
+		//
+		// Read rather than assumed. Writing an empty Freshness here would be
+		// quicker and would be this code claiming the update did what it set
+		// out to do; asking the seat is how a package that did not upgrade, or
+		// one published in the minutes the update took, still gets reported.
+		//
+		// Freshness does not consult busy, which is what makes this possible at
+		// all: this still runs inside operate, so CheckFreshness would refuse
+		// itself here.
+		m.record(name, m.Freshness(ctx, name))
+
+		return nil
 	})
 }
 
@@ -433,29 +492,28 @@ func (m *Manager) updateFreshness(ctx context.Context) {
 
 		m.mu.Lock()
 		busy := rt.busy != ""
+		checked := rt.freshChecked
 		m.mu.Unlock()
 
-		if busy {
+		// A seat that is off keeps whatever was last found in it. That reading
+		// is old rather than wrong, and the card says how old; replacing it
+		// with a note about the seat being off would be storing a fact about
+		// the present, which is exactly what goes stale.
+		if busy || !m.running(s.Name) {
+			continue
+		}
+
+		// Never asked, or asked long enough ago. The first is what makes a seat
+		// that has just come up get looked at once rather than waiting out the
+		// rest of a six hour interval it was switched off for.
+		if !checked.IsZero() && time.Since(checked) < freshInterval {
 			continue
 		}
 
 		seatCtx, cancel := context.WithTimeout(ctx, freshPatience)
-		f := m.Freshness(seatCtx, s.Name)
+		m.record(s.Name, m.Freshness(seatCtx, s.Name))
 
 		cancel()
-
-		m.mu.Lock()
-		was := rt.fresh
-		rt.fresh = f
-		rt.freshChecked = time.Now()
-		m.mu.Unlock()
-
-		// Said once when it becomes true rather than on every pass, so that a
-		// seat nobody has updated does not write the same line into its log
-		// four times a day for as long as it stays behind.
-		if f.Behind() && f.Summary() != was.Summary() {
-			m.logf(s.Name, "this seat is behind: %s", f.Summary())
-		}
 	}
 
 	m.notify()
@@ -490,19 +548,55 @@ func (m *Manager) CheckFreshness(name string) (Freshness, error) {
 		return Freshness{}, ErrBusy
 	}
 
+	// Answered now rather than written down. Somebody who presses this on a
+	// seat that is switched off gets told so, and nothing is stored that would
+	// still be saying it after they start the seat.
+	if !m.running(name) {
+		return Freshness{}, ErrNotRunning
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), freshPatience)
 	defer cancel()
 
 	m.sunshine.forget()
 
-	f := m.Freshness(ctx, name)
-
-	m.mu.Lock()
-	rt.fresh = f
-	rt.freshChecked = time.Now()
-	m.mu.Unlock()
+	f := m.record(name, m.Freshness(ctx, name))
 
 	m.notify()
 
 	return f, nil
+}
+
+// freshenSoon runs a pass in the background, and at most one at a time.
+//
+// The sweep is what notices that a seat has come up without ever having been
+// asked, and the sweep runs every ten seconds and must not do network work.
+// This is the join between the two: it hands the pass to a goroutine and
+// refuses to start a second, so a seat that stays unasked because it is being
+// streamed from does not accumulate one pass per sweep.
+//
+// The pass decides for itself which seats are due, which is what makes calling
+// this often harmless: a seat with a current reading is skipped without
+// anything being asked of it.
+func (m *Manager) freshenSoon(ctx context.Context) {
+	m.mu.Lock()
+
+	if m.freshening {
+		m.mu.Unlock()
+
+		return
+	}
+
+	m.freshening = true
+	m.mu.Unlock()
+
+	go func() {
+		defer func() {
+			m.mu.Lock()
+			m.freshening = false
+			m.mu.Unlock()
+		}()
+
+		m.updateFreshness(ctx)
+	}()
 }

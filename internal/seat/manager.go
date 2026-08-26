@@ -42,6 +42,10 @@ type Manager struct {
 	// freshness.go.
 	sunshine *sunshineCache
 
+	// freshening is set while a freshness pass is running, so that the sweep
+	// asking for one every ten seconds starts at most one. Guarded by mu.
+	freshening bool
+
 	// gpu is the host's card, read once at startup because it cannot change
 	// while the daemon runs: swapping a card means a reboot. Every seat on one
 	// machine gets the same one.
@@ -769,6 +773,19 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 
 		if due && !busy {
 			m.refreshApps(ctx, name)
+		}
+
+		// A seat that has come up and has never been asked what it is behind
+		// on gets asked, rather than waiting out the rest of a six hour
+		// interval it spent switched off. Once, because the look writes down
+		// when it happened whether or not it found anything, so this stops
+		// being true as soon as it has run.
+		m.mu.Lock()
+		neverAsked := rt.freshChecked.IsZero()
+		m.mu.Unlock()
+
+		if neverAsked && !busy {
+			m.freshenSoon(ctx)
 		}
 	}
 

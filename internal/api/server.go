@@ -1371,6 +1371,10 @@ func statusFor(err error) int {
 	// that is, and the same request works once the stream ends.
 	case errors.Is(err, seat.ErrStreaming):
 		return http.StatusConflict
+	// And a seat that is switched off, for the same reason: the request is
+	// fine, the moment is not, and starting the seat makes it work.
+	case errors.Is(err, seat.ErrNotRunning):
+		return http.StatusConflict
 	case errors.Is(err, seat.ErrNoLibrary):
 		return http.StatusServiceUnavailable
 	case os.IsNotExist(err):

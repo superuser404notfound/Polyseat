@@ -1924,7 +1924,12 @@ function actions(seat) {
   // update restarts the session, so a button that is always there and usually
   // does nothing would teach people to press it to find out, which on a machine
   // other people are playing on costs somebody their session.
-  if (seat.built) {
+  // Both of these need a seat that is up: one reads what is installed in it and
+  // the other installs into it, and neither can be done to a container that is
+  // not running. Offered only where they work rather than offered and refused,
+  // which is also what keeps a stopped seat from showing an Update button on
+  // the strength of a reading taken while it was last running.
+  if (seat.built && seat.state === "running") {
     // Its own spinner rather than the card's busy flag, because this operation
     // deliberately does not set one: it reads the seat and changes nothing, so
     // marking the whole card busy would grey out Stop and Start for the minute
@@ -1934,12 +1939,12 @@ function actions(seat) {
         api("POST", `/api/seats/${seat.name}/check-updates`),
       ),
     );
-  }
 
-  if (seat.built && behind(seat.updates)) {
-    button("Update software", () =>
-      api("POST", `/api/seats/${seat.name}/update-software`),
-    );
+    if (behind(seat.updates)) {
+      button("Update software", () =>
+        api("POST", `/api/seats/${seat.name}/update-software`),
+      );
+    }
   }
 
   button("Edit", () => {
