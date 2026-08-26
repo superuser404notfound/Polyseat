@@ -189,6 +189,11 @@ type Status struct {
 	// Addresses per interface, as reported by the running container.
 	Addresses map[string][]string `json:"addresses,omitempty"`
 
+	// Updates is what this seat is behind on, which is a different question
+	// from Stale below: Stale means the daemon's provisioning recipe moved on,
+	// this means the software published outside did. See freshness.go.
+	Updates Freshness `json:"updates"`
+
 	// Session reports the user units inside the seat.
 	Sway     string `json:"sway"`
 	Sunshine string `json:"sunshine"`

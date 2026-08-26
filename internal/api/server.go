@@ -1025,6 +1025,10 @@ func (s *Server) seatAction(w http.ResponseWriter, r *http.Request) {
 		err = s.manager.Stop(name)
 	case "provision":
 		err = s.manager.Provision(name)
+	case "update-software":
+		err = s.manager.UpdateSoftware(name)
+	case "check-updates":
+		_, err = s.manager.CheckFreshness(name)
 	case "cancel":
 		s.manager.Cancel(name)
 	default:
@@ -1361,6 +1365,11 @@ func (s *Server) offerTitle(w http.ResponseWriter, r *http.Request) {
 func statusFor(err error) int {
 	switch {
 	case errors.Is(err, seat.ErrBusy):
+		return http.StatusConflict
+	// Somebody playing is a conflict rather than a bad request in the same way
+	// a busy seat is: nothing about the request was wrong, it is the moment
+	// that is, and the same request works once the stream ends.
+	case errors.Is(err, seat.ErrStreaming):
 		return http.StatusConflict
 	case errors.Is(err, seat.ErrNoLibrary):
 		return http.StatusServiceUnavailable

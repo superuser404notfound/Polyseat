@@ -37,6 +37,11 @@ type Manager struct {
 	store  *Store
 	log    *slog.Logger
 
+	// sunshine caches what LizardByte have published, so that four seats
+	// asking what they are behind on is one request rather than four. See
+	// freshness.go.
+	sunshine *sunshineCache
+
 	// gpu is the host's card, read once at startup because it cannot change
 	// while the daemon runs: swapping a card means a reboot. Every seat on one
 	// machine gets the same one.
@@ -130,6 +135,13 @@ type runtime struct {
 	// nobody needs to learn within ten seconds that a game was uninstalled.
 	appsChecked time.Time
 
+	// fresh is what the seat was last found to be behind on, and freshChecked
+	// is when it was asked. Its own clock like appsChecked, and a much slower
+	// one: answering costs a pacman -Sy against the mirrors, and nothing about
+	// a new Sunshine release needs to be known within ten seconds.
+	fresh        Freshness
+	freshChecked time.Time
+
 	// appsPending records that the app list wants rebuilding but somebody is
 	// streaming, so it has to wait for them to finish.
 	appsPending bool
@@ -170,12 +182,13 @@ type runtime struct {
 // NewManager prepares the manager. Nothing is started yet; see Run.
 func NewManager(cfg config.Config, client *incusx.Client, store *Store, logger *slog.Logger) *Manager {
 	m := &Manager{
-		cfg:    cfg,
-		client: client,
-		store:  store,
-		log:    logger,
-		rt:     map[string]*runtime{},
-		subs:   map[int]chan struct{}{},
+		cfg:      cfg,
+		client:   client,
+		store:    store,
+		log:      logger,
+		rt:       map[string]*runtime{},
+		subs:     map[int]chan struct{}{},
+		sunshine: &sunshineCache{},
 	}
 
 	m.gpu = m.detectGPU()
@@ -289,6 +302,14 @@ func (m *Manager) Run(ctx context.Context) error {
 	proton := time.NewTicker(protonInterval)
 	defer proton.Stop()
 
+	// And what the seats are behind on, slower still and for the same kind of
+	// reason. Answering costs a pacman -Sy against the mirrors from inside
+	// every running seat, which is several megabytes each: far too heavy for
+	// the sweep's ten seconds, and heavy enough that it does not belong on the
+	// library's timer either. See freshness.go.
+	fresh := time.NewTicker(freshInterval)
+	defer fresh.Stop()
+
 	// And once shortly after the daemon comes up, because a machine that is
 	// switched off in the evening and on again the next day would otherwise
 	// never reach the first tick.
@@ -317,9 +338,13 @@ func (m *Manager) Run(ctx context.Context) error {
 
 		case <-first.C:
 			m.updateProton(ctx)
+			m.updateFreshness(ctx)
 
 		case <-proton.C:
 			m.updateProton(ctx)
+
+		case <-fresh.C:
+			m.updateFreshness(ctx)
 		}
 	}
 }
@@ -2483,6 +2508,7 @@ func (m *Manager) Status(name string) (Status, error) {
 		Error:     rt.lastErr,
 		Built:     seat.Provisioned != 0,
 		Stale:     seat.Provisioned != 0 && seat.Provisioned != Generation,
+		Updates:   rt.fresh,
 	}, nil
 }
 

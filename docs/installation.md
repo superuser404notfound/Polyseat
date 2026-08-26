@@ -509,6 +509,62 @@ The daemon also owns the seat lifecycle, which the broker does not: it must know
 when a container is stopping and hold still, because polling into a stop once
 drove Incus into a hung "Stopping instance".
 
+### Keeping what is inside a seat up to date
+
+A seat can be behind in two ways that have nothing to do with each other, and
+they are fixed by different things.
+
+**The recipe moved on.** `Generation` in `internal/seat/provision.go` is a
+constant, bumped by hand whenever a change to provisioning has to reach seats
+that were already built. A seat whose `Provisioned` differs from it is *stale*,
+the interface says so, and rebuilding is the answer.
+
+**The software moved on.** Sunshine and the distribution packages are installed
+while a seat is provisioned and then nothing touches them again. Nothing in
+`Generation` notices that somebody else published a new version, so before this
+existed a seat kept whatever Sunshine was current on the day it was built until
+an unrelated recipe change happened to rebuild it. This is what `freshness.go`
+watches, on a six hour timer:
+
+* one request to GitHub for the published Sunshine version, shared by every
+  seat, because the question is about LizardByte's releases and not about any
+  seat;
+* a `pacman -Sy` inside each running seat against a **separate** database, then
+  `pacman -Qu` against the seat's real one.
+
+The separate database is not a detail. A plain `pacman -Sy` here would leave the
+seat with a sync database newer than its installed packages, which is the
+partial upgrade state that breaks an Arch system the next time anything is
+installed into it. This is what pacman-contrib's `checkupdates` does, written
+out rather than installed: adding a package to every seat in order to ask a
+question about packages is a poor trade.
+
+A seat somebody is streaming from is skipped. Nothing about the check disturbs
+the seat itself, but it pulls several megabytes over the same network the stream
+is going out on.
+
+Applying it is the "Update software" button, which appears only where there is
+something to install. It runs `stepPackages` and `stepSunshine` — the
+provisioning steps themselves, not a second copy of what they do, so a seat
+updated this way lands where a freshly provisioned one would — and then restarts
+the session, because a Sunshine that has been replaced on disk is not the one
+still running. It refuses while somebody is streaming rather than waiting for
+them to stop: a button somebody pressed deserves an answer, and an update that
+happens silently forty minutes later is how a game ends for no visible reason.
+
+Asking is also a button. "Check for updates" sits on every built seat and
+answers immediately, dropping the cached GitHub answer first so that "now" means
+the whole question and not merely a fresh look at the container. It is always
+available, because unlike the update it reads and changes nothing; it is refused
+only for a seat in the middle of another operation, where the answer would come
+from a half built container and then be written down as that seat's state.
+
+Both versions have to be known before anything is offered. A machine that cannot
+reach GitHub would otherwise report every seat as behind and offer to install
+the version already there, so an unknown answer means nothing is claimed, and a
+failed lookup is remembered for the full interval rather than retried per seat
+per sweep.
+
 ## What the web interface does
 
 Nothing on its own. It is a client of the daemon's API. Configuration is owned

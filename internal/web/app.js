@@ -327,6 +327,70 @@ function describeAge(published) {
   return ` ${days} days ago`;
 }
 
+// behind says whether a seat has software waiting for it.
+//
+// The mirror of Freshness.Behind in freshness.go, and it has to stay one: a
+// button offered here that the daemon then refuses is worse than no button.
+// Both halves need both versions known, because an unreachable GitHub and an
+// up to date seat must not look the same.
+function behind(updates) {
+  if (!updates) return false;
+
+  const sunshine =
+    updates.sunshine &&
+    updates.sunshine_latest &&
+    updates.sunshine !== updates.sunshine_latest;
+
+  return Boolean(sunshine) || (updates.packages || 0) > 0;
+}
+
+// describeChecked says how long ago the seat was asked.
+//
+// Its own rather than describeAge, which counts in days: this happens every six
+// hours, so every answer it could give would be "today" and the row would say
+// the same thing whether the check ran a minute ago or this morning.
+function describeChecked(checked) {
+  if (!checked || checked.startsWith("0001-")) return "";
+
+  const when = new Date(checked);
+  if (Number.isNaN(when.getTime())) return "";
+
+  const minutes = Math.floor((Date.now() - when.getTime()) / 60000);
+
+  if (minutes < 0) return "";
+  if (minutes < 2) return "just now";
+  if (minutes < 60) return `${minutes} minutes ago`;
+
+  const hours = Math.floor(minutes / 60);
+
+  if (hours === 1) return "an hour ago";
+  if (hours < 24) return `${hours} hours ago`;
+
+  const days = Math.floor(hours / 24);
+
+  return days === 1 ? "yesterday" : `${days} days ago`;
+}
+
+// summarise is the one line a card shows for a seat that is behind.
+function summarise(updates) {
+  const parts = [];
+
+  if (
+    updates.sunshine &&
+    updates.sunshine_latest &&
+    updates.sunshine !== updates.sunshine_latest
+  ) {
+    parts.push(`Sunshine ${updates.sunshine} to ${updates.sunshine_latest}`);
+  }
+
+  const packages = updates.packages || 0;
+
+  if (packages === 1) parts.push("1 package");
+  else if (packages > 1) parts.push(`${packages} packages`);
+
+  return parts.join(", ");
+}
+
 // staleBanner offers to bring every out of date seat up to date, as one action.
 //
 // The seats being behind is one situation, so dealing with it is one button. It
@@ -1646,6 +1710,42 @@ function facts(seat) {
     row("Provisioning", "out of date, rebuild this seat", "flag");
   }
 
+  // What has been published since this seat was built, which is a different
+  // question from the row above. That one is the daemon's own recipe moving on
+  // and is fixed by rebuilding; this one is Sunshine and the distribution
+  // moving on, and rebuilding was never what noticed it.
+  //
+  // Nothing at all for a seat that is current, and nothing for one that has
+  // never been asked either: a card that says "up to date" on the strength of a
+  // lookup that has not happened is making a claim it has not earned. The
+  // problem case does get a line, because "switched off, so it could not be
+  // asked" is the answer to why there is no other one.
+  const updates = seat.updates || {};
+
+  // A zero time is Go's way of saying the seat has never been asked, and it
+  // arrives as the year 1 rather than as an absent field.
+  const ago = describeChecked(updates.checked);
+
+  // Every state gets a line, including the dull ones. The first version of this
+  // row appeared only when something was waiting, which made "nothing waiting"
+  // and "never asked" the same blank space: somebody looking for an answer
+  // could not tell whether the seat was current or whether the question had
+  // simply never been put to it.
+  if (seat.built) {
+    if (!ago) {
+      row("Updates", "not checked yet");
+    } else if (updates.problem) {
+      row("Updates", `${updates.problem} (${ago})`, "flag");
+    } else if (behind(updates)) {
+      const names = (updates.package_names || []).join(", ");
+      const waiting = `${summarise(updates)} waiting`;
+
+      row("Updates", names ? `${waiting} (${names}, ...)` : waiting, "flag");
+    } else {
+      row("Updates", `nothing waiting, checked ${ago}`);
+    }
+  }
+
   (seat.notes || []).forEach((note) => row("Note", note, "flag"));
 
   if (seat.error) row("Last error", seat.error, "flag bad");
@@ -1679,6 +1779,23 @@ function actions(seat) {
   // created a minute ago.
   if (seat.built) {
     button("Rebuild", () => api("POST", `/api/seats/${seat.name}/provision`));
+  }
+
+  // Asking is always available and installing is not. The check reads and
+  // changes nothing, so there is no harm in a seat being asked twice; the
+  // update restarts the session, so a button that is always there and usually
+  // does nothing would teach people to press it to find out, which on a machine
+  // other people are playing on costs somebody their session.
+  if (seat.built) {
+    button("Check for updates", () =>
+      api("POST", `/api/seats/${seat.name}/check-updates`),
+    );
+  }
+
+  if (seat.built && behind(seat.updates)) {
+    button("Update software", () =>
+      api("POST", `/api/seats/${seat.name}/update-software`),
+    );
   }
 
   button("Edit", () => {
