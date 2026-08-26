@@ -10,6 +10,61 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.8.0
+
+**A seat now says when the software inside it has fallen behind, and can be
+brought up to date without being rebuilt.** Nothing was noticing this before.
+Sunshine and the seat's distribution packages were installed while the seat was
+provisioned and then left alone, so a seat built in one month kept that month's
+Sunshine until some unrelated recipe change happened to rebuild it.
+
+**Seats are not touched by this.** The provisioning recipe is unchanged, so an
+existing machine updates with a restart and no seat has to be provisioned again.
+
+- **The two kinds of behind are different and are now shown apart.** The
+  existing "out of date, rebuild this seat" is `Generation`, a constant in this
+  source, and it means the daemon's own recipe moved on. The new "Updates" row
+  means Sunshine or the distribution published something since this seat was
+  built. Rebuilding never noticed the second one, and there was nothing else
+  that did.
+
+- **What it costs to ask, and when.** Every six hours, one request to GitHub for
+  the published Sunshine version shared across all seats, and a `pacman -Sy`
+  inside each running seat against a *separate* database, which is what
+  pacman-contrib's `checkupdates` does. The separate database is the point: a
+  plain `-Sy` would leave the seat in the partial upgrade state that breaks an
+  Arch system the next time anything is installed into it.
+
+- **Never while somebody is playing.** The check is skipped for a seat being
+  streamed from, because it pulls several megabytes over the same network the
+  stream goes out on, and the update itself refuses outright rather than
+  deferring: it restarts the session, and a button somebody pressed deserves an
+  answer rather than a game ending minutes later.
+
+- **An answer that never came is not evidence.** A seat is only offered an
+  update where both versions are known. Without that guard a machine that cannot
+  reach GitHub reports every seat as behind and offers to install the version
+  already there, and a failed lookup is cached for the full interval so an
+  offline host does not ask once per seat per sweep forever.
+
+- **Asking is a button too, not only a timer.** "Check for updates" is on every
+  built seat and answers straight away, because a six hour timer is right for
+  noticing and wrong for a question somebody is currently asking. It drops the
+  cached GitHub answer first, so "now" means the whole question rather than a
+  fresh look at the seat compared against a version from five hours ago. It
+  reads and changes nothing, which is why it is always available where the
+  update itself is offered only when there is something to install.
+
+- **The Updates row is there in every state.** It first appeared only when
+  something was waiting, which left "nothing waiting" and "never asked" as the
+  same blank space on the card. It now says which, and when the seat was last
+  asked.
+
+- **The update runs the provisioning steps rather than a second copy of them.**
+  So a seat updated this way lands where a freshly provisioned one would, and
+  the `--assume-installed` flags that keep a plain `pacman -Syu` from colliding
+  with the injected NVIDIA driver stay fixed in the one place they already were.
+
 ## 0.7.1
 
 **The resolution and the Streaming row did not move when somebody started,
