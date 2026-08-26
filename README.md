@@ -25,8 +25,12 @@ drifts.
   does not answer, because a seat without it comes up, streams in software and
   looks perfectly healthy. The AMD path has **never been run on real hardware**:
   [docs/amd.md](docs/amd.md) says what was verified and what was not.
-- **A wired network connection.** Each seat is a host of its own on the LAN, and
-  Wi-Fi cannot do that: it carries one MAC address per connection.
+- **An ethernet port for the seats.** Each seat is a host of its own on the LAN,
+  and Wi-Fi cannot do that: 802.11 carries one MAC address per station. The
+  machine itself is free to stay on wifi — what the seats want from the card is
+  a segment to be hosts on, not the way to the internet, so a cable in a second
+  port is enough and a USB adapter counts. Only a wifi-only machine is out:
+  [docs/installation.md](docs/installation.md) says why.
 - **btrfs, or XFS with `reflink=1`** — but only for the shared game library. On
   ext4 the seats still work, the sharing simply stays off and every seat
   downloads its own games.
