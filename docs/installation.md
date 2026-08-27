@@ -64,7 +64,10 @@ checkout, `host/test-package.sh` for the package.
 **The package is not in the AUR**, because new accounts cannot be registered at
 present and there is therefore no account to upload from. It is built and
 attached to every GitHub release instead, so `pacman -U` on that file is a real
-way in and not a promise, and it is the one most people should take. The AUR
+way in and not a promise, and it is the one most people should take. Since 0.9.0
+a `.deb` and an `.rpm` are attached beside it, built by `nfpm` from one
+description in `packaging/nfpm.yaml`; the daemon knows which of the three this
+host installs and offers only that one. The AUR
 would have distributed the recipe rather than the package anyway: installing
 from it means building it yourself, which is what the checkout already does.
 
@@ -83,22 +86,93 @@ hard way, so the reasons are kept with the steps.
 and `nvidia-container-toolkit` on NVIDIA machines only.
 
 The installer installs the ones that are missing rather than printing a command
-and stopping. **Deliberately not with `-Sy`:** refreshing the package database
-and installing from it without upgrading is the partial upgrade Arch warns
-about, and an installer is a bad place to break a system in a way that surfaces
-weeks later. It installs from the database that is already there, and when that
+and stopping.
+
+**On Arch, deliberately not with `-Sy`:** refreshing the package database and
+installing from it without upgrading is the partial upgrade Arch warns about,
+and an installer is a bad place to break a system in a way that surfaces weeks
+later. It installs from the database that is already there, and when that
 database is too old to resolve, it says to run `pacman -Syu` first.
 
-**This binds the installer to Arch.** It queries `pacman`. Rather than claiming
-a portability nobody has tested, it says so and refuses elsewhere. A second
-distribution is a later decision, not a guess to encode now.
+**On Debian it refreshes first, and that is not an inconsistency.** Neither
+Debian nor Fedora has the partial upgrade hazard: both support installing one
+package against current metadata without dragging the rest of the system
+forward. Debian has the opposite hazard instead, which is an `apt-get install`
+against lists fetched months ago failing on a 404 for a version that has since
+been superseded. `dnf` refreshes its own metadata when it is stale and needs
+nothing said. Which is which lives in one function, `pkg_install` in
+`host/distro.sh`, along with this reasoning.
 
-Note that this binds only the *host*. Inside a seat nothing CachyOS specific is
-left: Sunshine comes from LizardByte's own Arch package with each release, so a
-seat is a plain Arch container. The M1 spike bootstrapped the CachyOS keyring
-into every seat out of the host's package cache, which tied the seats to a
-CachyOS host and was where the mirror lag problem came from. Provisioning
-removes that repository from seats that still carry it.
+### Which distribution the host is
+
+`host/distro.sh` is the whole of it: a table mapping the names this project uses
+to the names each distribution uses, and one function per question the scripts
+ask. Everything in `host/` that used to say `pacman` now asks one of those, so a
+fourth distribution is a row rather than an edit to five scripts. `ID` in
+`/etc/os-release` decides, then `ID_LIKE`, which is what places CachyOS,
+EndeavourOS, Mint and Rocky without naming them; a machine whose os-release
+settles nothing falls back to which package manager is on `PATH`.
+
+The daemon has its own copy of the same question in `internal/hostpkg`, and the
+two are deliberately not generated from each other. They answer different
+things — the shell one installs prerequisites, the Go one installs Polyseat —
+and the overlap is three rows.
+
+**A machine that is none of the three is refused before anything is changed**,
+with a message naming what it found. Until 0.9.0 there was no check at all and a
+Debian host got as far as the first `pacman` call and died with
+`pacman: command not found` in the middle of a step, which reads like Polyseat
+is broken rather than like this machine is not one it knows.
+
+**What has actually been run, and what has not.** Arch is the developed-on and
+tested platform: `host/test-install.sh` and `host/test-package.sh` exercise it
+against a fresh VM. Debian and Fedora have `host/test-distro.sh`, which replaces
+every package manager with a script that records how it was called, so what is
+proven is that `distro.sh` reaches for `apt-get` rather than `pacman` with the
+arguments that were meant — not that the resulting machine works. Nobody has
+installed Polyseat on a Debian or Fedora host. That is the same shape of gap
+[docs/amd.md](amd.md) describes for the AMD path, and it is written down here
+for the same reason.
+
+Two things are known to want a repository the distribution does not ship:
+Incus is in Debian 13 and not in 12, and `nvidia-container-toolkit` is in
+neither. `polyseat-prepare` checks for both before it installs anything and says
+where they come from rather than adding a repository on somebody's behalf, which
+is a decision about who a machine trusts and not an installer's to make.
+
+**The NVIDIA driver itself is offered on Arch and only described elsewhere.**
+On Arch the module package name follows from the kernel package and can be
+worked out, so `prepare.sh` derives it and offers to install it. Debian builds
+the module with DKMS and Fedora with akmods, from packages whose names carry a
+driver branch that moves, and guessing one wrong leaves a machine with no
+graphics at all. So those two are told what to type. Whether the driver answers
+is checked identically everywhere, because `nvidia-smi` is `nvidia-smi`.
+
+**No NVIDIA package name is hard coded anywhere in this project**, and the two
+places that print one work it out on the machine instead. `nvidia32_hint` reads
+which package owns the 64 bit `libnvidia-encode.so.1` and appends this
+distribution's architecture suffix, which lands on `libnvidia-encode1:i386`,
+`xorg-x11-drv-nvidia-libs.i686` or `lib32-nvidia-utils` without any of the three
+being written down; the machine reaching that line has a working driver by
+definition, so it is reading the branch already in use and cannot name a
+different one. `nvidia_driver_hint` has nothing installed to read, so it asks
+the repositories which of several plausible names they actually carry and prints
+one that will resolve.
+
+Nothing found is the more useful of the two answers. On both distributions these
+packages live in a repository that is off by default, so an empty search means
+non-free or RPM Fusion is not enabled, and the installer says that instead of
+printing a command that would fail.
+
+**Note that all of this binds only the *host*.** Inside a seat nothing CachyOS
+specific is left, and nothing host-specific either: Sunshine comes from
+LizardByte's own Arch package with each release, so a seat is a plain Arch
+container whether the machine under it runs Arch, Debian or Fedora. Every
+`pacman` call in `internal/seat` runs inside that container and means the same
+thing on all three. The M1 spike bootstrapped the CachyOS keyring into every
+seat out of the host's package cache, which tied the seats to a CachyOS host and
+was where the mirror lag problem came from. Provisioning removes that repository
+from seats that still carry it.
 
 ### Which card is in the machine
 
@@ -312,7 +386,7 @@ After that everything happens in the web interface, which needs no privileges of
 its own because the daemon already has them. `host/check-hardening.sh` runs
 unprivileged and only asks for root with `--fix`.
 
-**A CachyOS host is not required either**, beyond the pacman check. Nothing
+**A CachyOS host is not required either**, beyond the package manager check. Nothing
 CachyOS specific is left inside a seat.
 
 ### One thing that is required, for the shared library only

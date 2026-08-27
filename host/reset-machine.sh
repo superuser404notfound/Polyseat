@@ -33,6 +33,21 @@ LIBRARYDIR=/srv/polyseat/library
 # dependency of half the system.
 PACKAGES=(incus nvidia-container-toolkit bpftrace go)
 
+# The package manager this host has, found the way prepare.sh finds it.
+_here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+for _d in "$_here" /usr/local/lib/polyseat /usr/lib/polyseat; do
+    if [[ -r $_d/distro.sh ]]; then
+        # shellcheck source=host/distro.sh
+        . "$_d/distro.sh"
+        break
+    fi
+done
+
+if ! declare -f distro_detect >/dev/null 2>&1 || ! distro_detect; then
+    echo "needs host/distro.sh and a package manager it knows"
+    exit 1
+fi
+
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -87,13 +102,14 @@ pkill -f "dnsmasq.*incusbr" 2>/dev/null || true
 
 installed=()
 for p in "${PACKAGES[@]}"; do
-    pacman -Qq "$p" >/dev/null 2>&1 && installed+=("$p")
+    if pkg_installed "$p"; then installed+=("$p"); fi
 done
 
 if ((${#installed[@]})); then
-    # -R and not -Rns: taking dependencies with them means downloading half a
-    # toolchain again on the next install for no gain.
-    pacman -R --noconfirm "${installed[@]}" >/dev/null
+    # Dependencies are left behind on purpose: taking them means downloading
+    # half a toolchain again on the next install for no gain. pkg_remove is
+    # written to leave them on all three.
+    pkg_remove "${installed[@]}" >/dev/null
     ok "removed ${installed[*]}"
 else
     ok "none of them were installed"

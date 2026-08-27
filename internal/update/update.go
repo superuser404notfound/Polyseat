@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/superuser404notfound/Polyseat/internal/hostpkg"
 )
 
 // latestAPI is where releases are published. Hard coded rather than derived
@@ -62,33 +64,40 @@ type Release struct {
 	// rather than only a version number.
 	Published time.Time `json:"published"`
 
-	// Package is the Arch package attached to this release, or nil when there
-	// is none. Nil is a real answer and not a fault: releases before 0.3.2 have
-	// no package because the workflow that builds one did not exist yet, and a
-	// machine looking at one of those can still be told there is a new version
-	// while being unable to install it from here.
+	// Package is the package for this host attached to this release, or nil
+	// when there is none. Nil is a real answer and not a fault, and it now has
+	// three causes rather than one: releases before 0.3.2 carry no package
+	// because the workflow that builds one did not exist yet, releases before
+	// Debian and Fedora were supported carry only the Arch one, and a host
+	// whose package manager this daemon does not know matches nothing on
+	// purpose. A machine in any of those cases is still told there is a new
+	// version while being unable to install it from here.
 	Package *Asset `json:"package,omitempty"`
 }
 
-// PublishedAsset is the name every release carries, and the only file the
-// workflow uploads.
+// PublishedAssets are the names a release carries, one per host package
+// manager, and the only files the workflow uploads.
 //
-// This is what the matcher below had wrong for five releases, and it is worth
-// writing down how. The name carries no version on purpose, because
+// None of them carries a version, on purpose, because
 // releases/latest/download/<name> is a permanent link only while <name> is
-// permanent, and packaging/README.md publishes under a name that says nothing
-// so the documented curl command never has to be edited: pacman reads the real
-// name and version out of the file. The matcher was written one release before
-// that decision, against makepkg's own versioned name, and it was never
-// brought along.
+// permanent: packaging/README.md publishes under names that say nothing so the
+// documented curl commands never have to be edited, and every one of the three
+// package managers reads the real name and version out of the file.
 //
-// Nothing failed loudly. The interface said "that release has no package
-// attached to it, so it cannot be installed from here", which reads like a fact
-// about the release rather than a fault here, and the update button therefore
-// never worked once on any machine. Exported so that a test can hold it against
-// the workflow that does the uploading, which is the only way the two stay in
-// step: see TestThePublishedNameIsTheNameThisLooksFor.
-const PublishedAsset = "polyseat-x86_64.pkg.tar.zst"
+// It is worth keeping why this list is checked against the workflow. The
+// matcher below was once written against makepkg's own versioned name, one
+// release before the decision above, and was never brought along. Nothing
+// failed loudly: the interface said "that release has no package attached to
+// it, so it cannot be installed from here", which reads like a fact about the
+// release rather than a fault here, and the update button therefore never
+// worked once on any machine for five releases. Exported so that a test can
+// hold all three against the workflow that uploads them, which is the only
+// thing keeping the two in step: see TestThePublishedNamesAreTheNamesThisLooksFor.
+var PublishedAssets = []string{
+	hostpkg.Arch.Asset(),
+	hostpkg.Debian.Asset(),
+	hostpkg.Fedora.Asset(),
+}
 
 // Asset is the one file this daemon knows how to install.
 type Asset struct {
@@ -118,6 +127,17 @@ type Checker struct {
 	// the real one instead of at GitHub.
 	api string
 
+	// asset is the one file of the three this host can install, worked out once
+	// when the checker is made. A field for the same reason api is: a test
+	// running on Arch has to be able to ask what a Debian host would have
+	// matched, and there is no other way to reach that from outside.
+	//
+	// Empty on a host whose package manager this daemon does not know, which
+	// matches no asset and leaves Package nil. That is the intended outcome:
+	// the interface then says there is a newer version and does not offer a
+	// button that could not work.
+	asset string
+
 	mu     sync.Mutex
 	latest *Release
 
@@ -130,7 +150,13 @@ type Checker struct {
 
 // New builds a checker for the version this binary was built from.
 func New(current string, enabled bool, log *slog.Logger) *Checker {
-	return &Checker{current: current, enabled: enabled, log: log, api: latestAPI}
+	return &Checker{
+		current: current,
+		enabled: enabled,
+		log:     log,
+		api:     latestAPI,
+		asset:   hostpkg.Detect().Asset(),
+	}
 }
 
 // Available is the newer release, or nil when there is nothing to say. Safe to
@@ -231,7 +257,7 @@ func (c *Checker) Run(ctx context.Context) {
 // offline is a normal state for it, and an interface that complains about that
 // teaches people to ignore the place where the real warnings go.
 func (c *Checker) check(ctx context.Context) error {
-	release, err := fetch(ctx, c.api)
+	release, err := fetch(ctx, c.api, c.asset)
 	if err != nil {
 		c.log.Info("could not check for a new version", "error", err)
 
@@ -269,7 +295,13 @@ func (c *Checker) check(ctx context.Context) error {
 // release, which excludes drafts and prereleases, and that distinction is the
 // whole difference between a version somebody is meant to install and one that
 // happens to have a tag.
-func fetch(ctx context.Context, api string) (*Release, error) {
+// fetch asks GitHub for the newest release and picks out the one asset this
+// host could install.
+//
+// asset is passed in rather than worked out here so that a test can ask what a
+// Debian host would have matched while running on an Arch one. Empty means this
+// host has no package manager Polyseat knows, and then nothing matches.
+func fetch(ctx context.Context, api, asset string) (*Release, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, api, nil)
 	if err != nil {
 		return nil, err
@@ -341,8 +373,11 @@ func fetch(ctx context.Context, api string) (*Release, error) {
 		}
 
 		// The name is matched rather than the content type, because the debug
-		// package is the same type and is not the thing to install.
-		if a.Name != PublishedAsset {
+		// package is the same type and is not the thing to install, and because
+		// a release now carries three packages of which exactly one is for this
+		// host. An empty asset matches nothing, which is what an unknown host
+		// should get.
+		if asset == "" || a.Name != asset {
 			continue
 		}
 

@@ -21,6 +21,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/superuser404notfound/Polyseat/internal/hostpkg"
 )
 
 // assetHost is where a release asset is allowed to start.
@@ -42,27 +44,24 @@ const assetPathPrefix = "/superuser404notfound/Polyseat/releases/download/"
 // intends to fill the disk.
 const maxAsset = 256 << 20
 
-// Managed reports whether this installation is one pacman owns.
+// Managed reports whether this installation is one a package owns.
 //
 // The question is asked of the running binary rather than of a fixed path,
 // because a checkout install lives in /usr/local/bin and a package in /usr/bin,
 // and the answer for the one running is the only answer that matters. A
-// checkout install is not updated from here: pacman would have nothing to
-// replace, and offering a button that cannot work is worse than offering none.
+// checkout install is not updated from here: there would be nothing for a
+// package manager to replace, and offering a button that cannot work is worse
+// than offering none.
+//
+// False is also the answer on a host whose package manager this daemon does not
+// know, whichever way Polyseat got there, and for the same reason.
 func Managed() bool {
 	exe, err := os.Executable()
 	if err != nil {
 		return false
 	}
 
-	// Resolved, because pacman knows the real path and not a symlink to it.
-	if real, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = real
-	}
-
-	// -Qo answers with the owning package or fails. Nothing is written and
-	// nothing is downloaded; it reads the local database.
-	return exec.Command("pacman", "-Qo", "--", exe).Run() == nil
+	return hostpkg.Owns(exe)
 }
 
 // Apply downloads the release's package, checks it, and installs it.
@@ -80,12 +79,21 @@ func Apply(ctx context.Context, rel *Release, progress func(string)) error {
 		}
 	}
 
-	if rel == nil || rel.Package == nil {
-		return fmt.Errorf("that release has no package attached to it")
+	// Managed is asked before the release is looked at, and the order is not
+	// arbitrary. A host whose package manager is unknown matches no asset, so
+	// rel.Package is nil there too, and the first message would have said the
+	// release has no package when the truth is that this machine has no way to
+	// install one. Whichever is wrong, the caller should be told which.
+	if !Managed() {
+		if hostpkg.Detect() == hostpkg.Unknown {
+			return fmt.Errorf("this host's package manager is not one Polyseat knows, so a release cannot be installed from here. Update the checkout instead: host/update.sh")
+		}
+
+		return fmt.Errorf("this Polyseat was not installed from the package, so %s has nothing to replace. Update the checkout instead: host/update.sh", hostpkg.Detect().Manager())
 	}
 
-	if !Managed() {
-		return fmt.Errorf("this Polyseat was not installed from the package, so pacman has nothing to replace. Update the checkout instead: host/update.sh")
+	if rel == nil || rel.Package == nil {
+		return fmt.Errorf("that release has no package attached to it")
 	}
 
 	if err := allowed(rel.Package.URL); err != nil {
@@ -118,14 +126,15 @@ func Apply(ctx context.Context, rel *Release, progress func(string)) error {
 	}
 
 	say("checksum matches what the release states")
-	say("installing with pacman")
+	say("installing with %s", hostpkg.Detect().Manager())
 
-	// --noconfirm because there is nobody at a terminal to answer, and no
-	// question here has a second sensible answer: the file is the package for
-	// the release this daemon already decided to install.
-	out, err := exec.CommandContext(ctx, "pacman", "-U", "--noconfirm", "--", file).CombinedOutput()
+	// The file is the package for the release this daemon already decided to
+	// install, downloaded by this function and checked one line above. Nothing
+	// the caller said reaches this call, which is the property the whole file
+	// is written to keep.
+	out, err := hostpkg.InstallFile(ctx, file)
 	if err != nil {
-		return fmt.Errorf("pacman refused the package: %w\n%s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%w\n%s", err, strings.TrimSpace(string(out)))
 	}
 
 	say("installed %s", rel.Version)

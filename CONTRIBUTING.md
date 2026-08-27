@@ -50,8 +50,14 @@ binary built from a checkout has no way to find the checkout it came from.
 Without them the two buttons under *Host* have nothing to run and say so.
 
 The daemon installed this way is **not** updated by the button in the web
-interface, and the interface says so: there is no package for pacman to replace.
-That is deliberate rather than a gap.
+interface, and the interface says so: there is no package for this host's
+package manager to replace. That is deliberate rather than a gap.
+
+A checkout install also places `host/distro.sh` in `/usr/local/lib/polyseat`,
+because the three commands above source it and none of them has a checkout next
+to it to read it from. It is the table that says whether this host speaks
+`pacman`, `apt` or `dnf`; `host/test-distro.sh` checks every row of it against
+stubbed package managers and needs neither root nor network.
 
 ## Running the tests
 

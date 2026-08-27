@@ -103,6 +103,12 @@ package() {
   install -Dm755 host/lan-bridge.sh "$pkgdir/usr/bin/polyseat-lan-bridge"
   install -Dm755 host/check-hardening.sh "$pkgdir/usr/bin/polyseat-check-hardening"
 
+  # The table that says what this host's package manager is called. Every one of
+  # the four commands above sources it, and none of them has a checkout next to
+  # it to read it from. It is a library and not a command, so it is not
+  # executable and does not go in /usr/bin.
+  install -Dm644 host/distro.sh "$pkgdir/usr/lib/polyseat/distro.sh"
+
   # The input broker and its helpers. /usr/lib rather than /usr/local/lib, which
   # is where a checkout install puts them; the daemon looks in both and prefers
   # the local one, so a package and a checkout on one machine behave the way a

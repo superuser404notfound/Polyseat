@@ -17,8 +17,18 @@ drifts.
 
 ## What the machine needs
 
-- **Arch, or something based on it.** The installer speaks `pacman` rather than
-  pretending to be portable.
+- **Arch, Debian or Fedora**, or anything based on one of those. The host
+  scripts work out which from `/etc/os-release` and speak `pacman`, `apt` or
+  `dnf` accordingly. This binds only the *host*: a seat is an Arch container on
+  every one of the three, so which distribution the machine runs changes nothing
+  about the seats or the games in them.
+
+  **Arch is the only one that has been run on real hardware.** Debian and
+  Fedora are new in 0.9.0 and are covered by tests that replace the package
+  manager with a stub, which proves the right commands are issued and not that
+  they do what is expected. If you are on one of those, you are the first:
+  [docs/installation.md](docs/installation.md) says exactly what was verified
+  and what was not.
 - **An NVIDIA or AMD card with a working driver.** NVIDIA also needs
   `lib32-nvidia-utils`, or 32 bit games will not find the GPU. AMD needs only
   `amdgpu` on the host. The installer refuses rather than warns if the driver
@@ -41,16 +51,38 @@ The packages Polyseat itself needs, the installer works out and installs.
 
 **1. Install it, once per machine.**
 
+Arch, and anything based on it:
+
 ```
 curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
 sudo pacman -U polyseat-x86_64.pkg.tar.zst
 sudo systemctl enable --now polyseatd
 ```
 
-Downloaded first and installed second, because `pacman -U` on a URL wants a
-signature that these packages do not carry yet. The link has no version in it
-and never will: it is always the newest release, and `pacman -Qi polyseat` says
-which one arrived.
+Debian, Ubuntu and the rest:
+
+```
+curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat_amd64.deb
+sudo apt install ./polyseat_amd64.deb
+sudo systemctl enable --now polyseatd
+```
+
+Fedora:
+
+```
+curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat.x86_64.rpm
+sudo dnf install ./polyseat.x86_64.rpm
+sudo systemctl enable --now polyseatd
+```
+
+Downloaded first and installed second, because these packages carry no signature
+yet and every one of the three treats a file it fetched itself more strictly
+than one already on disk. `./` in front of the filename on the last two is not
+decoration: without it apt and dnf read the name as a package to go and look for.
+
+None of the three links has a version in it and none ever will: each is always
+the newest release, and `pacman -Qi polyseat`, `apt show polyseat` or
+`rpm -qi polyseat` says which one arrived.
 
 That is the whole of the command line. The machine itself is not ready yet, and
 that part happens in the page: a package is not allowed to do it, and the daemon
@@ -106,11 +138,24 @@ somebody's game, because replacing the binary leaves the running process alone.
 The restart is what makes the new version take effect, and it is refused while
 somebody is streaming and says whose game it would have ended.
 
-By hand it is the same two steps:
+By hand it is the same two steps, with whichever of the three files this
+machine installed from:
 
 ```
 curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
 sudo pacman -U polyseat-x86_64.pkg.tar.zst
+sudo systemctl restart polyseatd
+```
+
+```
+curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat_amd64.deb
+sudo apt install ./polyseat_amd64.deb
+sudo systemctl restart polyseatd
+```
+
+```
+curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat.x86_64.rpm
+sudo dnf install ./polyseat.x86_64.rpm
 sudo systemctl restart polyseatd
 ```
 
@@ -165,9 +210,11 @@ daemon is still supervising it is what leaves Incus with a stop that never
 finishes.
 
 Incus, bpftrace and python stay where they are. They are not Polyseat's to
-remove, which is also why the package goes with `pacman -R` rather than `-Rns`:
-on a machine where pacman pulled Incus in as a dependency, the `s` would take
-somebody's container manager away.
+remove, which is why the package goes with `pacman -R` rather than `-Rns` on
+Arch: on a machine where pacman pulled Incus in as a dependency, the `s` would
+take somebody's container manager away. `apt` leaves dependencies alone by
+default and `dnf` does not, so on Fedora the same restraint is asked for
+outright rather than assumed.
 
 The interface stops answering a moment in, because the daemon serving it is the
 first thing to stop. That is what it looks like when it worked, and the rest of

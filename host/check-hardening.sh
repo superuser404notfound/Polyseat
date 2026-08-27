@@ -17,6 +17,21 @@ step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 FIX=0
 [[ "${1:-}" == "--fix" ]] && FIX=1
 
+# Sourced only so that one line below can ask which package owns this file, and
+# so missing it is a degraded report rather than no report: this script runs
+# without root and its whole job is to tell somebody what it found.
+_here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+for _d in "$_here" /usr/local/lib/polyseat /usr/lib/polyseat; do
+    if [[ -r $_d/distro.sh ]]; then
+        # shellcheck source=host/distro.sh
+        . "$_d/distro.sh"
+        distro_detect || true
+        break
+    fi
+done
+
+declare -f pkg_owns_file >/dev/null 2>&1 || pkg_owns_file() { return 1; }
+
 step "udev rule"
 # Four directories, in the order udev reads them, because two installers put the
 # rule in two of them: host/install.sh writes /etc, where a local
@@ -39,8 +54,8 @@ else
     # Named by how Polyseat got here, because this script now ships in the
     # package and telling somebody to copy a file out of a checkout they do not
     # have is an instruction that cannot be followed.
-    if pacman -Qo "$0" >/dev/null 2>&1; then
-        echo "     sudo pacman -U on the release package places it. Reinstalling is enough."
+    if pkg_owns_file "$0"; then
+        echo "     Installing the release package again places it, and that is enough."
     else
         echo "     sudo host/install.sh   places it, from the checkout this came from"
     fi

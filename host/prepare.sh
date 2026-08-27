@@ -16,7 +16,13 @@
 # entry that already exists is left exactly as it is, including when it is
 # narrower than the one this would have written.
 #
-# Arch-based only: it queries pacman.
+# Runs on Arch, Debian and Fedora, and on anything based on those. Which one
+# this is decides only how packages are asked for and installed: host/distro.sh
+# holds that, and the rest of this file asks it rather than saying pacman.
+#
+# A seat is not affected by any of it. Seats are Incus containers built from
+# archlinux/current on every host, so the pacman calls in the daemon run inside
+# a container and mean the same thing wherever this script ran.
 #
 #   sudo polyseat-prepare      from a package
 #   sudo ./prepare.sh          from a checkout
@@ -49,6 +55,27 @@ step() { printf '\n%s%s%s\n' "$bold" "$*" "$plain"; }
 
 [[ $EUID -eq 0 ]] || { echo "needs root"; exit 1; }
 
+# The package manager this host has.
+#
+# Next to this script first, so that a checkout runs the checkout's copy of the
+# table rather than the one an older package left in /usr/lib, then the two
+# library directories a checkout install and a package write to. That is the
+# order the daemon already uses to find the input helpers.
+_here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+for _d in "$_here" /usr/local/lib/polyseat /usr/lib/polyseat; do
+    if [[ -r $_d/distro.sh ]]; then
+        # shellcheck source=host/distro.sh
+        . "$_d/distro.sh"
+        break
+    fi
+done
+
+if ! declare -f distro_detect >/dev/null 2>&1; then
+    echo "distro.sh was not found next to this script, in /usr/local/lib/polyseat"
+    echo "or in /usr/lib/polyseat, and nothing here can ask a question without it."
+    exit 1
+fi
+
 # web_url prints the address to open, rather than a placeholder or a host name
 # nothing on the network resolves.
 #
@@ -68,6 +95,19 @@ web_url() {
     printf 'https://%s:47800\n' "$addr"
 }
 
+
+step "Host"
+# Before anything else, and before anything has been changed. Until this existed
+# a Debian machine got as far as the first pacman call and died with "pacman:
+# command not found" in the middle of a step, which reads like Polyseat is
+# broken rather than like this machine is not one it knows.
+if ! distro_detect; then
+    bad "this machine's package manager is not one Polyseat knows"
+    echo
+    distro_refuse || exit 1
+fi
+
+ok "$(distro_describe)"
 
 step "Graphics"
 # Which card is in this machine decides everything downstream: which package
@@ -157,28 +197,64 @@ prereqs=(incus bpftrace python go)
 [[ $gpu_vendor == amd ]] || prereqs+=(nvidia-container-toolkit)
 
 for pkg in "${prereqs[@]}"; do
-    if pacman -Qq "$pkg" >/dev/null 2>&1; then ok "$pkg"
-    else warn "$pkg missing"; missing+=("$pkg"); fi
+    # Reported under the name this distribution uses rather than under the one
+    # this project uses internally, because the name in the message is the one
+    # somebody would type if they went and installed it themselves.
+    if pkg_installed "$pkg"; then ok "$(pkg_name "$pkg")"
+    else warn "$(pkg_name "$pkg") missing"; missing+=("$pkg"); fi
 done
+
+# Asked before anything is attempted, so that a prerequisite the configured
+# repositories cannot supply is named on its own along with where it comes from,
+# rather than surfacing as one failed transaction with the other packages' names
+# in it and no indication which of them was the problem.
+#
+# Two real cases, both on Debian: Incus is in trixie and not in bookworm, and
+# nvidia-container-toolkit is in neither because NVIDIA distributes it
+# themselves. Adding a repository is a decision about who this machine trusts,
+# so this says where to get them and stops.
+unavailable=()
+for pkg in "${missing[@]}"; do
+    if ! pkg_available "$pkg"; then unavailable+=("$pkg"); fi
+done
+
+if ((${#unavailable[@]})); then
+    echo
+    bad "not in this machine's repositories: ${unavailable[*]}"
+
+    for pkg in "${unavailable[@]}"; do
+        echo
+        case "$pkg" in
+            incus)                    incus_hint ;;
+            nvidia-container-toolkit) toolkit_hint ;;
+            *) echo "$(pkg_name "$pkg") is not available from here." ;;
+        esac | sed 's/^/    /'
+    done
+
+    echo
+    echo "  Install those, then run this again."
+    exit 1
+fi
 
 if ((${#missing[@]})); then
     echo
     echo "  installing: ${missing[*]}"
     echo
 
-    # Deliberately not -Sy. Refreshing the package database and then installing
-    # from it without upgrading is the partial upgrade Arch warns about, and an
+    # On Arch this deliberately does not refresh first: -Sy and then an install
+    # without an upgrade is the partial upgrade Arch warns about, and an
     # installer is a bad place to break somebody's system in a way that shows up
-    # weeks later. So this installs from the database that is already there and
-    # says what to do when that database is too old to resolve.
-    if pacman -S --needed --noconfirm "${missing[@]}"; then
+    # weeks later. Debian refreshes and Fedora refreshes itself, because neither
+    # has that hazard and Debian has the opposite one. pkg_install holds which
+    # is which, and says why.
+    if pkg_install "${missing[@]}"; then
         ok "installed ${missing[*]}"
     else
         echo
         bad "those packages could not be installed"
-        echo "  The package database is probably out of date. Upgrade first:"
+        echo "  The package metadata is probably out of date. Upgrade first:"
         echo
-        echo "    sudo pacman -Syu"
+        echo "    $(upgrade_hint)"
         exit 1
     fi
 fi
@@ -221,7 +297,7 @@ if [[ $gpu_vendor == amd ]]; then
             fi
         else
             echo "    To confirm the card can encode before building a seat:"
-            echo "      sudo pacman -S libva-utils"
+            echo "      $(install_hint) $(pkg_name libva-utils)"
             echo "      vainfo --display drm --device $gpu_node | grep EncSlice"
         fi
     fi
@@ -252,6 +328,29 @@ else
             echo "    Polyseat encodes with NVENC on NVIDIA and VA-API on AMD."
             echo "    Nothing here works on another vendor's GPU, and a seat"
             echo "    would stream in software."
+            exit 1
+        fi
+
+        bad "the NVIDIA driver is not answering"
+        echo
+
+        # What to do about it is the one thing in this script that is per
+        # distribution rather than per package manager, and it is not a naming
+        # difference a table could absorb. Arch ships the module as an ordinary
+        # package whose name follows from the kernel package, so it can be
+        # worked out and offered. Debian builds it with DKMS and Fedora with
+        # akmods, from packages whose names carry a driver branch that moves.
+        #
+        # So the other two are told what to type and this stops. Guessing a
+        # graphics driver package wrong leaves a machine with no graphics at
+        # all, and that is not a thing to be brave about in an installer.
+        if [[ $DISTRO_FAMILY != arch ]]; then
+            echo "    An NVIDIA card is here, but nvidia-smi does not answer, so either"
+            echo "    the userspace or the kernel module is missing."
+            echo
+            nvidia_driver_hint | sed 's/^/    /'
+            echo
+            echo "    Install it, reboot, and run this again."
             exit 1
         fi
 
@@ -292,10 +391,6 @@ else
            ! pacman -Qq lib32-nvidia-utils >/dev/null 2>&1; then
             wanted+=(lib32-nvidia-utils)
         fi
-
-        bad "the NVIDIA driver is not answering"
-        echo
-
         if ((${#wanted[@]} == 0)); then
             echo "    An NVIDIA card is here and the driver packages are installed"
             echo "    ($module, nvidia-utils), so the module is simply not loaded."
@@ -333,12 +428,28 @@ else
 
     # A warning and not a refusal: everything works without it except the 32 bit
     # games, and Steam's own client and a great many games are 32 bit.
-    if pacman -Qq lib32-nvidia-utils >/dev/null 2>&1; then
-        ok "lib32-nvidia-utils, so 32 bit games get the GPU too"
+    #
+    # Asked of ldconfig rather than of the package manager, because what matters
+    # is whether the library is on this machine for nvidia-container-toolkit to
+    # mirror into a seat, and not which package put it there. The three
+    # distributions name that package three ways and Debian qualifies it with an
+    # architecture on top; the library has one name everywhere.
+    # internal/seat/appimage.go asks its own version of this question the same
+    # way and for the same reason.
+    #
+    # (libc6) is the 32 bit entry in ldconfig's output and (libc6,x86-64) the 64
+    # bit one, so the closing bracket is the whole of what tells them apart.
+    if ldconfig -p 2>/dev/null | grep -q 'libnvidia-encode\.so\.1 (libc6)'; then
+        ok "the 32 bit driver userspace is here, so 32 bit games get the GPU too"
     elif [[ -z "${POLYSEAT_ALLOW_NO_GPU:-}" ]]; then
-        warn "lib32-nvidia-utils is missing, so 32 bit games in a seat will not find the GPU"
-        grep -q "^\[multilib\]" /etc/pacman.conf 2>/dev/null ||
-            echo "    Enable the multilib repository in /etc/pacman.conf first."
+        warn "no 32 bit driver userspace, so 32 bit games in a seat will not find the GPU"
+
+        if multilib_enabled; then
+            echo "    $(nvidia32_hint)"
+        else
+            multilib_hint | sed 's/^/    /'
+            echo "    Then: $(nvidia32_hint)"
+        fi
     fi
 
 fi

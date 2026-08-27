@@ -1,4 +1,10 @@
-# Builds the Arch package and attaches it to the release it belongs to.
+# Builds the three host packages and attaches them to the release they belong to.
+#
+# Three, because a host can be Arch, Debian or Fedora and each wants its own
+# format. Two jobs rather than three: makepkg needs an Arch container and the
+# other two come out of one nfpm run, so they are built together. What has to
+# agree between the jobs is the file list, and packaging/README.md is where that
+# is said once.
 #
 # The AUR distributes recipes, not packages: installing from it means building
 # it yourself. What somebody actually wants is a file they can install, and that
@@ -166,3 +172,100 @@ jobs:
 
           echo "attached to $tag:"
           ls -la "$stable"
+
+  # The .deb and the .rpm, from packaging/nfpm.yaml.
+  #
+  # No container and no matrix. nfpm writes both formats from one description
+  # and neither needs the distribution it targets to be present, which is the
+  # reason it is used at all: building a Debian package in a Debian container
+  # and a Fedora one in a Fedora container would be two more images to pull for
+  # a job whose whole work is laying out files.
+  #
+  # What that does not prove is that either package installs, which is the same
+  # gap the Arch job has and is covered the same way: by installing the result
+  # on a real machine before the release is announced. The release list in
+  # packaging/README.md says so.
+  nfpm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # From go.mod, so there is one place that says which Go this is.
+          go-version-file: go.mod
+          cache: true
+
+      # From the PKGBUILD and not from the tag, for the same reason the Arch job
+      # reads it there: that file is what this workflow triggers on, and it is
+      # the one thing that says which version this run is for.
+      - name: Which version this is
+        id: version
+        run: |
+          pkgver=$(sed -n 's/^pkgver=//p' packaging/aur/PKGBUILD)
+
+          if [[ -z $pkgver ]]; then
+            echo "::error::packaging/aur/PKGBUILD no longer says pkgver"
+            exit 1
+          fi
+
+          echo "pkgver=$pkgver" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Build
+        run: ./packaging/build-packages.sh "${{ steps.version.outputs.pkgver }}"
+
+      - name: Attach them to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PKGVER: ${{ steps.version.outputs.pkgver }}
+        run: |
+          tag="v$PKGVER"
+
+          # The names the daemon looks for. internal/hostpkg says what they are
+          # and a test holds these against that, so a rename here that is not
+          # made there fails before it ships rather than by making the update
+          # button quietly do nothing.
+          deb=packaging/dist/polyseat_amd64.deb
+          rpm=packaging/dist/polyseat.x86_64.rpm
+
+          for f in "$deb" "$rpm"; do
+            if [[ ! -f $f ]]; then
+              echo "::error::$f was not built"
+              exit 1
+            fi
+          done
+
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::no release $tag to attach these to. Publish it first;"
+            echo "::error::packaging/README.md has the order."
+            exit 1
+          fi
+
+          # A published release does not change under people, which is the same
+          # guard the Arch job carries and exists for the same reason: this
+          # fires on any push touching the PKGBUILD, and a release commit would
+          # otherwise rebuild and replace the previous version's assets.
+          # --clobber deletes before it uploads, so the download URL 404s for a
+          # moment and the bytes anybody already had stop matching the bytes
+          # anybody gets next.
+          have=$(gh release view "$tag" --json assets --jq '.assets[].name')
+
+          if grep -qxF "$(basename "$deb")" <<<"$have" ||
+             grep -qxF "$(basename "$rpm")" <<<"$have"; then
+            if [[ "${{ inputs.rebuild }}" != "true" ]]; then
+              echo "::notice::$tag already carries these, so it is left alone."
+              echo "::notice::Run this workflow by hand with rebuild if that is really wanted."
+              exit 0
+            fi
+
+            echo "::warning::replacing the packages on $tag, which was asked for"
+          fi
+
+          gh release upload "$tag" "$deb" "$rpm" --clobber
+
+          echo "attached to $tag:"
+          ls -la "$deb" "$rpm"

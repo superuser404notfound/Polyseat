@@ -8,31 +8,51 @@ distributes recipes and not packages: installing from it means building it
 yourself, which is what `host/install.sh` already does and does better, since it
 prepares the machine in the same run.
 
-**The built package is attached to every GitHub release**, by
+**Three built packages are attached to every GitHub release**, by
 [`.github/workflows/package.yml`](../.github/workflows/package.yml), so the file
-somebody actually wants is one `pacman -U` away:
+somebody actually wants is one command away whichever host they are on:
 
 ```
 curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat-x86_64.pkg.tar.zst
 sudo pacman -U polyseat-x86_64.pkg.tar.zst
+
+curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat_amd64.deb
+sudo apt install ./polyseat_amd64.deb
+
+curl -LO https://github.com/superuser404notfound/Polyseat/releases/latest/download/polyseat.x86_64.rpm
+sudo dnf install ./polyseat.x86_64.rpm
 ```
 
-Two commands rather than one because the packages carry no signature. `pacman
--U` on a URL applies `RemoteFileSigLevel`, which is `Required` by default and
-looks for a `.sig` that is not there; a file already on disk applies
-`LocalFileSigLevel`, which Arch ships as `Optional`. Signing them is the fix and
-it needs a key that is published and trusted by hand, which is the same key a
-package repository would need.
+Two commands rather than one because the packages carry no signature, and all
+three package managers are stricter about a file they fetched themselves than
+about one already on disk. `pacman -U` on a URL applies `RemoteFileSigLevel`,
+which is `Required` by default and looks for a `.sig` that is not there; a file
+on disk applies `LocalFileSigLevel`, which Arch ships as `Optional`. Signing
+them is the fix and it needs a key that is published and trusted by hand, which
+is the same key a package repository would need.
 
-That URL carries no version and never has to be edited, which is why the file is
-published under a name that carries none either: `releases/latest/download/` is
-a permanent link only while the name is permanent. pacman reads the name and the
+`./` in front of the last two is not decoration. Both apt and dnf read a bare
+name as a package to go and find, so without it they search the repositories for
+something called `polyseat_amd64.deb`.
+
+None of those URLs carries a version and none ever has to be edited, which is
+why the files are published under names that carry none either:
+`releases/latest/download/` is a permanent link only while the name is
+permanent. Every one of the three package managers reads the name and the
 version from inside the file, so the filename is free to say nothing, and
-`pacman -Qip` on the download says which version it turned out to be.
+`pacman -Qip`, `dpkg -I` or `rpm -qip` on the download says which version it
+turned out to be.
 
-makepkg's own versioned name is not published beside it. Two files on a release
-page where either one would do is a question asked of everybody who arrives, and
-the release itself already says which version it is.
+makepkg's own versioned name is not published beside them, and neither is
+nfpm's. Extra files on a release page where any one of them would do is a
+question asked of everybody who arrives, and the release itself already says
+which version it is.
+
+**Which of the three a host installs is not the visitor's problem for long.**
+The daemon works out its own family in `internal/hostpkg` and its update button
+offers only the file that belongs to this machine; a host whose package manager
+is none of the three is told there is a newer version and is not offered a
+button that could not work.
 
 That covers installing, upgrading and removing through pacman, which is three
 things the shell scripts no longer have to be the only answer to. What it does
@@ -43,6 +63,41 @@ notices, and it already does.
 
 `paru -S polyseat` still finds nothing, and anything that does turn up under
 that name is not this.
+
+## The .deb and the .rpm
+
+[`nfpm.yaml`](nfpm.yaml) describes both, and
+[`build-packages.sh`](build-packages.sh) builds them: it compiles the daemon
+with the same version stamp the PKGBUILD applies, rewrites the systemd unit from
+`/usr/local/bin` to `/usr/bin` the way the PKGBUILD does, and runs `nfpm` twice.
+`nfpm` is pinned rather than taken at `@latest`, because this tool writes the
+packages a machine installs as root and which version of it ran is part of what
+a release is.
+
+It is runnable by hand on purpose. The release list below asks for the result to
+be installed on a real machine before it is announced, and a package that only
+CI can produce cannot be tested that way.
+
+**One description, two formats, and a third kept separate.** The PKGBUILD is not
+generated from `nfpm.yaml` and will not be: a PKGBUILD builds from source on the
+machine installing it, and `nfpm.yaml` describes a binary that has already been
+built. What has to agree between them is the file list, which is why that list
+is written out in both and why a change to one is a change to the other.
+
+The scriptlets are [`scripts/postinstall.sh`](scripts/postinstall.sh) and
+[`scripts/postremove.sh`](scripts/postremove.sh), and they say what
+`polyseat.install` says. One file each rather than two, because dpkg and rpm
+have no equivalent of pacman's separate `post_install` and `post_upgrade` hooks:
+both call the same script and it has to work out which happened. They say so in
+two different ways — dpkg passes `configure` and the previous version, rpm
+passes how many copies will exist when the transaction finishes — so both are
+read.
+
+`nvidia-container-toolkit` is deliberately not a dependency of either. On an
+NVIDIA host it is required and on an AMD host it is a shim for a driver that is
+not there, so it is neither always needed nor, on Debian, installable from the
+distribution's own repositories at all. `polyseat-prepare` checks for it and
+says where it comes from, which is the only honest place to handle it.
 
 ## The AUR package
 
@@ -134,10 +189,11 @@ git push
 4. Commit 2 and 3 as `Carry the package to X.Y.Z` and push. That commit is
    what triggers
    [`.github/workflows/package.yml`](../.github/workflows/package.yml), which
-   builds the package in an Arch container and attaches it to the release. It
-   is triggered by the PKGBUILD rather than by the tag because this is the
-   first moment the two agree: the checksum in step 3 is of a tarball that only
-   exists once the tag does.
+   builds the Arch package in an Arch container, the `.deb` and the `.rpm` with
+   `nfpm` on the runner, and attaches all three to the release. It is triggered
+   by the PKGBUILD rather than by the tag because this is the first moment
+   everything agrees: the checksum in step 3 is of a tarball that only exists
+   once the tag does, and both jobs read the version out of that same file.
 
    A wrong checksum fails that build rather than shipping a package built from
    something other than the tag it names, which is the one mistake this order
@@ -153,6 +209,15 @@ git push
    it on a fresh Arch machine, runs `polyseat-prepare`, starts the daemon and
    removes it again. It also checks the three things the package must **not** do,
    because that is the whole reason the installer is in two halves.
+
+   **There is no equivalent for the other two yet, and that is the standing gap
+   in this list.** `host/test-distro.sh` checks that `host/distro.sh` reaches
+   for the right tool with the right arguments, with every package manager
+   replaced by a stub, and CI runs it. What nobody has done is install the
+   `.deb` on a Debian machine or the `.rpm` on a Fedora one. Until somebody
+   does, those two are in the position the AMD path is in: written, reasoned
+   about, and unproven. Say so when announcing a release rather than letting
+   somebody find out.
 6. Read what `namcap` makes of it, which is not the same as doing what it says.
    The workflow already prints both of these, so this is reading its log rather
    than running anything, unless something needs looking at more closely:

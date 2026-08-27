@@ -1,6 +1,7 @@
 package update
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -8,8 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"regexp"
 	"testing"
+
+	"github.com/superuser404notfound/Polyseat/internal/hostpkg"
 )
 
 // discard keeps the test output to the failures.
@@ -63,7 +65,7 @@ func serve(t *testing.T, edit func(map[string]any)) *httptest.Server {
 func TestFetchReadsARecordedRelease(t *testing.T) {
 	server := serve(t, nil)
 
-	release, err := fetch(context.Background(), server.URL)
+	release, err := fetch(context.Background(), server.URL, hostpkg.Arch.Asset())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +89,7 @@ func TestFetchRefusesAPrerelease(t *testing.T) {
 	for _, field := range []string{"prerelease", "draft"} {
 		server := serve(t, func(body map[string]any) { body[field] = true })
 
-		if _, err := fetch(context.Background(), server.URL); err == nil {
+		if _, err := fetch(context.Background(), server.URL, hostpkg.Arch.Asset()); err == nil {
 			t.Errorf("%s=true was accepted", field)
 		}
 	}
@@ -96,7 +98,7 @@ func TestFetchRefusesAPrerelease(t *testing.T) {
 func TestFetchRefusesAReleaseWithoutATag(t *testing.T) {
 	server := serve(t, func(body map[string]any) { body["tag_name"] = "" })
 
-	if _, err := fetch(context.Background(), server.URL); err == nil {
+	if _, err := fetch(context.Background(), server.URL, hostpkg.Arch.Asset()); err == nil {
 		t.Error("a release with no tag was accepted")
 	}
 }
@@ -107,7 +109,7 @@ func TestFetchRefusesAnError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := fetch(context.Background(), server.URL); err == nil {
+	if _, err := fetch(context.Background(), server.URL, hostpkg.Arch.Asset()); err == nil {
 		t.Error("404 was accepted")
 	}
 }
@@ -328,21 +330,47 @@ func TestCheckNowRefusesRatherThanShrugging(t *testing.T) {
 // the workflow proves what it says now. The daemon looks for a name, a workflow
 // in another language uploads one, and nothing in between made them agree until
 // this.
-func TestThePublishedNameIsTheNameThisLooksFor(t *testing.T) {
+func TestThePublishedNamesAreTheNamesThisLooksFor(t *testing.T) {
 	workflow, err := os.ReadFile("../../.github/workflows/package.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// The line that decides the name, rather than the whole file: the workflow
-	// builds a versioned file and copies it to this one before uploading.
-	found := regexp.MustCompile(`(?m)^\s*stable=(\S+)\s*$`).FindSubmatch(workflow)
-	if found == nil {
-		t.Fatal("package.yml no longer says which name it publishes under, so this test cannot check it any more")
-	}
+	// Three assets and two jobs now: makepkg builds the Arch one under a
+	// versioned name and the workflow copies it to the published one, and nfpm
+	// writes the other two under the published names directly. So this looks
+	// for each name anywhere in the file rather than for one assignment, which
+	// is weaker than the test it replaces and is as strong as one test can be
+	// across two jobs that name their files differently.
+	//
+	// What it still catches is the failure that actually happened: a rename on
+	// one side and not the other. That made the update button do nothing at all
+	// on every machine for five releases, and the interface reported it as a
+	// fact about the release rather than as a fault here.
+	for _, name := range PublishedAssets {
+		if name == "" {
+			t.Error("a family published an empty asset name, so it would match every release and install none")
 
-	if got := string(found[1]); got != PublishedAsset {
-		t.Errorf("the workflow uploads %q and the daemon looks for %q, so the interface would say the release has no package",
-			got, PublishedAsset)
+			continue
+		}
+
+		if !bytes.Contains(workflow, []byte(name)) {
+			t.Errorf("the daemon looks for %q and package.yml never mentions it, so a host of that family would be told the release has no package", name)
+		}
+	}
+}
+
+func TestEveryFamilyHasItsOwnAssetName(t *testing.T) {
+	// Two families sharing a name would mean one of them installing the other's
+	// package, which fails in a way that reads like a corrupt download rather
+	// than like a packaging mistake.
+	seen := map[string]bool{}
+
+	for _, name := range PublishedAssets {
+		if seen[name] {
+			t.Errorf("%q is published for more than one package manager", name)
+		}
+
+		seen[name] = true
 	}
 }

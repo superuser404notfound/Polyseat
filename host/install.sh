@@ -17,7 +17,9 @@
 # and its web interface. Who does what, and why the line runs where it does, is
 # in docs/installation.md.
 #
-# Arch-based only: it queries pacman.
+# Runs on Arch, Debian and Fedora, and on anything based on those. Which one
+# this is matters only to prepare.sh, which this hands the machine half to;
+# placing files is the same work everywhere.
 #
 #   sudo ./install.sh                    install
 #   sudo ./install.sh --uninstall        remove Polyseat, keep the seats
@@ -132,6 +134,15 @@ if [[ $version == unknown ]]; then
 elif [[ $version == *-dirty ]]; then
     warn "built from a tree with uncommitted changes, which is what -dirty means"
 fi
+
+step "The package manager table to $LIBDIR"
+# distro.sh goes in beside the helpers because the three commands installed
+# below source it, and they are installed as /usr/local/bin/polyseat-* where
+# there is no checkout next to them to read it from. The package places its own
+# copy in /usr/lib/polyseat for the same reason.
+install -d -m 0755 "$LIBDIR"
+install -m 0644 "$HERE/distro.sh" "$LIBDIR/distro.sh"
+ok "$LIBDIR/distro.sh"
 
 step "Installing the input helpers to $LIBDIR"
 # These stay Python. They are what M2 proved out, and rewriting a working input

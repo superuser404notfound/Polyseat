@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/superuser404notfound/Polyseat/internal/hostpkg"
 )
 
 // serveFile answers with the recorded release that has a package attached.
@@ -55,7 +57,7 @@ func serveWithAsset(t *testing.T, edit func(asset map[string]any)) *httptest.Ser
 }
 
 func TestFetchFindsThePackage(t *testing.T) {
-	rel, err := fetch(t.Context(), serveWithAsset(t, nil).URL)
+	rel, err := fetch(t.Context(), serveWithAsset(t, nil).URL, hostpkg.Arch.Asset())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +71,7 @@ func TestFetchFindsThePackage(t *testing.T) {
 	// the constant rather than against a string typed here, because the two
 	// drifting apart is exactly what made this button fail on every machine for
 	// five releases. See TestThePublishedNameIsTheNameThisLooksFor.
-	if rel.Package.Name != PublishedAsset {
+	if rel.Package.Name != hostpkg.Arch.Asset() {
 		t.Errorf("name is %q", rel.Package.Name)
 	}
 
@@ -91,7 +93,7 @@ func TestFetchFindsThePackage(t *testing.T) {
 // A release with no assets is a real answer, not a fault: every release before
 // 0.3.2 is one, because the workflow that builds a package did not exist yet.
 func TestFetchIsFineWithAReleaseThatHasNoPackage(t *testing.T) {
-	rel, err := fetch(t.Context(), serve(t, nil).URL)
+	rel, err := fetch(t.Context(), serve(t, nil).URL, hostpkg.Arch.Asset())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +111,7 @@ func TestFetchIgnoresTheDebugPackage(t *testing.T) {
 		a["name"] = "polyseat-debug-0.3.2-1-x86_64.pkg.tar.zst"
 	})
 
-	rel, err := fetch(t.Context(), server.URL)
+	rel, err := fetch(t.Context(), server.URL, hostpkg.Arch.Asset())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +128,7 @@ func TestFetchIgnoresAPackageForAnotherVersion(t *testing.T) {
 		a["name"] = "polyseat-0.2.0-1-x86_64.pkg.tar.zst"
 	})
 
-	rel, err := fetch(t.Context(), server.URL)
+	rel, err := fetch(t.Context(), server.URL, hostpkg.Arch.Asset())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +142,7 @@ func TestFetchIgnoresAPackageForAnotherVersion(t *testing.T) {
 func TestFetchIgnoresAnAssetThatIsNotUploadedYet(t *testing.T) {
 	server := serveWithAsset(t, func(a map[string]any) { a["state"] = "starter" })
 
-	rel, err := fetch(t.Context(), server.URL)
+	rel, err := fetch(t.Context(), server.URL, hostpkg.Arch.Asset())
 	if err != nil {
 		t.Fatal(err)
 	}

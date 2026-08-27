@@ -27,18 +27,40 @@
 # package. They are not Polyseat's to remove, and an uninstaller that takes
 # somebody's container manager away because it once installed it is an
 # uninstaller nobody should run. That is also why the package is removed with
-# -R and not -Rs: on a machine where pacman pulled incus in as a dependency of
-# polyseat rather than being told to install it, the s would take it away.
+# -R and not -Rs on Arch: on a machine where pacman pulled incus in as a
+# dependency of polyseat rather than being told to install it, the s would take
+# it away. The other two package managers need their own spelling of the same
+# restraint and one of them needs it explicitly — see pkg_remove in distro.sh,
+# where dnf's default is the dangerous one.
 set -euo pipefail
 
-# pacman is about to delete the file bash is reading.
+# Where distro.sh is, resolved here and carried across the copy below.
+#
+# It has to happen before that copy and not after. The copy runs from /tmp, so a
+# lookup made from inside it cannot find the file next to the script the way
+# prepare.sh does: by then there is no script next to anything. Resolved while
+# ${BASH_SOURCE[0]} still points at the real file, and exported for the copy.
+if [[ -z ${POLYSEAT_DISTRO_LIB:-} ]]; then
+    _here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+    for _d in "$_here" /usr/local/lib/polyseat /usr/lib/polyseat; do
+        if [[ -r $_d/distro.sh ]]; then
+            export POLYSEAT_DISTRO_LIB="$_d/distro.sh"
+            break
+        fi
+    done
+fi
+
+# The package manager is about to delete the file bash is reading.
 #
 # bash does not read a script into memory. It reads a chunk, runs it, and comes
 # back for more at a command boundary, so removing the package that owns this
 # file halfway down leaves it reading from an inode nothing points at any more,
 # and the failure would land in whichever line happened to be in the next chunk.
-# So the first thing this does is copy itself somewhere pacman does not own and
-# hand over to that copy.
+# So the first thing this does is copy itself somewhere no package owns and
+# hand over to that copy. The same reasoning covers distro.sh, which the package
+# also owns: it is sourced into this shell before the removal, and a function
+# already defined does not care that the file it came from has gone.
 if [[ -z ${POLYSEAT_UNINSTALL_COPY:-} ]]; then
     copy=$(mktemp /tmp/polyseat-uninstall.XXXXXX)
     cat -- "${BASH_SOURCE[0]}" > "$copy"
@@ -50,6 +72,26 @@ if [[ -z ${POLYSEAT_UNINSTALL_COPY:-} ]]; then
 fi
 
 trap 'rm -f -- "${POLYSEAT_UNINSTALL_COPY:-}"' EXIT
+
+if [[ -n ${POLYSEAT_DISTRO_LIB:-} && -r ${POLYSEAT_DISTRO_LIB} ]]; then
+    # shellcheck source=host/distro.sh
+    . "$POLYSEAT_DISTRO_LIB"
+fi
+
+if ! declare -f distro_detect >/dev/null 2>&1; then
+    echo "distro.sh was not found next to this script, in /usr/local/lib/polyseat"
+    echo "or in /usr/lib/polyseat, and nothing here can ask a question without it."
+    exit 1
+fi
+
+# Unlike prepare.sh this does not refuse a machine it does not recognise, and
+# the asymmetry is deliberate. Preparing an unknown host would install packages
+# with a package manager this project cannot drive; removing one only has to
+# take files away, which is the same work everywhere. So an unrecognised machine
+# gets the whole of the cleanup and skips exactly the step that needs a package
+# manager, rather than being left with the daemon it wanted rid of.
+has_pkg_manager=true
+if ! distro_detect; then has_pkg_manager=false; fi
 
 # Colour only where somebody is watching, the same test prepare.sh makes and for
 # the same reason: the daemon runs this in a transient unit and the journal is
@@ -159,8 +201,8 @@ stop_seat() {
     [[ "$(state_of "$name")" == "RUNNING" ]] && bad "$name is still running" || ok "$name stopped"
 }
 
-# Which of the two installs this is, asked of pacman rather than guessed from a
-# path. Both answers can be true at once on a machine where somebody built from
+# Which of the two installs this is, asked of the package manager rather than
+# guessed from a path. Both answers can be true at once on a machine where somebody built from
 # a checkout over a package, and then both have to go: the daemon prefers
 # /usr/local, so leaving that half behind would leave the machine running the
 # copy this was meant to remove.
@@ -168,7 +210,7 @@ stop_seat() {
 # Both written as `if` rather than as `test && set`, because under set -e a bare
 # test that comes out false is not a false answer, it is the end of the script.
 packaged=false
-if pacman -Qq polyseat >/dev/null 2>&1; then packaged=true; fi
+if pkg_installed polyseat; then packaged=true; fi
 
 checkout=false
 if [[ -e /usr/local/bin/polyseatd ]]; then checkout=true; fi
@@ -193,7 +235,7 @@ elif $packaged; then
 elif $checkout; then
     echo "  installed:            a checkout install under /usr/local"
 else
-    echo "  installed:            neither pacman nor /usr/local has it, so only leftovers"
+    echo "  installed:            no package owns it and /usr/local has none, so only leftovers"
 fi
 
 echo "  daemon:               stopped, its unit, udev rule and helpers removed"
@@ -284,9 +326,9 @@ if $checkout; then
 fi
 
 # The copy 0.3.2 to 0.3.4 wrote by hand from prepare.sh, into a directory no
-# package owns. Taken out here whichever way this was installed, because pacman
-# cannot remove a file that was never part of a package and a machine that keeps
-# loading a module for something that is gone is the result.
+# package owns. Taken out here whichever way this was installed, because no
+# package manager can remove a file that was never part of a package and a
+# machine that keeps loading a module for something that is gone is the result.
 rm -fv /etc/modules-load.d/polyseat.conf
 
 # The rule the checkout install writes into /etc. The package's copy lives in
@@ -298,15 +340,19 @@ rm -fv /etc/udev/rules.d/70-polyseat-hide.rules \
 if $packaged; then
     step "Removing the package"
 
-    # --noconfirm because there may be nobody at a terminal, and -R rather than
-    # -Rs on purpose: see the top of this file. What that leaves behind is
-    # incus, bpftrace and python, which is the right amount of somebody else's
-    # machine for an uninstaller to touch.
-    if pacman -R --noconfirm polyseat; then
+    # Answering no question and taking no dependencies with it: see the top of
+    # this file, and pkg_remove for how each of the three is made to behave that
+    # way. What it leaves behind is incus, bpftrace and python, which is the
+    # right amount of somebody else's machine for an uninstaller to touch.
+    if ! $has_pkg_manager; then
+        warn "this machine's package manager is not one Polyseat knows"
+        echo "    Everything above is done. The package itself is still registered,"
+        echo "    and removing it is one command in whatever this machine uses."
+    elif pkg_remove polyseat; then
         ok "the polyseat package is gone"
     else
-        bad "pacman would not remove the package"
-        echo "    A locked database is the usual reason: another pacman is running."
+        bad "the package manager would not remove the package"
+        echo "    A locked database is the usual reason: another one is running."
         echo "    Nothing above is undone by this, so running the same command"
         echo "    again once it is free finishes the job."
         exit 1

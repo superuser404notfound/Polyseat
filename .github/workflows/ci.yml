@@ -137,4 +137,19 @@ jobs:
       # quotes around a command meant to be expanded on the other side of an
       # `incus exec` are deliberate.
       - name: shellcheck
-        run: shellcheck --severity=warning host/*.sh
+        run: |
+          shellcheck --severity=warning host/*.sh
+          shellcheck --severity=warning packaging/build-packages.sh
+          # sh and not bash, and shellcheck has to be told: these two run under
+          # whatever dpkg and rpm hand them, which is not bash on every machine.
+          shellcheck --severity=warning --shell=sh packaging/scripts/*.sh
+
+      # The one part of the distribution table that can be checked without the
+      # distributions. It replaces every package manager with a script that
+      # records how it was called, so it needs no root, no network and nothing
+      # installed, and it covers the two rows nobody here runs: that distro.sh
+      # reaches for apt-get and not pacman on Debian, with the arguments that
+      # were meant, and that dnf is told to keep dependencies rather than taking
+      # somebody's container manager with Polyseat.
+      - name: The package manager table
+        run: ./host/test-distro.sh

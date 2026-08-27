@@ -4,3 +4,9 @@
 *.log
 spike/**/out/
 __pycache__/
+
+# What packaging/build-packages.sh stages and produces. The .deb and the .rpm
+# are release assets, built from a tag and attached to it, so a copy in the tree
+# is only ever a stale one.
+packaging/build/
+packaging/dist/

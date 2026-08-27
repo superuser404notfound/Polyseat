@@ -29,6 +29,8 @@ import (
 	"github.com/superuser404notfound/Polyseat/internal/update"
 	"github.com/superuser404notfound/Polyseat/internal/version"
 	"github.com/superuser404notfound/Polyseat/internal/web"
+
+	"github.com/superuser404notfound/Polyseat/internal/hostpkg"
 )
 
 // Server exposes the manager over HTTP.
@@ -1629,7 +1631,7 @@ func (s *Server) applyUpdate(w http.ResponseWriter, r *http.Request) {
 	// Two pacman transactions at once is one database lock and a failure that
 	// names the lock rather than the reason. Refused where it can be explained.
 	if s.prepare.Running() {
-		fail(w, http.StatusConflict, errors.New("this machine is being prepared, which is already running pacman. Wait for that to finish"))
+		fail(w, http.StatusConflict, fmt.Errorf("this machine is being prepared, which is already running %s. Wait for that to finish", hostpkg.Detect().Manager()))
 
 		return
 	}
@@ -1648,7 +1650,7 @@ func (s *Server) applyUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.managed {
-		fail(w, http.StatusConflict, errors.New("this Polyseat was not installed from the package, so pacman has nothing to replace. Use host/update.sh in the checkout it was built from"))
+		fail(w, http.StatusConflict, fmt.Errorf("this Polyseat was not installed from the package, so %s has nothing to replace. Use host/update.sh in the checkout it was built from", hostpkg.Detect().Manager()))
 
 		return
 	}
@@ -1741,7 +1743,7 @@ func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
 	// this would leave a pacman killed halfway, a lock behind it and a
 	// transaction half applied.
 	if s.prepare.Running() {
-		fail(w, http.StatusConflict, errors.New("this machine is being prepared. A restart now would kill pacman halfway through it"))
+		fail(w, http.StatusConflict, fmt.Errorf("this machine is being prepared. A restart now would kill %s halfway through it", hostpkg.Detect().Manager()))
 
 		return
 	}

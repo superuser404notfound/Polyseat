@@ -1,0 +1,156 @@
+# The .deb and the .rpm, from one description.
+#
+# The Arch package is packaging/aur/PKGBUILD and is not generated from this.
+# The two are kept side by side rather than merged because they are not the same
+# kind of file: a PKGBUILD builds from source on the machine installing it and
+# this describes a binary that has already been built. What has to agree between
+# them is the file list, and packaging/README.md says so in one place.
+#
+# Built by packaging/build-packages.sh, which stages the files this refers to.
+# Running nfpm against a bare checkout will not work and is not meant to: the
+# daemon has to be compiled and the unit rewritten first.
+
+name: polyseat
+arch: amd64
+platform: linux
+version: ${POLYSEAT_VERSION}
+release: "1"
+section: utils
+priority: optional
+maintainer: rooky <superuser404@tuta.com>
+homepage: https://github.com/superuser404notfound/Polyseat
+license: GPL-3.0-or-later
+
+description: |
+  Several people playing on one Linux PC at once.
+  Each in their own seat: a container with its own desktop, its own Steam
+  account and its own Sunshine, streamed to their own Moonlight client. One
+  graphics card serves all of them and the machine's own desktop keeps running.
+
+# What the daemon talks to, named as these two distributions name it.
+#
+# The same three as the PKGBUILD, and short for the same reason: everything a
+# seat needs is installed inside the seat by the daemon, so a host running
+# Polyseat needs no Steam, no Sway and no Sunshine of its own.
+#
+# nvidia-container-toolkit is deliberately not a dependency on either. On an
+# NVIDIA host it is required and on an AMD host it is a shim for a driver that
+# is not there, so it is neither always needed nor installable from the
+# distribution's own repositories on Debian. polyseat-prepare checks for it and
+# says where it comes from, which is the only honest place to handle it.
+depends:
+  - incus
+  - bpftrace
+  - python3
+
+overrides:
+  rpm:
+    depends:
+      - incus
+      - bpftrace
+      - python3
+    recommends:
+      - libva-utils
+  deb:
+    recommends:
+      - vainfo
+
+contents:
+  - src: packaging/build/polyseatd
+    dst: /usr/bin/polyseatd
+
+  # The machine half, as a command rather than as a script somebody has to find
+  # in a checkout they do not have. A package may place files and may not
+  # initialise Incus, write to /etc/subuid or put an account in a group.
+  - src: host/prepare.sh
+    dst: /usr/bin/polyseat-prepare
+
+  # The way out, and the file the interface's remove button runs. Without it a
+  # package that installs in one command can only be removed by the package
+  # manager, which knows nothing about the order this has to come apart in.
+  - src: host/uninstall.sh
+    dst: /usr/bin/polyseat-uninstall
+
+  - src: host/lan-bridge.sh
+    dst: /usr/bin/polyseat-lan-bridge
+  - src: host/check-hardening.sh
+    dst: /usr/bin/polyseat-check-hardening
+
+  # The table that says what this host's package manager is called. Every one of
+  # the four commands above sources it, and none of them has a checkout next to
+  # it to read it from.
+  - src: host/distro.sh
+    dst: /usr/lib/polyseat/distro.sh
+    file_info:
+      mode: 0644
+
+  # The input broker and its helpers. /usr/lib rather than /usr/local/lib, which
+  # is where a checkout install puts them; the daemon looks in both and prefers
+  # the local one.
+  - src: spike/m2-input-broker/broker.py
+    dst: /usr/lib/polyseat/broker.py
+  - src: spike/m2-input-broker/device_owner.py
+    dst: /usr/lib/polyseat/device_owner.py
+  - src: spike/m2-input-broker/uhid_observer.py
+    dst: /usr/lib/polyseat/uhid_observer.py
+  - src: spike/m2-input-broker/fakeudev.py
+    dst: /usr/lib/polyseat/fakeudev.py
+
+  # Staged rather than taken from host/, because the unit in the tree points at
+  # /usr/local/bin, which is right for the checkout install that writes it there
+  # and wrong for a package that owns /usr/bin.
+  - src: packaging/build/polyseatd.service
+    dst: /usr/lib/systemd/system/polyseatd.service
+    file_info:
+      mode: 0644
+
+  # The number in the name matters and is not cosmetic. At 70 it sorted before
+  # 70-uaccess.rules, which put the tag it had just stripped straight back on.
+  - src: host/72-polyseat-hide.rules
+    dst: /usr/lib/udev/rules.d/72-polyseat-hide.rules
+    file_info:
+      mode: 0644
+
+  # uhid at boot, owned by the package so that removing the package takes it
+  # away again. systemd reads /usr/lib/modules-load.d as well as /etc.
+  - src: host/polyseat-modules-load.conf
+    dst: /usr/lib/modules-load.d/polyseat.conf
+    file_info:
+      mode: 0644
+
+  - src: LICENSE
+    dst: /usr/share/doc/polyseat/LICENSE
+    file_info:
+      mode: 0644
+  - src: README.md
+    dst: /usr/share/doc/polyseat/README.md
+    file_info:
+      mode: 0644
+  - src: CHANGELOG.md
+    dst: /usr/share/doc/polyseat/CHANGELOG.md
+    file_info:
+      mode: 0644
+  - src: SECURITY.md
+    dst: /usr/share/doc/polyseat/SECURITY.md
+    file_info:
+      mode: 0644
+  - src: docs/architecture.md
+    dst: /usr/share/doc/polyseat/architecture.md
+    file_info:
+      mode: 0644
+  - src: docs/security.md
+    dst: /usr/share/doc/polyseat/security.md
+    file_info:
+      mode: 0644
+  - src: docs/installation.md
+    dst: /usr/share/doc/polyseat/installation.md
+    file_info:
+      mode: 0644
+  - src: docs/amd.md
+    dst: /usr/share/doc/polyseat/amd.md
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: packaging/scripts/postinstall.sh
+  postremove: packaging/scripts/postremove.sh
