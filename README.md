@@ -29,11 +29,15 @@ drifts.
   they do what is expected. If you are on one of those, you are the first:
   [docs/installation.md](docs/installation.md) says exactly what was verified
   and what was not.
-- **An NVIDIA or AMD card with a working driver.** NVIDIA also needs
-  `lib32-nvidia-utils`, or 32 bit games will not find the GPU. AMD needs only
-  `amdgpu` on the host. The installer refuses rather than warns if the driver
-  does not answer, because a seat without it comes up, streams in software and
-  looks perfectly healthy. The AMD path has **never been run on real hardware**:
+- **An NVIDIA or AMD card with a working driver.** NVIDIA also needs the 32 bit
+  half of that driver's userspace, or 32 bit games will not find the GPU — and
+  Steam's own client is one of them. The installer works out what that package
+  is called here rather than naming it, since all three distributions name it
+  differently, and tells you the command. AMD needs only `amdgpu` on the host.
+
+  The installer refuses rather than warns if the driver does not answer, because
+  a seat without it comes up, streams in software and looks perfectly healthy.
+  The AMD path has **never been run on real hardware**:
   [docs/amd.md](docs/amd.md) says what was verified and what was not.
 - **An ethernet port for the seats.** Each seat is a host of its own on the LAN,
   and Wi-Fi cannot do that: 802.11 carries one MAC address per station. The
@@ -45,7 +49,12 @@ drifts.
   ext4 the seats still work, the sharing simply stays off and every seat
   downloads its own games.
 
-The packages Polyseat itself needs, the installer works out and installs.
+The packages Polyseat itself needs, the installer works out and installs. Two
+of them are not in every distribution's own repositories — Incus is in Debian 13
+and not in 12, and `nvidia-container-toolkit` is in neither — so on those the
+installer says where they come from and stops, rather than adding a repository
+on your behalf. Which repositories a machine trusts is not an installer's
+decision.
 
 ## Getting started
 
@@ -284,8 +293,11 @@ that by hand, and the pad buzzes to say it took.
 Everything above was confirmed on real hardware, on one machine: an Arch host
 with an RTX 4080, most recently on 2026-07-31. The logs of each step live in
 [`spike/`](spike/). Whether any of it holds on a machine that is not that one is
-the open question this project would most like answered, and
-[docs/amd.md](docs/amd.md) is where it is most open.
+the open question this project would most like answered, and there are now three
+places it is open: an AMD card ([docs/amd.md](docs/amd.md)), a Debian host and a
+Fedora host. The last two are new in 0.9.0 and, like the first, are reasoned
+about and tested as far as they can be tested without the hardware — which is
+not the same as working.
 
 ## Day to day
 

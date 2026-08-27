@@ -5,6 +5,13 @@ single NVIDIA card in it and cannot be finished there. What follows is what was
 built, what was actually verified, and what is still open. Read the last
 section before trusting any of it.
 
+Since 0.9.0 there is a second untested axis, and the two are independent: the
+host may be Debian or Fedora rather than Arch, and neither of those has been run
+on real hardware either. Everything below is about the card and says nothing
+about the distribution. An AMD card on a Fedora host is two untested paths
+crossing, and worth reporting as such if you try it —
+[docs/installation.md](installation.md) covers the host half.
+
 ## What changes and what does not
 
 AMD is the simpler of the two, and most of the difference is subtraction.
@@ -14,8 +21,8 @@ seat as files injected past the package manager: `nvidia.runtime` mirrors the
 host's libraries in, and everything the driver's own package would have brought
 with it has to be put back by hand afterwards, which is the `glvnd` manifest,
 the GBM backend symlink and the Vulkan ICD. It also means the host and the
-seats share one driver version, so a `nvidia-utils` update on the host silently
-leaves the seats behind until they are provisioned again.
+seats share one driver version, so an update to the host's NVIDIA userspace
+silently leaves the seats behind until they are provisioned again.
 
 On AMD none of that applies. The kernel driver is `amdgpu` on the host, Mesa is
 an ordinary package inside the seat, and nothing crosses the boundary except
@@ -25,7 +32,7 @@ update cannot break an AMD seat.**
 
 | | NVIDIA | AMD |
 |---|---|---|
-| Host package | `nvidia-utils`, `nvidia-container-toolkit` | none, the kernel driver is enough |
+| Host package | the driver's userspace, plus `nvidia-container-toolkit` | none, the kernel driver is enough |
 | Into the container | injected by libnvidia-container | `mesa`, `vulkan-radeon` and their 32 bit halves, as packages |
 | Incus keys | `nvidia.runtime=true`, `nvidia.driver.capabilities=all` | `nvidia.runtime=false`, the `gpu` device alone |
 | Repair step | glvnd manifest, GBM symlink, Vulkan ICD | none |

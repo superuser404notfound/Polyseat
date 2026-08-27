@@ -486,8 +486,8 @@ Everything else the password reaches ends in a container. Somebody with it can
 already install an AppImage from any address they type, which is remote code
 execution and is accepted under its own heading above, on the reasoning that it
 lands inside an unprivileged container the threat model already treats as
-untrusted. This does not: `pacman` runs install scripts as root and the binary
-it places is what systemd starts as root.
+untrusted. This does not: every one of the three package managers runs install
+scripts as root, and the binary it places is what systemd starts as root.
 
 So the honest statement is that **the interface password stops being a key to
 the seats and becomes a key to the machine.** It is written here as its own
@@ -539,18 +539,35 @@ and is the only argument either handler takes: it says "yes, end their game",
 which is a thing somebody may legitimately mean about their own machine, and it
 still cannot name what to install.
 
-**Only where pacman owns the installation.** A checkout install has nothing for
-pacman to replace, and the interface says so rather than offering a button that
-would half work.
+**Only where a package owns the installation.** A checkout install has nothing
+for a package manager to replace, and the interface says so rather than offering
+a button that would half work. The same is true on a host whose package manager
+is none of the three Polyseat knows: the interface reports the newer version and
+offers no button, which is a different statement from "that release has no
+package" and now reads as one.
+
+**And only the file that belongs to this host.** A release carries three
+packages. `internal/hostpkg` works out which family this machine is and matches
+that asset alone, so the browser cannot steer the daemon towards a different
+one — which is the same property the rest of this section rests on, extended to
+one more axis.
 
 ### It can also prepare the machine and remove Polyseat, as root
 
 The same sentence as the section above, twice more, and both are on by default.
 
-**Preparing** runs `host/prepare.sh`, which installs packages with pacman,
-initialises Incus, writes `/etc/subuid` and puts an account in the `input` group.
-It is under `"web_update"` rather than a switch of its own because it is the
-same statement: the interface running pacman as root on this host. It is the
+**Preparing** runs `host/prepare.sh`, which installs packages with this host's
+package manager, initialises Incus, writes `/etc/subuid` and puts an account in
+the `input` group. It is under `"web_update"` rather than a switch of its own
+because it is the same statement: the interface running `pacman`, `apt` or `dnf`
+as root on this host.
+
+What it will not do is add a repository. Two prerequisites are not in every
+distribution's own repositories, and for those it prints where they come from
+and stops. That is a security boundary and not an omission: adding a repository
+changes which keys a machine will accept packages signed by, for every package
+on it and not only Polyseat's, and that decision belongs to the person who owns
+the machine. It is the
 smaller half of it, in fact. An update replaces the binary systemd starts; this
 installs the packages the daemon talks to, and every step of it checks before it
 changes and can be run again over itself.

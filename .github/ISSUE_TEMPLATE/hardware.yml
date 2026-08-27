@@ -1,5 +1,5 @@
 name: It ran, or did not, on this machine
-description: A report from hardware that is not the author's. Useful whether it worked or not, and most useful of all from an AMD card
+description: A report from a machine that is not the author's. Useful whether it worked or not, and most useful of all from an AMD card or a Debian or Fedora host
 labels: [hardware]
 
 body:
@@ -10,9 +10,31 @@ body:
         machine that is not that one tells this project something it cannot find
         out for itself.
 
-        **AMD especially.** That whole path was written and reasoned about
-        without a card to run it on, so the first person to try it is doing
-        something nobody has done, in either direction.
+        **Three paths especially**, none of which has ever been run:
+
+        - **An AMD card.** That whole path was written and reasoned about
+          without a card to run it on.
+        - **A Debian host** and **a Fedora host**, both new in 0.9.0. The host
+          scripts are tested against stubbed package managers, which proves the
+          right commands go out and not that they work.
+
+        They are independent, so a machine that is two of them at once is doubly
+        worth hearing about. In every case the first person to try it is doing
+        something nobody has done, and the report is useful in either
+        direction.
+
+  - type: dropdown
+    id: host
+    attributes:
+      label: What the host runs
+      description: The distribution of the machine itself, not of the seats. Seats are Arch containers on every host.
+      options:
+        - Arch, or something based on it
+        - Debian, Ubuntu, or something based on those
+        - Fedora, or something based on it
+        - Something else
+    validations:
+      required: true
 
   - type: dropdown
     id: outcome

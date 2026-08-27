@@ -36,6 +36,8 @@ import (
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
 	"github.com/superuser404notfound/Polyseat/internal/library"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
+
+	"github.com/superuser404notfound/Polyseat/internal/hostpkg"
 )
 
 // Write produces the report.
@@ -176,6 +178,19 @@ func (o *out) machine() {
 	o.section("Machine")
 
 	o.line("distribution", osRelease())
+
+	// Which family that name was placed in, which is not the same question and
+	// is the one that matters in a bug report. PRETTY_NAME says "Linux Mint
+	// 22"; this says whether anything here knew what to do with it. An "unknown"
+	// on a machine whose name is plainly Debian is the report saying where to
+	// look, and no amount of PRETTY_NAME would have said it.
+	family := hostpkg.Detect()
+	if family == hostpkg.Unknown {
+		o.line("package manager", "unknown, so preparing and updating are both refused here")
+	} else {
+		o.line("package manager", fmt.Sprintf("%s (%s)", family.Manager(), family))
+	}
+
 	o.line("kernel", strings.TrimSpace(readOr("/proc/sys/kernel/osrelease")))
 	o.line("cpu", firstField("/proc/cpuinfo", "model name"))
 	o.line("memory", firstField("/proc/meminfo", "MemTotal"))
