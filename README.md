@@ -283,6 +283,18 @@ is built for trusted local users on one machine, not for handing a seat to a
 stranger over the internet. And it does not hide a missing reflink filesystem
 behind full copies: the daemon says so plainly instead.
 
+**Anti-cheat is the ordinary Linux answer, not a worse one.** A seat is a
+container and not a virtual machine: it shares the host's kernel, so there is no
+hypervisor for anything to notice. What is left is the situation every Linux
+player already has, where a game with kernel-level anti-cheat does not run at
+all and one whose anti-cheat works under Proton should behave in a seat as it
+does on the desktop. Should, because no anti-cheat title has been run here.
+Nobody has been banned for playing in a seat as far as this project knows, and
+nobody has confirmed the opposite either, so treat it as untested rather than as
+safe. The one thing a seat does differently is that keyboard, mouse and pad are
+virtual devices, and that is true of any Sunshine and Moonlight setup rather
+than something Polyseat adds.
+
 ## Reading further
 
 Architecture and the reasoning behind every decision:
