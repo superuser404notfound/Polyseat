@@ -67,7 +67,11 @@ if command -v nfpm >/dev/null 2>&1; then
     echo "    Take that one off PATH for a build meant to be published."
 else
     echo "  installing nfpm $NFPM_VERSION"
-    GOFLAGS= go install "github.com/goreleaser/nfpm/v2/cmd/nfpm@$NFPM_VERSION"
+    # GOFLAGS emptied for this one command. The repository's own flags include
+    # -mod=readonly, which is right for building the daemon and refuses to
+    # install a tool from outside the module. Quoted rather than left bare so
+    # that it reads as an assignment and not as a missing argument.
+    GOFLAGS='' go install "github.com/goreleaser/nfpm/v2/cmd/nfpm@$NFPM_VERSION"
 
     # go install puts it in GOBIN, which is not always on PATH.
     PATH="$(go env GOPATH)/bin:$PATH"

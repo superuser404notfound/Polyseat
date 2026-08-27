@@ -29,10 +29,14 @@
 # DISTRO_FAMILY is which of the three package managers this machine has, and it
 # is the only thing the rest of host/ branches on. DISTRO_ID and DISTRO_NAME are
 # for saying so out loud; nothing decides anything on them.
+#
+# There is deliberately no version here. Nothing branches on one: which Debian
+# this is decides whether Incus is in the repositories, and that question is
+# answered by asking the repositories rather than by comparing release numbers,
+# which is both more direct and does not go stale.
 DISTRO_ID=""
 DISTRO_NAME=""
 DISTRO_FAMILY=""
-DISTRO_VERSION_ID=""
 
 # distro_detect reads /etc/os-release and works out which family this is.
 #
@@ -52,7 +56,7 @@ DISTRO_VERSION_ID=""
 # hold them against a file they would be read by nobody until somebody installed
 # Polyseat on one.
 distro_detect() {
-    local id="" like="" name="" version=""
+    local id="" like="" name=""
     local release=${POLYSEAT_OS_RELEASE:-/etc/os-release}
 
     if [[ -r $release ]]; then
@@ -61,15 +65,18 @@ distro_detect() {
         # and a script that sourced it directly would find its own $NAME quietly
         # replaced.
         eval "$(
+            # A data file rather than a script, so there is no source location
+            # to give shellcheck: os-release is shell syntax by convention and
+            # is read here for four values and nothing else.
+            # shellcheck source=/dev/null
             . "$release" 2>/dev/null
-            printf 'id=%q like=%q name=%q version=%q\n' \
-                "${ID:-}" "${ID_LIKE:-}" "${PRETTY_NAME:-${NAME:-}}" "${VERSION_ID:-}"
+            printf 'id=%q like=%q name=%q\n' \
+                "${ID:-}" "${ID_LIKE:-}" "${PRETTY_NAME:-${NAME:-}}"
         )"
     fi
 
     DISTRO_ID=$id
     DISTRO_NAME=$name
-    DISTRO_VERSION_ID=$version
 
     case " $id $like " in
         *" arch "*|*" archlinux "*|*" cachyos "*) DISTRO_FAMILY=arch ;;

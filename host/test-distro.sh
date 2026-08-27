@@ -339,6 +339,9 @@ step "An unknown machine"
 # nothing and everything refuses rather than guessing.
 : > "$WORK/os-release"
 saved_path=$PATH
+# Deliberately clobbered, which is the whole point of this section: with no
+# package manager reachable, the fallback in distro_detect has nothing to find.
+# shellcheck disable=SC2123
 PATH=$WORK/nothing
 
 if POLYSEAT_OS_RELEASE="$WORK/os-release" distro_detect; then
