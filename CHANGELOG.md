@@ -10,6 +10,110 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.9.0
+
+**Debian and Fedora hosts.** Asked for on Reddit, where the Arch requirement was
+the first thing raised every time this was posted. The host scripts now work out
+which of the three package managers this machine has and speak that one, and the
+release carries a `.deb` and an `.rpm` beside the Arch package.
+
+**Seats are not touched by this**, and that is the whole reason it was a small
+job rather than a rewrite. A seat is an Incus container built from
+`archlinux/current` on every host, so every `pacman` call in the daemon runs
+inside a container and means the same thing whatever the machine under it runs.
+An existing machine updates with a restart and no seat has to be provisioned
+again.
+
+**Arch is still the only one that has been run on real hardware.** Debian and
+Fedora are covered by `host/test-distro.sh`, which replaces every package
+manager with a script that records how it was called; that proves the right
+commands are issued with the right arguments and not that the resulting machine
+works. Nobody has installed the `.deb` on a Debian box or the `.rpm` on a Fedora
+one. This is the same shape of gap `docs/amd.md` describes, and it is written
+down here rather than discovered by whoever goes first.
+
+- **`host/distro.sh` is the table, and it is the only place that branches.**
+  Everything in `host/` that said `pacman` asks a function instead, so a fourth
+  distribution is a row rather than an edit to five scripts. `ID` in
+  `/etc/os-release` decides, then `ID_LIKE`, which places CachyOS, EndeavourOS,
+  Mint and Rocky without naming any of them.
+
+- **A machine that is none of the three is refused before anything changes.**
+  There was no check at all until now: a Debian host got as far as the first
+  `pacman` call and died with `pacman: command not found` in the middle of a
+  step, which reads like Polyseat is broken rather than like this machine is not
+  one it knows. It now says what it found and what is supported, and stops.
+
+- **Refreshing before installing is per distribution, not per taste.** Arch
+  still does not, because `-Sy` and then an install without an upgrade is the
+  partial upgrade Arch warns about. Debian does, because it has no such hazard
+  and it has the opposite one: an install against lists fetched months ago fails
+  on a 404 for a version that has since been superseded. `dnf` refreshes itself.
+
+- **Removing leaves dependencies alone on all three, and one of them had to be
+  told.** `pacman -R` rather than `-Rs` and `apt-get remove` both do it by
+  default. `dnf` ships `clean_requirements_on_remove=True`, so a plain
+  `dnf remove polyseat` behaves like `pacman -Rs` and would take Incus, and
+  every container on the machine with it, off a host where Polyseat pulled it
+  in. That is asked for outright now, and the test that holds it down is the
+  reason this was noticed before shipping rather than after.
+
+- **The NVIDIA driver is offered on Arch and described elsewhere.** On Arch the
+  module package name follows from the kernel package, so `prepare.sh` derives
+  it and offers to install it, exactly as before. Debian builds the module with
+  DKMS and Fedora with akmods, from packages whose names carry a driver branch
+  that moves, and guessing one wrong leaves a machine with no graphics at all.
+  Those two are told what to type. A script that refuses to install a graphics
+  driver it cannot name with certainty is behaving correctly.
+
+- **No NVIDIA package name is written into this project.** Both places that name
+  one work it out on the machine instead, which is shorter than a table and
+  cannot go stale. The 32 bit hint reads which package owns the 64 bit
+  `libnvidia-encode.so.1` and puts this distribution's suffix on it — so it
+  lands on `libnvidia-encode1:i386`, `xorg-x11-drv-nvidia-libs.i686` or
+  `lib32-nvidia-utils` without being told any of them, and it cannot name the
+  wrong driver branch because it is reading the branch already in use. The
+  driver hint has nothing installed to read, so it asks the repositories which
+  of the plausible names they carry and prints one that will resolve.
+
+- **A repository that is not enabled is now said out loud.** When that search
+  comes back with nothing, on both Debian and Fedora it means the NVIDIA
+  packages are in a repository that is off by default, so the machine is told
+  that non-free or RPM Fusion is not set up rather than being handed a package
+  name that would not resolve. That is the more useful of the two answers and it
+  was not available while the names were hard coded.
+
+- **Whether the 32 bit driver userspace is present is asked of `ldconfig`**
+  rather than of the package manager. What matters is whether the library is
+  there for `nvidia-container-toolkit` to mirror into a seat, not which package
+  put it there, and the three distributions name that package three ways while
+  the library has one name everywhere.
+
+- **The two prerequisites that need a repository the distribution does not ship
+  are named before anything is installed.** Incus is in Debian 13 and not in 12;
+  `nvidia-container-toolkit` is in neither. `polyseat-prepare` says where each
+  comes from and stops, rather than adding a repository on somebody's behalf.
+  Which repositories a machine trusts is not an installer's decision.
+
+- **The `.deb` and the `.rpm` come from one description**,
+  `packaging/nfpm.yaml`, built by `packaging/build-packages.sh` and attached to
+  every release by a second job in the packaging workflow. The PKGBUILD is not
+  generated from it and will not be: one builds from source on the machine
+  installing it and the other describes a binary already built. What has to
+  agree is the file list.
+
+- **The update button offers the file that belongs to this host.** The daemon
+  works out its own family in `internal/hostpkg`, looks for that one asset on
+  the release, and installs it with that package manager. A host whose package
+  manager is none of the three is told there is a newer version and is not
+  offered a button that could not work, which is a different sentence from "that
+  release has no package" and now says so.
+
+- **`host/test-distro.sh` is new and CI runs it.** Eighty checks against stubbed
+  package managers, needing no root, no network and nothing installed. It is
+  what makes the two rows nobody here runs into something other than hopeful
+  prose, and it is where the `dnf` dependency default was caught.
+
 ## 0.8.1
 
 **A seat's Updates row said things that had stopped being true.** Two ways into

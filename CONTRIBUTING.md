@@ -32,8 +32,8 @@ under `/usr/local`. The daemon looks in `/usr/local` and in `/usr` and prefers
 the local one, the way a shell does, so a checkout install takes precedence over
 a package on the same machine. Run it again after any change; it undoes nothing.
 
-**Testing a particular release rather than `main`** is `--branch v0.8.1` on the
-clone, or `git checkout v0.8.1` in one you have. `main` is where the next
+**Testing a particular release rather than `main`** is `--branch v0.9.0` on the
+clone, or `git checkout v0.9.0` in one you have. `main` is where the next
 version is being written, so a machine other people stream from should be on a
 tag. That is also what a hardware report should say it was running.
 
