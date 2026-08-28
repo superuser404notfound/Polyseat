@@ -50,9 +50,9 @@ const maxGames = 60
 // steamScan reads Steam's manifests inside the seat.
 //
 // Done in the seat with a script rather than from the host, because only one of
-// the two library directories is visible from outside: a seat that takes part
-// in the shared library has that mounted, and its private one is inside the
-// container either way.
+// the library directories is visible from outside: a seat that takes part in
+// the shared library has that mounted, and its private one, along with any
+// library folder the player added, is inside the container either way.
 //
 // Regular expressions on a format with a real parser elsewhere in this project
 // is a deliberate trade. The alternative is copying every manifest out of the
@@ -66,9 +66,39 @@ import glob, json, os, re
 home = os.environ.get("POLYSEAT_HOME", "/home/player")
 
 steam = home + "/.local/share/Steam"
-dirs = [steam + "/steamapps", home + "/games/steamapps"]
 art = steam + "/appcache/librarycache"
 out = {}
+
+
+def library_dirs():
+    """Every steamapps directory this seat has games in.
+
+    The two that are always there, plus whatever libraryfolders.vdf names.
+    A second drive is a second library folder, and nothing outside that file
+    says where it is, so a game installed on one was simply absent from
+    Moonlight with nothing on screen to say why.
+
+    The file is read from the two known directories rather than from the ones
+    it names, because Steam writes the whole list into each of them.
+    """
+    dirs = [steam + "/steamapps", home + "/games/steamapps"]
+
+    for base in list(dirs):
+        try:
+            with open(base + "/libraryfolders.vdf", encoding="utf-8",
+                      errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+
+        # The file names each library's root; the manifests are one level in.
+        for path in re.findall(r'"path"\s+"([^"]*)"', text):
+            entry = path.rstrip("/") + "/steamapps"
+
+            if entry not in dirs:
+                dirs.append(entry)
+
+    return dirs
 
 
 def signed_in():
@@ -98,7 +128,7 @@ if not signed_in():
     print("[]")
     raise SystemExit(0)
 
-for d in dirs:
+for d in library_dirs():
     for path in sorted(glob.glob(d + "/appmanifest_*.acf")):
         try:
             text = open(path, encoding="utf-8", errors="replace").read()
@@ -111,9 +141,27 @@ for d in dirs:
 
         appid, name, state = field("appid"), field("name"), field("StateFlags")
 
-        # 4 is fully installed. Anything else is mid download or mid update,
-        # and offering it would be offering something that cannot start.
-        if not appid or not name or state != "4" or appid in out:
+        if not appid or not name or appid in out:
+            continue
+
+        try:
+            flags = int(state)
+        except ValueError:
+            flags = 0
+
+        # StateFlags is a bitfield rather than a value, which comparing the
+        # whole of it against 4 got wrong. Fully installed is 4 and stays 4
+        # only while nothing else is true of the title: running adds 64, an
+        # update waiting adds 2, and either one took a perfectly playable game
+        # out of Moonlight's list until Steam happened to clear the bit again.
+        #
+        # So the installed bit has to be set, and none of the three that say
+        # the files are not really there. An update waiting is deliberately
+        # not one of those: picking the game starts Steam, which updates it
+        # and then runs it, and hiding it would be the worse of the two.
+        uninstalled, missing, corrupt = 1, 32, 128
+
+        if not flags & 4 or flags & (uninstalled | missing | corrupt):
             continue
 
         # Steam keeps a title's cover in two different places depending on

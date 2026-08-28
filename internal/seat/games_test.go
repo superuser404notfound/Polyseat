@@ -188,6 +188,122 @@ func TestScanSkipsWhatIsNotFullyInstalled(t *testing.T) {
 	}
 }
 
+// The reported case, and the one that reads as a limit on how many apps
+// Moonlight will show: an installed game quietly leaving the list. StateFlags
+// is a bitfield, so a game that is fully installed and also something else
+// does not equal 4, and comparing the whole field against 4 hid it.
+func TestScanOffersAnInstalledGameWhateverElseIsTrueOfIt(t *testing.T) {
+	states := map[string]string{
+		"fully installed":            "4",
+		"installed and running":      "68",   // 4 | 64 AppRunning
+		"installed, update waiting":  "6",    // 4 | 2 UpdateRequired
+		"installed, update started":  "1028", // 4 | 1024 UpdateStarted
+		"installed and validating":   "131076",
+		"installed, files preloaded": "262148",
+	}
+
+	for what, state := range states {
+		home := t.TempDir()
+		signIn(t, home)
+		manifest(t, filepath.Join(home, ".local/share/Steam/steamapps"), "381210", "Dead by Daylight", state)
+
+		found := runScan(t, home)
+		if len(found) != 1 {
+			t.Errorf("%s (StateFlags %s): offered %v, want the game", what, state, found)
+		}
+	}
+}
+
+// The other half of the same field. A title whose files are gone or broken has
+// to stay out, however the installed bit reads, because picking it in Moonlight
+// starts nothing and says nothing.
+func TestScanSkipsWhatHasNoUsableFiles(t *testing.T) {
+	states := map[string]string{
+		"uninstalled":    "5",   // 4 | 1 Uninstalled
+		"files missing":  "36",  // 4 | 32 FilesMissing
+		"files corrupt":  "132", // 4 | 128 FilesCorrupt
+		"nothing at all": "",
+		"not a number":   "later",
+	}
+
+	for what, state := range states {
+		home := t.TempDir()
+		signIn(t, home)
+		manifest(t, filepath.Join(home, ".local/share/Steam/steamapps"), "42", "Broken", state)
+
+		if found := runScan(t, home); len(found) != 0 {
+			t.Errorf("%s (StateFlags %q): offered %v, want nothing", what, state, found)
+		}
+	}
+}
+
+// libraryFolders writes the index Steam keeps of where its libraries are.
+func libraryFolders(t *testing.T, dir string, roots ...string) {
+	t.Helper()
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	body := "\"libraryfolders\"\n{\n"
+	for i, root := range roots {
+		body += fmt.Sprintf("\t\"%d\"\n\t{\n\t\t\"path\"\t\t\"%s\"\n\t}\n", i, root)
+	}
+
+	body += "}\n"
+
+	if err := os.WriteFile(filepath.Join(dir, "libraryfolders.vdf"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A second drive is a second library folder, and the only thing that says
+// where it is is libraryfolders.vdf. Without reading it, everything the player
+// installed anywhere but the default was missing from Moonlight with nothing
+// on screen to say why.
+func TestScanReadsLibraryFoldersOnOtherDrives(t *testing.T) {
+	home := t.TempDir()
+	signIn(t, home)
+
+	games := filepath.Join(home, ".local/share/Steam/steamapps")
+	elsewhere := filepath.Join(t.TempDir(), "games")
+
+	manifest(t, games, "1", "On The Default Library", "4")
+	manifest(t, filepath.Join(elsewhere, "steamapps"), "2", "On The Other Drive", "4")
+	libraryFolders(t, games, home+"/.local/share/Steam", elsewhere)
+
+	found := runScan(t, home)
+	if len(found) != 2 {
+		t.Fatalf("offered %d games, want both libraries: %v", len(found), found)
+	}
+
+	names := map[string]bool{}
+	for _, f := range found {
+		names[f["name"]] = true
+	}
+
+	if !names["On The Other Drive"] {
+		t.Errorf("offered %v, the game on the second drive is missing", found)
+	}
+}
+
+// A trailing slash on a library root must not make a path nothing matches, and
+// the same library named twice must not turn one game into two.
+func TestScanTakesLibraryFoldersAsWritten(t *testing.T) {
+	home := t.TempDir()
+	signIn(t, home)
+
+	games := filepath.Join(home, ".local/share/Steam/steamapps")
+	manifest(t, games, "7", "Only Once", "4")
+	libraryFolders(t, games, home+"/.local/share/Steam/", home+"/.local/share/Steam",
+		filepath.Join(home, "nothing/here"))
+
+	found := runScan(t, home)
+	if len(found) != 1 {
+		t.Errorf("offered %d entries, want 1: %v", len(found), found)
+	}
+}
+
 // Both libraries are read, and a title in both is one entry rather than two.
 func TestScanReadsBothLibrariesWithoutDuplicating(t *testing.T) {
 	home := t.TempDir()
