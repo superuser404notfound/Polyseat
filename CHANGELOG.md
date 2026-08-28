@@ -10,6 +10,58 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.9.1
+
+**Installed games went missing from Moonlight.** Reported against 0.9.0 from a
+running machine: five of six Steam titles in the list, and the sixth an
+ordinary game that had been playable an hour before. It looks exactly like a
+limit on how many apps a client will show, which is what it was first taken
+for, and it is not one. There is a limit, at sixty, and it says so in the log
+when it bites.
+
+**Seats are not touched by this.** Nothing here changes how one is built, so an
+existing machine updates with a restart and no seat has to be provisioned
+again. The list is rebuilt the next time nobody is streaming, which is the
+soonest Sunshine can be told to reread it without ending somebody's session.
+
+- **`StateFlags` is a bitfield and the scan compared the whole of it against
+  4.** Fully installed is bit 4, and a title carries more than that bit the
+  moment anything else is also true of it: 6 with an update waiting, 68 while
+  it is running, 1028 while an update is starting. Every one of those is a game
+  whose files are on the disk and which Steam will start, and every one of them
+  was dropped without a word. The installed bit now has to be set, and none of
+  the three that say the files are not really there: 1 uninstalled, 32 files
+  missing, 128 files corrupt. An update waiting is deliberately not among them,
+  because picking the game starts Steam, which updates it and then runs it.
+
+- **A game on a second drive was never looked for.** The scan read the two
+  directories it knew about, and where Steam keeps its other libraries is
+  written in `libraryfolders.vdf` and nowhere else. That file is now read, from
+  the two known directories rather than from the ones it names, because Steam
+  writes the whole list into each of them. Nothing changes for a seat with one
+  library, which is every seat that has only ever used the shared one.
+
+- **Both are tested by running the scan rather than by reading it.** It is
+  Python inside a Go string, so checking it for the words it contains is not a
+  test, and neither of these faults is one line further out than the comparison
+  that caused it.
+
+- **The hardware report says which package manager the host has.** `PRETTY_NAME`
+  says "Linux Mint 22"; this says whether anything in `host/` knew what to do
+  with it, which is the question a report from a machine that is not the
+  author's is being asked. An "unknown" on a machine plainly based on Debian is
+  the report saying where to look.
+
+- **The hardware issue template asks what the host runs**, and names Debian and
+  Fedora beside AMD as paths nobody has run. Three independent gaps rather than
+  one, and a machine that is two of them at once is doubly worth hearing about.
+
+- **`host/distro.sh` no longer carries a version number it never read.**
+  Nothing branches on one: whether Incus is in the repositories is answered by
+  asking the repositories, which does not go stale the way a table of release
+  numbers would. What shellcheck asks for is now said rather than suppressed
+  wholesale.
+
 ## 0.9.0
 
 **Debian and Fedora hosts.** Asked for on Reddit, where the Arch requirement was
