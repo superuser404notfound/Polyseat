@@ -4,6 +4,7 @@
 #   polyseat-launcher show     open it if it is not already open
 #   polyseat-launcher hide     close it
 #   polyseat-launcher toggle   the other one
+#   polyseat-launcher refresh  re-read the menu, if it is open
 #
 # The launcher is opened for you when the session comes up, so that picking
 # "Desktop" in Moonlight lands on something you can choose from rather than on
@@ -24,6 +25,36 @@ if [ -z "$WAYLAND_DISPLAY" ]; then
     sock=$(ls -t "$XDG_RUNTIME_DIR"/wayland-[0-9]* 2>/dev/null | grep -v '\.lock$' | head -1)
     [ -n "$sock" ] && WAYLAND_DISPLAY="${sock##*/}" && export WAYLAND_DISPLAY
 fi
+
+# Where the desktop entries of the player's own flatpaks are, for the same
+# reason and with a worse symptom.
+#
+# polyseat-sway.service sets this for the session, and not every caller comes
+# from the session: a prep command inherits Sunshine's unit, which does not set
+# it, and a refresh from the daemon arrives through `incus exec` with no session
+# environment at all. In both, fuzzel falls back to the two system directories
+# and every flatpak the player installed is missing from the menu, while
+# `flatpak run` starts the same application from a terminal without complaint.
+# Nothing about that says the launcher is the reason.
+#
+# Prepended one at a time rather than assigned, so that the session's own value
+# is kept where there is one and this stays the same list either way.
+for d in "$HOME/.local/share/flatpak/exports/share" /var/lib/flatpak/exports/share; do
+    case ":$XDG_DATA_DIRS:" in
+        *":$d:"*) ;;
+        *) XDG_DATA_DIRS="$d${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}" ;;
+    esac
+done
+
+# The default the specification gives when the variable is unset, which setting
+# it at all is exactly how you lose. Without this a launcher opened from a prep
+# command would list the flatpaks and nothing else.
+case ":$XDG_DATA_DIRS:" in
+    *":/usr/share:"*) ;;
+    *) XDG_DATA_DIRS="$XDG_DATA_DIRS:/usr/local/share:/usr/share" ;;
+esac
+
+export XDG_DATA_DIRS
 
 running() { pgrep -x fuzzel >/dev/null 2>&1; }
 
@@ -52,11 +83,39 @@ show() {
 
 hide() {
     pkill -x fuzzel >/dev/null 2>&1
+
+    # pkill returns before the process is gone, and show does nothing while one
+    # is still running. Without the wait a refresh is a race that closes the
+    # launcher and leaves nothing in its place.
+    i=0
+    while running && [ "$i" -lt 50 ]; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+
     return 0
+}
+
+# Re-read the menu after something was installed or removed.
+#
+# fuzzel builds its list once, when it starts. The launcher opened when the
+# session came up is left sitting on the overlay layer for as long as nobody
+# dismisses it, so a flatpak installed afterwards is missing from a menu that is
+# already on screen, and show does nothing because one is running. The daemon
+# calls this after an install for the same reason it rewrites Moonlight's list.
+#
+# Only when one is open. Putting a launcher over somebody's game because a
+# download finished would be worse than the menu being one entry out of date.
+refresh() {
+    running || return 0
+
+    hide
+    show
 }
 
 case "$1" in
     hide) hide ;;
+    refresh) refresh ;;
     toggle)
         if running; then hide; else show; fi
         ;;

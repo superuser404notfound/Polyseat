@@ -344,6 +344,11 @@ func (m *Manager) InstallSoftware(name, id string) error {
 		// that changed.
 		m.refreshAppsWhenNobodyIsStreaming(ctx, name)
 
+		// And in the seat's own launcher, which is the other menu and was for a
+		// long time the one nobody remembered. A seat has two, they are built by
+		// different things, and only one of them was being kept up to date.
+		m.refreshLauncher(ctx, name)
+
 		return nil
 	})
 }
@@ -382,9 +387,26 @@ func (m *Manager) RemoveSoftware(name, id string) error {
 		}
 
 		m.refreshAppsWhenNobodyIsStreaming(ctx, name)
+		m.refreshLauncher(ctx, name)
 
 		return nil
 	})
+}
+
+// refreshLauncher tells the seat's own menu that what is installed has changed.
+//
+// fuzzel reads the desktop entries when it starts and the session leaves one
+// open, so without this an application installed from the web interface is
+// missing from the launcher until somebody happens to dismiss it and open it
+// again. Moonlight's list was already rebuilt here; this is the same thing for
+// the menu on the other side of the stream.
+//
+// Best effort and never fatal: the software really was installed either way,
+// and a seat that is not running has no launcher to refresh. It is quiet for
+// the same reason, because there is nothing a person could do about it.
+func (m *Manager) refreshLauncher(ctx context.Context, name string) {
+	_, _, _ = m.client.Try(ctx, name, m.playerEnv(
+		"/usr/local/bin/polyseat-launcher", "refresh")...)
 }
 
 // layerForFlatpaks makes sure the framerate cap reaches sandboxed applications.
