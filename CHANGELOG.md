@@ -10,6 +10,52 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.11.0
+
+**A seat has two menus and only one of them was being kept honest.** Reported
+against 0.10.0 from a running machine: Discord installed from the web interface,
+and then not in the launcher inside the seat. Two unrelated causes that look
+identical from a couch, and neither of them says the launcher is the reason.
+
+**Seats have to be built again.** The recipe is at generation 35, so every seat
+is marked stale and wants provisioning. A machine that has not yet rebuilt for
+0.10.0 pays for both in the same pass.
+
+- **The launcher could not see any flatpak the player installed.** Their desktop
+  entries live under `.local/share/flatpak/exports/share`, which is in
+  `XDG_DATA_DIRS` in `polyseat-sway.service` and nowhere else. The launcher is
+  also opened by a Sunshine prep command, which is what picking Desktop in
+  Moonlight does, and that one inherits Sunshine's unit and falls back to the two
+  system directories. So the menu listed what the distribution had installed and
+  nothing else, while `flatpak run` started the same application from a terminal
+  without complaint. `polyseat-launcher` sets the variable itself now, the way it
+  already sets `XDG_RUNTIME_DIR` and `WAYLAND_DISPLAY`: its callers do not agree
+  about the environment, and one of them arrives with no session environment at
+  all. The `env` block in `apps.json` fixed the `PATH` half of this same problem
+  and never the other half.
+
+- **What was installed afterwards was missing from a menu already on screen.**
+  fuzzel reads the desktop entries once, when it starts, and the session opens
+  one and leaves it sitting on the overlay layer. `show` does nothing while one
+  is running, so a flatpak installed after that stayed invisible until somebody
+  happened to dismiss the launcher and open it again. There is a `refresh` verb
+  now, and the daemon calls it after an install or a removal, beside the call
+  that rebuilds Moonlight's list. Moonlight's list was already being kept up to
+  date; this is the same thing for the menu on the other side of the stream.
+
+- **refresh restarts the launcher only if one is open.** An install finishing
+  while somebody is playing must not put a menu over their game, and a menu one
+  entry out of date is the smaller of the two failures. `hide` waits for the
+  process to actually be gone as well, because `pkill` returns before that and
+  `show` does nothing while one still runs, which made the restart a race that
+  closed the launcher and put nothing in its place.
+
+- **Three tests, and all three fail without the change.** The environment fuzzel
+  really gets when Sunshine opened it, rather than the script containing the
+  right word, and both halves of what `refresh` has to do. The stubs for it
+  answer from state the script can change, so a `refresh` that did nothing at all
+  cannot pass them.
+
 ## 0.10.0
 
 **Flatpak in a seat has to be paid for differently now.** Upstream removed the
