@@ -385,11 +385,10 @@ another context's memory. It has one less enumeration channel than NVIDIA,
 since there is no `nvidia-smi` inside a seat, but that is a smaller window on
 the same room rather than a different room.
 
-### bwrap is setuid inside a seat
+### Seats run with `security.nesting=true`
 
-Seats carry `bubblewrap-suid` rather than the plain package, which means one
-setuid root binary in each container. It is there so that flatpak works, and the
-alternative was worse.
+Every seat carries `security.nesting=true`. It is there so that flatpak works,
+and since generation 34 it is the only remaining way to get that.
 
 The measurement, because the shape of the problem is not obvious. An
 unprivileged container refuses to mount a fresh `/proc` inside a nested
@@ -401,15 +400,32 @@ steam pressure-vessel, no --unshare-pid    works
 flatpak, --unshare-pid                     bwrap: Can't mount proc on /newroot/proc
 ```
 
-So Proton was never affected and never will be by this; only flatpak was. The
-obvious fix is `security.nesting=true` on the container, which relaxes what the
-whole container may do for the sake of one program. This is the narrower one:
-the container is unprivileged, so its root is host uid 1000000, and a setuid
-binary in it grants that and nothing more. Someone who gained container root
-through bwrap would hold an ordinary unprivileged account on the host, which is
-the same position a compromised game in the seat already holds.
+So Proton was never affected and never will be by this; only flatpak was.
 
-`security.nesting` stays `false`, and is still set explicitly on every seat.
+Seats up to generation 33 answered this with `bubblewrap-suid` instead, one
+setuid root binary per container, and kept nesting off. The reasoning was that
+the container is unprivileged, so its root is host uid 1000000, and a setuid
+binary in it grants that and nothing more, whereas nesting relaxes what the
+whole container may do for the sake of one program. That was the narrower
+answer, and it is no longer available: bubblewrap 0.11.2 deprecated the setuid
+build after CVE-2026-41163, 0.12.0 removed it outright on 2026-08-26, and Arch
+dropped the `bubblewrap-suid` package the same day. Nothing packages it now, and
+nothing upstream will again.
+
+What nesting widens, plainly: the seat may create nested user namespaces and
+mounts that it could not before, and Incus loosens the container's AppArmor
+profile to allow that. It does not make the container privileged, and it does
+not change the uid map, so the ceiling on anything that escapes a seat is still
+host uid 1000000, an ordinary unprivileged account. It is a wider door into the
+same room, not a door into a different one.
+
+The alternative would have been to build a setuid bwrap in every seat from a
+version upstream has abandoned and that carries an unfixed advisory. Between one
+key on the container and an unmaintained setuid binary in each of them, the key
+is the smaller thing to own.
+
+`security.nesting` is set explicitly on every seat, as it was when it was
+`false`.
 
 ### A seat can install its own software
 
@@ -651,8 +667,9 @@ things keep that from being a hole:
 
 `seat1` used to carry `security.nesting=true` while `seat2` did not, for no
 better reason than the order the two were built in. The daemon now sets the key
-explicitly to `false` on every seat rather than leaving it implicit, and all
-seats report the same configuration.
+explicitly on every seat rather than leaving it implicit, and all seats report
+the same configuration. What the value is has changed once since, from `false`
+to `true`; that it is stated rather than inherited has not.
 
 That is the general shape of the fix rather than a one-off: provisioning is a
 recipe that converges, and a generation number marks seats built by an older

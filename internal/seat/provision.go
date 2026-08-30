@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 33
+const Generation = 34
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -470,30 +470,21 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		return err
 	}
 
-	// Flatpak needs the setuid bubblewrap in a container, and pacman will not
-	// swap one for the other on its own.
+	// Seats up to generation 33 carried bubblewrap-suid, and that package no
+	// longer exists. bubblewrap 0.12.0 removed the setuid build outright, Arch
+	// dropped the package on the same day, and a container that syncs a
+	// database from after 2026-08-26 stops the whole transaction below with
+	//     error: target not found: bubblewrap-suid
+	// which means not one session package gets installed. security.nesting on
+	// the container is what replaces it; stepGPU says why and what it costs.
 	//
-	// The measurement behind this, because it is not guessable. A seat is an
-	// unprivileged container, and mounting a fresh /proc inside a nested
-	// namespace is refused there. bwrap only needs that when it also unshares
-	// the pid namespace, which is precisely what splits the two cases: Steam's
-	// pressure-vessel does not, so Proton was never affected, while flatpak
-	// does, so every flatpak application died with
-	//     bwrap: Can't mount proc on /newroot/proc: Operation not permitted
-	//
-	// The obvious fix is security.nesting on the container. This is the smaller
-	// one. A setuid binary inside an unprivileged container gains the container's
-	// root, which is an ordinary unprivileged uid on the host, whereas nesting
-	// relaxes what the whole container may do for the sake of one program.
-	//
-	// bubblewrap-suid provides bubblewrap, so naming it in the transaction below
-	// satisfies flatpak's dependency by itself. Only an already installed plain
-	// bubblewrap is in the way, and -Rdd is what gets it out without pacman
-	// refusing on behalf of the dependency that is about to be satisfied again
-	// in the same run.
-	_, err = p.sh(ctx, `if pacman -Qq bubblewrap >/dev/null 2>&1; then `+
-		`pacman -Rdd --noconfirm bubblewrap && `+
-		`echo "removed the plain bubblewrap, the setuid one follows"; fi; exit 0`)
+	// A seat built earlier still has the setuid 0.11.2 installed, orphaned now
+	// that nothing carries it, and it conflicts with the plain package. pacman
+	// will not swap one for the other on its own, so -Rdd takes the old one out
+	// and the transaction below puts the plain one back in the same run.
+	_, err = p.sh(ctx, `if pacman -Qq bubblewrap-suid >/dev/null 2>&1; then `+
+		`pacman -Rdd --noconfirm bubblewrap-suid && `+
+		`echo "removed the setuid bubblewrap, the plain one follows"; fi; exit 0`)
 	if err != nil {
 		return err
 	}
@@ -520,7 +511,7 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		// design, and `flatpak --user` needs none, so this is the one route
 		// that does not either widen what the seat may do or route every
 		// install through the host administrator.
-		"flatpak", "bubblewrap-suid", "xdg-desktop-portal-wlr",
+		"flatpak", "bubblewrap", "xdg-desktop-portal-wlr",
 		// The other way software arrives, and the one some things have: an
 		// emulator is quite often published as an AppImage and as nothing else.
 		//
@@ -1460,11 +1451,25 @@ func (p *Provisioner) stepGPU(ctx context.Context) error {
 		// two race each other.
 		"boot.autostart": "false",
 
-		// Set explicitly rather than left at the default, because leaving it
-		// implicit is exactly how seat1 and seat2 came to differ. Nothing in a
-		// seat needs nested containers; Steam's own sandbox uses user
-		// namespaces, which work without this.
-		"security.nesting": "false",
+		// On for flatpak, and for nothing else. A seat is an unprivileged
+		// container, and mounting a fresh /proc inside a nested namespace is
+		// refused there. bwrap only needs that when it also unshares the pid
+		// namespace, which is precisely what splits the two cases: Steam's
+		// pressure-vessel does not, so Proton was never affected, while flatpak
+		// does, so every flatpak application died with
+		//     bwrap: Can't mount proc on /newroot/proc: Operation not permitted
+		//
+		// This used to be false and a setuid bubblewrap carried flatpak
+		// instead, on the reasoning that a setuid binary in an unprivileged
+		// container grants that container's root, an ordinary unprivileged uid
+		// on the host, whereas nesting relaxes what the whole container may do.
+		// That option is gone: bubblewrap 0.12.0 removed the setuid build and
+		// Arch dropped bubblewrap-suid with it. What is left is the wider knob,
+		// and docs/security.md says what it widens.
+		//
+		// Set explicitly rather than left at the default either way, because
+		// leaving it implicit is exactly how seat1 and seat2 came to differ.
+		"security.nesting": "true",
 	}
 
 	// The vendor's own keys on top. On NVIDIA that switches the driver
@@ -1516,12 +1521,12 @@ func (p *Provisioner) stepGPU(ctx context.Context) error {
 		return err
 	}
 
-	// nvidia.runtime only takes effect on a fresh start, and a device that was
-	// just added is not in a running container either, so a change here costs
-	// a restart. Nothing changed means nothing to restart, which is what keeps
-	// re-provisioning a healthy seat from interrupting it.
+	// nvidia.runtime and security.nesting only take effect on a fresh start,
+	// and a device that was just added is not in a running container either, so
+	// a change here costs a restart. Nothing changed means nothing to restart,
+	// which is what keeps re-provisioning a healthy seat from interrupting it.
 	if changed {
-		p.Log("restarting the container so the driver injection takes effect")
+		p.Log("restarting the container so the new configuration takes effect")
 
 		// Ninety seconds rather than thirty: a seat with a session in it takes
 		// longer to shut down than an empty container does.
