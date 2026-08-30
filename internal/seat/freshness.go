@@ -34,6 +34,17 @@ type Freshness struct {
 	Packages     int      `json:"packages"`
 	PackageNames []string `json:"package_names,omitempty"`
 
+	// Flatpaks is the same for what the player installed from Flathub, and it
+	// is counted separately because it is updated by something else: pacman
+	// does not know these exist, and until this was here nothing did. A seat
+	// could report itself up to date with every application in it months old.
+	//
+	// Applications only, not runtimes. A runtime update is a real download and
+	// gets made by the update either way, but "3 flatpaks" meaning Discord and
+	// two things called org.freedesktop.Platform is a count nobody can act on.
+	Flatpaks     int      `json:"flatpaks"`
+	FlatpakNames []string `json:"flatpak_names,omitempty"`
+
 	// Checked is when the seat was last asked. Zero until it has been, which
 	// the interface says rather than drawing "up to date" for a seat nobody has
 	// looked at: those are different claims and only one of them is earned.
@@ -47,7 +58,7 @@ type Freshness struct {
 
 // Behind reports whether there is anything worth offering to install.
 func (f Freshness) Behind() bool {
-	return f.SunshineBehind() || f.Packages > 0
+	return f.SunshineBehind() || f.Packages > 0 || f.Flatpaks > 0
 }
 
 // SunshineBehind is the Sunshine half on its own.
@@ -386,7 +397,79 @@ func (m *Manager) Freshness(ctx context.Context, name string) Freshness {
 		f.Packages, f.PackageNames = pendingUpdates(out)
 	}
 
+	count, names, problem := m.pendingFlatpaks(ctx, name)
+	f.Flatpaks, f.FlatpakNames = count, names
+
+	// Behind the package half rather than in front of it. One line on the card
+	// says what went wrong, and a seat that cannot reach the mirrors usually
+	// cannot reach Flathub either; of the two, the mirrors are the one that
+	// says something about the seat rather than about one remote.
+	if f.Problem == "" {
+		f.Problem = problem
+	}
+
 	return f
+}
+
+// flatpakPatience bounds the question asked of Flathub.
+//
+// The arithmetic that has to hold: the look is allowed two minutes, the
+// Sunshine lookup takes at most twenty seconds of it and the package sync at
+// most forty five, so this has to leave room for both and for the two execs
+// around them.
+const flatpakPatience = "25"
+
+// pendingFlatpaks asks Flathub what the player's applications are behind on.
+//
+// As the player, because a flatpak installed with --user lives in their home
+// and root's installation in a seat is empty. Applications only: a runtime
+// update is fetched by the update either way and is not a line anybody can read.
+func (m *Manager) pendingFlatpaks(ctx context.Context, name string) (int, []string, string) {
+	out, code, err := m.client.Try(ctx, name, m.playerEnv("sh", "-c",
+		"timeout "+flatpakPatience+
+			" flatpak --user remote-ls --updates --app --columns=application")...)
+
+	switch {
+	case err != nil:
+		return 0, nil, fmt.Sprintf("the seat could not be asked about flatpaks: %v", err)
+	case code == 124:
+		return 0, nil, "Flathub did not answer within " + flatpakPatience + " seconds"
+	case code != 0:
+		return 0, nil, "the flatpak updates could not be listed: " + strings.TrimSpace(lastLines(out, 1))
+	}
+
+	count, names := flatpakUpdates(out)
+
+	return count, names, ""
+}
+
+// flatpakUpdates reads what remote-ls printed into a count and the first few
+// names.
+//
+// Every line has to look like an application id, which is what keeps this from
+// counting anything else that came back. The output and the errors arrive on
+// one stream, so a warning from flatpak, an ostree note or the header a
+// terminal would have got are all lines here, and each of them counted as an
+// application waiting would put a number on the card that nothing explains.
+func flatpakUpdates(out string) (int, []string) {
+	var names []string
+
+	count := 0
+
+	for _, line := range strings.Split(out, "\n") {
+		id := strings.TrimSpace(line)
+		if !flatpakID.MatchString(id) {
+			continue
+		}
+
+		count++
+
+		if len(names) < namesShown {
+			names = append(names, id)
+		}
+	}
+
+	return count, names
 }
 
 // sunshinePatience bounds the question asked of GitHub, inside whatever the
@@ -462,6 +545,12 @@ func (f Freshness) Summary() string {
 		parts = append(parts, strconv.Itoa(f.Packages)+" packages")
 	}
 
+	if f.Flatpaks == 1 {
+		parts = append(parts, "1 flatpak")
+	} else if f.Flatpaks > 1 {
+		parts = append(parts, strconv.Itoa(f.Flatpaks)+" flatpaks")
+	}
+
 	return strings.Join(parts, ", ")
 }
 
@@ -532,6 +621,8 @@ func (m *Manager) UpdateSoftware(name string) error {
 			return fmt.Errorf("sunshine: %w", err)
 		}
 
+		m.updateFlatpaks(ctx, name)
+
 		// The seat is now carrying a Sunshine, and possibly a compositor, that
 		// the running session is not. Restarting is what makes the update the
 		// person asked for actually be the thing that is running, and it is the
@@ -563,6 +654,36 @@ func (m *Manager) UpdateSoftware(name string) error {
 
 		return nil
 	})
+}
+
+// updateFlatpaks brings the player's applications up to date, and does not fail
+// the update when it cannot.
+//
+// Logged rather than returned, unlike the two steps before it, because by the
+// time this runs the packages and Sunshine are already installed. Flathub being
+// unreachable for a minute would then mark a seat as failed over work that was
+// done, and would skip the session restart that makes the rest of it take
+// effect. What it costs to be wrong here is a line in the seat's log and a count
+// that stays where it was, which is the seat saying it is still behind, which
+// it is.
+//
+// Under a pseudo terminal for the same reason installing one is: otherwise
+// flatpak says nothing at all until it has finished, and this can be gigabytes.
+func (m *Manager) updateFlatpaks(ctx context.Context, name string) {
+	watch := &installWatch{m: m, seat: name}
+
+	code, err := m.client.Exec(ctx, name, m.playerEnv(
+		"script", "-qec", "flatpak update --user --assumeyes", "/dev/null"),
+		nil, watch, watch)
+
+	switch {
+	case err != nil:
+		m.logf(name, "! the flatpaks could not be updated: %v", err)
+	case code != 0:
+		m.logf(name, "! the flatpaks could not be updated: %s", watch.tail())
+	default:
+		m.logf(name, "the player's flatpaks are up to date")
+	}
 }
 
 // freshPatience bounds one seat's turn.

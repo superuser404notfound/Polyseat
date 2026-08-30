@@ -3,6 +3,7 @@ package seat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -692,5 +693,92 @@ func TestTheSunshineLookupNeverExtendsTheCallersTime(t *testing.T) {
 
 	if left := time.Until(deadline); left > time.Second {
 		t.Errorf("the lookup runs for %s on a caller that allowed 50ms", left.Round(time.Millisecond))
+	}
+}
+
+// What remote-ls really prints when it is not talking to a terminal: one
+// application id per line and no header. The parser has to keep those and
+// nothing else, because output and errors arrive on one stream here.
+func TestFlatpakUpdatesReadsIdsAndIgnoresTheRest(t *testing.T) {
+	const out = `com.discordapp.Discord
+org.videolan.VLC
+dev.eden_emu.eden
+`
+
+	count, names := flatpakUpdates(out)
+
+	if count != 3 {
+		t.Errorf("counted %d applications, want 3", count)
+	}
+
+	if len(names) != 3 || names[0] != "com.discordapp.Discord" {
+		t.Errorf("read %v", names)
+	}
+
+	// Nothing waiting is the ordinary answer and is not an error.
+	if count, names := flatpakUpdates(""); count != 0 || names != nil {
+		t.Errorf("empty output gave %d and %v", count, names)
+	}
+}
+
+// Everything else that can come back on the same stream. Each of these counted
+// as an application waiting would put a number on the card that nothing on the
+// machine explains.
+func TestFlatpakUpdatesCountsNothingThatIsNotAnId(t *testing.T) {
+	const out = `Anwendungskennung
+Warning: Treating remote fetch error as non-fatal since flathub is disabled
+error: Unable to load summary from remote flathub
+F: Nothing to do
+
+org.videolan.VLC
+`
+
+	count, names := flatpakUpdates(out)
+
+	if count != 1 {
+		t.Errorf("counted %d, want the one line that is an application id: %v", count, names)
+	}
+
+	if len(names) != 1 || names[0] != "org.videolan.VLC" {
+		t.Errorf("read %v", names)
+	}
+}
+
+// The count is capped like the package one, for the same reason: the card shows
+// what kind of update it is, not a list.
+func TestFlatpakNamesAreCapped(t *testing.T) {
+	var lines []string
+	for i := range namesShown + 4 {
+		lines = append(lines, fmt.Sprintf("com.example.App%d", i))
+	}
+
+	count, names := flatpakUpdates(strings.Join(lines, "\n"))
+
+	if count != namesShown+4 {
+		t.Errorf("counted %d, want %d", count, namesShown+4)
+	}
+
+	if len(names) != namesShown {
+		t.Errorf("kept %d names, want %d", len(names), namesShown)
+	}
+}
+
+// A seat with flatpaks waiting is behind, and says so in the same line as the
+// rest. Before this it was behind and nothing knew.
+func TestFlatpaksCountAsBeingBehind(t *testing.T) {
+	f := Freshness{Flatpaks: 2}
+
+	if !f.Behind() {
+		t.Error("a seat with two flatpaks waiting does not count as behind, so no update is offered")
+	}
+
+	if got := f.Summary(); got != "2 flatpaks" {
+		t.Errorf("the line reads %q", got)
+	}
+
+	both := Freshness{Packages: 3, Flatpaks: 1}
+
+	if got := both.Summary(); got != "3 packages, 1 flatpak" {
+		t.Errorf("the line reads %q", got)
 	}
 }

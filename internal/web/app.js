@@ -474,7 +474,11 @@ function behind(updates) {
     updates.sunshine_latest &&
     updates.sunshine !== updates.sunshine_latest;
 
-  return Boolean(sunshine) || (updates.packages || 0) > 0;
+  return (
+    Boolean(sunshine) ||
+    (updates.packages || 0) > 0 ||
+    (updates.flatpaks || 0) > 0
+  );
 }
 
 // whileWaiting puts a spinner in a button until whatever it started comes back.
@@ -546,6 +550,15 @@ function summarise(updates) {
 
   if (packages === 1) parts.push("1 package");
   else if (packages > 1) parts.push(`${packages} packages`);
+
+  // Counted apart from the packages because they are updated by something else
+  // and were updated by nothing at all until 0.13.0: pacman does not know a
+  // flatpak exists, so a seat could say it was up to date with every
+  // application the player installed months old.
+  const flatpaks = updates.flatpaks || 0;
+
+  if (flatpaks === 1) parts.push("1 flatpak");
+  else if (flatpaks > 1) parts.push(`${flatpaks} flatpaks`);
 
   return parts.join(", ");
 }
