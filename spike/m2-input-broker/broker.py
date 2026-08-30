@@ -477,6 +477,52 @@ def hidraw_info(node):
     }
 
 
+# Where a POSIX access control list lives on the file itself.
+#
+# Read here rather than by running getfacl, because this question is asked of
+# every device a seat has, twice a second, for as long as the seat runs, and the
+# answer is almost always that there is no list at all. Measured on the host
+# that reported the machine stuttering: 23 getfacl processes a second with two
+# seats up, a tenth of a core spent starting programs to be told that an
+# extended attribute is absent.
+ACL_XATTR = "system.posix_acl_access"
+
+# The two tags in that attribute that name somebody. The rest describe the
+# owner, the owning group, the mask and everybody else, which is what the mode
+# already says and what a chmod already fixed.
+ACL_USER = 0x0002
+ACL_GROUP = 0x0008
+
+
+def acl_names_somebody(path):
+    """Whether the file's access list hands the node to a named user or group.
+
+    logind grants the active desktop user exactly such an entry through the
+    uaccess tag, and it survives a chmod, so a node can read root:root 0600 and
+    still be open to somebody. That is not a theory: it is how a seat's gamepad
+    was readable by the host's Steam.
+
+    The attribute is a 32 bit version followed by entries of tag, permissions
+    and id, eight bytes each, little endian whatever the machine is. Only the
+    tag is looked at.
+
+    Named groups count as well as named users, which getfacl was never asked
+    about here. An entry naming a group opens the node exactly as far.
+    """
+    try:
+        raw = os.getxattr(path, ACL_XATTR)
+    except OSError:
+        # No list on the file, or a filesystem that cannot hold one. Either way
+        # nobody is named, which is also the normal answer for a sealed node.
+        return False
+
+    for at in range(4, len(raw) - 7, 8):
+        if int.from_bytes(raw[at:at + 2], "little") in (ACL_USER, ACL_GROUP):
+            return True
+
+    return False
+
+
 def seal_path(path):
     """Take one device node away from the host desktop."""
     try:
@@ -484,18 +530,11 @@ def seal_path(path):
     except OSError:
         return False
 
-    acl = False
-    if os.path.exists("/usr/bin/getfacl"):
-        try:
-            out = subprocess.run(["getfacl", "-p", path], check=False,
-                                 capture_output=True, text=True).stdout
-            acl = any(line.startswith("user:") and not line.startswith("user::")
-                      for line in out.splitlines())
-        except OSError:
-            acl = False
-
+    # Ownership and mode first, because a node that fails those is being sealed
+    # whatever its access list says, and the list is the more expensive half.
     if (st.st_uid == 0 and st.st_gid == 0
-            and statmod.S_IMODE(st.st_mode) == 0o600 and not acl):
+            and statmod.S_IMODE(st.st_mode) == 0o600
+            and not acl_names_somebody(path)):
         return False
 
     try:
