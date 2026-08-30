@@ -19,7 +19,10 @@
 sock=""
 i=0
 while [ "$i" -lt 150 ]; do
-    sock=$(ls -t "$XDG_RUNTIME_DIR"/wayland-[0-9]* 2>/dev/null | grep -v '\.lock$' | head -1)
+    # Newest first, because a socket from a previous sway is still lying there
+    # after a restart. -type s keeps the .lock file beside each one out.
+    sock=$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -type s -name 'wayland-[0-9]*' \
+        -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
     if [ -n "$sock" ] && [ -S "$sock" ]; then
         break
     fi

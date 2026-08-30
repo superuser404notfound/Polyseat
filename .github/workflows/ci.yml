@@ -124,10 +124,16 @@ jobs:
       - uses: actions/checkout@v4
 
       # bash -n first, because a parse error makes everything shellcheck says
-      # about the same file beside the point.
+      # about the same file beside the point. Every script rather than only the
+      # host ones, which is what it said and not what it did.
+      #
+      # bash and not sh even for the files that declare #!/bin/sh, because this
+      # step only claims to find parse errors and shellcheck is what says whether
+      # a script is really POSIX. Running the runner's dash here instead would be
+      # a stricter check nobody has measured against these files.
       - name: Parse every script
         run: |
-          for f in host/*.sh; do
+          for f in host/*.sh packaging/scripts/*.sh internal/seat/assets/*.sh; do
             bash -n "$f"
           done
 
@@ -143,6 +149,12 @@ jobs:
           # sh and not bash, and shellcheck has to be told: these two run under
           # whatever dpkg and rpm hand them, which is not bash on every machine.
           shellcheck --severity=warning --shell=sh packaging/scripts/*.sh
+          # The scripts that run inside every seat, which were checked by nothing
+          # until now: a green run here said something about the host half of the
+          # project and nothing at all about the half that is provisioned into a
+          # container. They carry their own #!/bin/sh, so unlike the two above
+          # they do not have to be told which shell they are.
+          shellcheck --severity=warning internal/seat/assets/*.sh
 
       # The one part of the distribution table that can be checked without the
       # distributions. It replaces every package manager with a script that

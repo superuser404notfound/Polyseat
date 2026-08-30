@@ -1,6 +1,8 @@
 package seat
 
 import (
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -282,5 +284,67 @@ func TestLauncherRefreshLeavesAClosedLauncherClosed(t *testing.T) {
 	if _, err := os.Stat(dump); err == nil {
 		t.Error("refresh opened a launcher that was not open, so an install " +
 			"finishing during a game puts a menu over it")
+	}
+}
+
+// The launcher has to find the session's own Wayland socket when nothing told
+// it which one that is, which is every call that did not come from sway.
+//
+// Newest wins, because a socket left behind by a previous sway is still lying in
+// the runtime directory after a restart and there is nothing about it that says
+// so. The lock file beside each socket is not one, which is the other half: it
+// sorts after the socket it belongs to and would be picked in its place.
+func TestLauncherPicksTheNewestWaylandSocket(t *testing.T) {
+	home, dump, _, script := launcherStubs(t)
+
+	var newest string
+
+	for i, age := range []time.Duration{2 * time.Hour, 0} {
+		path := filepath.Join(home, fmt.Sprintf("wayland-%d", i))
+
+		l, err := net.Listen("unix", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		defer l.Close()
+
+		// A real session has one of these beside every socket, and it is an
+		// ordinary file rather than a socket.
+		if err := os.WriteFile(path+".lock", nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		when := time.Now().Add(-age)
+		if err := os.Chtimes(path, when, when); err != nil {
+			t.Fatal(err)
+		}
+
+		if age == 0 {
+			newest = filepath.Base(path)
+		}
+	}
+
+	// Everything a prep command has, minus the one variable under test.
+	var env []string
+
+	for _, kv := range sunshineEnv(home) {
+		if !strings.HasPrefix(kv, "WAYLAND_DISPLAY=") {
+			env = append(env, kv)
+		}
+	}
+
+	cmd := exec.Command("/bin/sh", script, "show")
+	cmd.Env = env
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("the launcher script failed: %v", err)
+	}
+
+	body := string(waitFor(t, dump))
+
+	if !strings.Contains(body, "WAYLAND_DISPLAY="+newest+"\n") {
+		t.Errorf("the launcher was not started on %s, so it either drew on a dead "+
+			"session or on a lock file", newest)
 	}
 }

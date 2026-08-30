@@ -21,8 +21,14 @@ export XDG_RUNTIME_DIR
 
 # Sunshine's prep commands and sway's exec do not agree about what is in the
 # environment, and fuzzel needs a display either way.
+#
+# Newest first, because a socket left behind by a previous sway is still lying
+# there after a restart and picking it is indistinguishable from picking the
+# live one until something tries to draw. -type s is what keeps the .lock file
+# beside each socket out, so nothing has to be filtered by name.
 if [ -z "$WAYLAND_DISPLAY" ]; then
-    sock=$(ls -t "$XDG_RUNTIME_DIR"/wayland-[0-9]* 2>/dev/null | grep -v '\.lock$' | head -1)
+    sock=$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -type s -name 'wayland-[0-9]*' \
+        -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
     [ -n "$sock" ] && WAYLAND_DISPLAY="${sock##*/}" && export WAYLAND_DISPLAY
 fi
 
