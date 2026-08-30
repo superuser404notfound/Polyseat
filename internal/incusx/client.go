@@ -737,6 +737,44 @@ func (c *Client) PushFile(name, path string, content []byte, mode int, uid, gid 
 	})
 }
 
+// PushStream writes a file inside the instance from a reader.
+//
+// Separate from PushFile rather than replacing it, because what the two carry
+// is different in kind. Everything the provisioner writes is a small file it
+// has already built in memory; this is somebody's upload arriving over HTTP,
+// which can be an emulator image or a game save of any size at all and must
+// never become a []byte in this process.
+//
+// The parent directory has to exist. PushFile creates one because each of its
+// callers writes a single file into a place that may be new, while the one
+// caller here uploads whole folders and would otherwise ask Incus to create the
+// same directory once per file in it.
+func (c *Client) PushStream(name, path string, content io.Reader, mode int, uid, gid int64) error {
+	return c.server().CreateInstanceFile(name, path, incus.InstanceFileArgs{
+		Content:   unrewindable{content},
+		UID:       uid,
+		GID:       gid,
+		Mode:      mode,
+		Type:      "file",
+		WriteMode: "overwrite",
+	})
+}
+
+// unrewindable carries a plain reader through an API that asks for a seekable
+// one.
+//
+// The Incus client takes an io.ReadSeeker and seeks it in exactly one place:
+// the GetBody it hands the HTTP transport, which is what a retried request
+// would read from. A request whose body is a socket somebody else is still
+// writing to cannot be retried, so the honest answer to a seek is an error. The
+// alternative, a Seek that reports success and rewinds nothing, is how a file
+// would arrive silently truncated.
+type unrewindable struct{ io.Reader }
+
+func (unrewindable) Seek(int64, int) (int64, error) {
+	return 0, errors.New("an upload that is already being read cannot be rewound")
+}
+
 // MakeDir creates a directory inside the instance, and every parent it needs.
 //
 // The Incus file API creates exactly one level, so pushing a file into a path

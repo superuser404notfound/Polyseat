@@ -276,6 +276,15 @@ too**, which matters because many emulators are published that way and no other:
 paste the address into the web interface, or drop the file in `~/Downloads`
 inside the seat, and it appears in both menus by itself.
 
+**Files go in the same way.** A save, a set of mods, keys, a ROM, an emulator
+somebody already downloaded: drop the file or the whole folder on the seat's
+card in the web interface and it lands in the player's `~/Downloads` inside the
+seat, keeping the folder it came in. That is the one direction nothing else here
+covered, and the answers before it were a network share to set up on both ends
+or a trip through somebody's cloud, for files sitting on the same disk as the
+daemon. From `~/Downloads` the player moves them where they belong with the file
+manager the seat already has, and an AppImage does not even need that.
+
 **Every client gets the picture it asked for.** The seat's screen is virtual, so
 it simply becomes the size and refresh rate the client wants. The framerate is
 capped from outside rather than by turning vsync on, so games stay uncapped and

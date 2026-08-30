@@ -461,6 +461,35 @@ would have rejected it. **None of that says the AppImage is trustworthy**: it
 says the file is the kind of thing it claims to be and arrived over a connection
 nobody rewrote in transit.
 
+### The interface can put files into a seat
+
+Anybody with the password can upload a file, or a folder of them, into a seat's
+`~/Downloads`. It is written by the daemon, which is root, as the player, which
+is the same ownership the AppImage route and the flatpak route already produce.
+
+What this is not: a new authority. The same session can already install a
+flatpak into that seat, download and adopt an AppImage, pair a client and take
+the seat apart, and every one of those puts files in that home as the player.
+The addition is a shorter path for files that were already on the host's disk.
+
+What is checked. The name of every file, because a browser is not the only thing
+that can send a multipart body and the path in one is chosen entirely by the
+sender. A path is refused, not repaired, if it is absolute, contains `.` or `..`
+or an empty component, is hidden at the top level, carries control characters,
+is not valid UTF-8, or is longer or deeper than a path may be. `ValidateDropPath`
+is where that lives, a test joins every name it accepts to the drop directory
+and checks the result is still inside it, and each of those rules has been
+removed once to watch the test fail. Note that Go's own `Part.FileName` is not
+what is used here: it applies `filepath.Base`, which turns `../../etc/passwd`
+into a file called `passwd` and writes it. Reading the header directly and
+refusing the whole name is both the reason a folder can be uploaded at all and
+the stricter of the two answers.
+
+What is not checked: the content. A file that lands in `~/Downloads` is whatever
+was sent, and if it is an AppImage the sweep will adopt it under the paragraph
+above. The size is not capped either, so somebody with the password can fill a
+seat's disk. They can also delete the seat.
+
 ### Steam listens on the network inside a seat
 
 `0.0.0.0:27036` for Remote Play discovery. Reachable from the LAN like any other

@@ -312,6 +312,50 @@ pre.log {
 
 .software { margin-top: 0.7rem; }
 
+.files { margin-top: 0.7rem; }
+
+/* The drop target. Dashed because a dashed rectangle is what says "put things
+   here" in every other interface that takes a file, and this one has to say it
+   to somebody who has never opened this page before. */
+.drop {
+  padding: 1rem;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  text-align: center;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+/* While something is over it, so that a drag which has not been let go of yet
+   still says where it would land. Without this the only feedback is the cursor,
+   which is drawn by the desktop and says nothing about this page. */
+.drop.over {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+
+.drop p {
+  margin: 0 0 0.7rem;
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+.drop .picks {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* Its own line under the zone, and it keeps its height while empty: a line that
+   appears when an upload starts moves the buttons under the pointer that just
+   pressed one. */
+.uploads {
+  margin: 0.6rem 0 0;
+  min-height: 1.2rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+
 /* The pairing form's first field is a PIN and is sized for one. This one takes
    a Flathub id, which is long, so it gets the room instead. */
 .software form.pair input:first-child {

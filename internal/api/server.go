@@ -10,7 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -189,6 +192,7 @@ func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker
 	guarded.HandleFunc("DELETE /api/seats/{name}/software/{id}", s.removeSoftware)
 	guarded.HandleFunc("POST /api/seats/{name}/appimages", s.installAppImage)
 	guarded.HandleFunc("DELETE /api/seats/{name}/appimages/{file}", s.removeAppImage)
+	guarded.HandleFunc("POST /api/seats/{name}/files", s.uploadFiles)
 	guarded.HandleFunc("GET /api/library", s.getLibrary)
 	guarded.HandleFunc("POST /api/library/sync", s.syncLibrary)
 	guarded.HandleFunc("POST /api/library/import", s.importLibrary)
@@ -1175,6 +1179,107 @@ func (s *Server) removeAppImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"file": file})
+}
+
+// --------------------------------------------------------------------- files
+
+// drained is how much of a failed upload is read and thrown away before the
+// answer goes out.
+//
+// A handler that returns while the browser is still sending gets its connection
+// closed under it, and what the person then sees is a network error rather than
+// the sentence saying which file was refused. Reading the rest first avoids
+// that, and this is the point past which the explanation is not worth the
+// minutes: a drop that has gigabytes left to send loses the sentence and gets
+// the reset instead.
+const drained = 64 << 20
+
+// uploadFiles streams what somebody dropped on a seat card into the seat.
+//
+// Streamed and not parsed. ParseMultipartForm writes every part it does not
+// keep in memory into a temporary file on the host first, so a drop of an
+// emulator and its games would need the space twice and would fill the host's
+// disk rather than the seat's. MultipartReader hands the parts over one at a
+// time in the order they arrive, which is exactly the order a push into the
+// container wants them in.
+func (s *Server) uploadFiles(w http.ResponseWriter, r *http.Request) {
+	parts, err := r.MultipartReader()
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	got, err := s.manager.Receive(r.PathValue("name"), &uploadParts{parts: parts})
+	if err != nil {
+		_, _ = io.CopyN(io.Discard, r.Body, drained)
+
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	// Created rather than Accepted, unlike the AppImage download next to it:
+	// this answer is only written once every byte is in the seat.
+	writeJSON(w, http.StatusCreated, got)
+}
+
+// uploadParts is a multipart body read the way the seat package wants to read
+// it, one file at a time and never held.
+//
+// Nothing closes the part it handed over last. NextPart reads to the next
+// boundary itself, so a file the seat refused and never read costs the read and
+// leaves the one after it whole, which a test measures rather than assumes: the
+// alternative shape of this bug, a body handed on to the following file, is
+// silent and produces a file that is merely wrong.
+type uploadParts struct {
+	parts *multipart.Reader
+}
+
+func (u *uploadParts) Next() (seat.Upload, error) {
+	for {
+		part, err := u.parts.NextPart()
+		if err != nil {
+			// io.EOF included, which is how the loop in Receive ends.
+			return seat.Upload{}, err
+		}
+
+		// A part without a file name is a form field. The interface sends none,
+		// but a multipart body is allowed to carry them and one arriving as a
+		// file called "" would be refused with a sentence about names when the
+		// truth is that it was never a file.
+		name := partPath(part)
+		if name == "" {
+			_ = part.Close()
+
+			continue
+		}
+
+		return seat.Upload{Path: name, Body: part}, nil
+	}
+}
+
+// partPath is the name the browser gave one part, which is not what
+// Part.FileName reports.
+//
+// mime/multipart applies filepath.Base to a file name, because RFC 7578 says a
+// receiver must not use the directory information in it. That rule is written
+// for a server which writes an upload to disk under the name it was handed, and
+// the information it throws away is the only reason this endpoint can take a
+// folder at all: a save is a directory named after a title id and a mod is a
+// tree, and one part per file with the folders cut off arrives as one heap.
+//
+// So the header is read directly and the result goes to ValidateDropPath, which
+// is the check that rule stands in for and a stricter one than Base: Base turns
+// ../../etc/passwd into a file called passwd and writes it, and this refuses the
+// whole name and says which one it was.
+func partPath(part *multipart.Part) string {
+	_, params, err := mime.ParseMediaType(part.Header.Get("Content-Disposition"))
+	if err != nil {
+		return part.FileName()
+	}
+
+	return params["filename"]
 }
 
 // ------------------------------------------------------------------ library

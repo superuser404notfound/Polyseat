@@ -82,6 +82,10 @@ type Manager struct {
 	// adopts is clone every game out of it.
 	libraries func(exclude string, tracked []string) []string
 
+	// files is what an upload writes through, and is nil everywhere except in a
+	// test. See filer in files.go.
+	files filer
+
 	subsMu sync.Mutex
 	subs   map[int]chan struct{}
 	nextID int
