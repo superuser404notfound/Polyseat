@@ -452,6 +452,36 @@ func TestAFailedSyncCarriesWhatPacmanSaid(t *testing.T) {
 	}
 }
 
+// What a real failed sync looks like, taken from the machine this was reported
+// from: one line per file that did not arrive, and a summary underneath that
+// says nothing anybody can act on. The summary is the last line, which is what
+// the first version of this reported, and it left the card saying "failed to
+// retrieve some files" with no mention of which file, which mirror, or why.
+func TestAFailedSyncNamesTheFileAndNotTheSummary(t *testing.T) {
+	out, code := runCheckUpdates(t, t.TempDir(), `
+case "$1" in
+-Sy)
+	echo "error: failed retrieving file 'core.db' from geo.mirror.pkgbuild.com : Connection timed out after 10001 milliseconds" >&2
+	echo "error: failed to synchronize all databases (failed to retrieve some files)" >&2
+	exit 1
+	;;
+esac`, `shift; exec "$@"`)
+
+	if code != 3 {
+		t.Fatalf("a failed sync answered %d, want 3: %s", code, out)
+	}
+
+	problem := syncProblem(out)
+
+	if !strings.Contains(problem, "Connection timed out") {
+		t.Errorf("the seat reports %q, which is the summary and not the reason", problem)
+	}
+
+	if !strings.Contains(problem, "geo.mirror.pkgbuild.com") {
+		t.Errorf("the seat reports %q, which does not say which mirror it was", problem)
+	}
+}
+
 // A sync that never returns is bounded, and says so in the words of the bound
 // rather than pacman's, because pacman was killed and said nothing.
 func TestASyncThatHangsIsBoundedAndSaysSo(t *testing.T) {

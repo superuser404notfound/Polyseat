@@ -236,7 +236,20 @@ if [ "$status" -eq 124 ]; then
 fi
 
 if [ "$status" -ne 0 ]; then
-	echo "$err" | grep -v "^[[:space:]]*$" | tail -1
+	# The first line about a file, and only the summary when there is none.
+	#
+	# pacman ends a failed sync with "failed to synchronize all databases
+	# (failed to retrieve some files)", which is the last line and says nothing
+	# anybody can act on. What it was about is above it, one line per file:
+	# which database, which mirror, and what the transfer did. Reporting the
+	# tail of this was measured to be useless on the first machine it ran on.
+	reason=$(echo "$err" | grep -m1 "failed retrieving" || true)
+
+	if [ -z "$reason" ]; then
+		reason=$(echo "$err" | grep -v "^[[:space:]]*$" | tail -1)
+	fi
+
+	echo "$reason"
 	exit 3
 fi
 
