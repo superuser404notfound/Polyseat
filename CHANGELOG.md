@@ -10,6 +10,57 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.12.0
+
+**Files from the host now have a way into a seat.** Every other route into a
+seat comes from somewhere else: Flathub, an address, another seat. What somebody
+already had on their own disk had none, and the answers were `incus file push`
+at a terminal or a share to set up on both ends. Asked from a machine with an
+emulator installed in a seat and its saves and mods sitting on the host.
+
+**Seats do not have to be built again.** The recipe is unchanged at generation
+35, and `~/Downloads` has been in every seat since long before this. Restart the
+daemon and the panel is there.
+
+- **A Files panel on every seat card.** Drop a file or a whole folder on it, or
+  pick one with the two buttons, and it goes into the player's `~/Downloads`
+  inside that seat with the folder it came in kept, which is what a save is: a
+  directory named after a title id, and a mod is a tree. There is a progress
+  line while it goes up, because a folder of games is minutes of somebody's
+  uplink and a page that says nothing for that long reads as one that did
+  nothing.
+
+- **Downloads and no further, on purpose.** Where a save belongs differs per
+  emulator, per install method and per title. A daemon that wrote into those
+  would have to know all three and would be wrong about them after the next
+  release of any one of them. From `~/Downloads` the player moves it with the
+  file manager the seat already has, and an AppImage does not even need that:
+  the sweep that already adopts what is downloaded inside a seat adopts this
+  too, and it turns up in Moonlight within a minute.
+
+- **Nothing is held on the way through.** The parts of the upload are read one
+  at a time and streamed straight into the container, so a drop of any size
+  costs the daemon no memory and the host no temporary copy. `ParseMultipartForm`
+  would have written every part to the host's disk first, which is the wrong
+  disk and twice the space.
+
+- **The name of every file is checked rather than repaired.** A path that is
+  absolute, holds `.` or `..` or an empty component, is hidden at the top level,
+  carries control characters, is not valid UTF-8, or is longer or deeper than a
+  path may be, is refused and named. Go's own `Part.FileName` is deliberately
+  not what is used: it applies `filepath.Base`, which turns `../../etc/passwd`
+  into a file called `passwd` and writes it. One refused name costs that file
+  and not the drop.
+
+- **The restart screen appears when the restart is started from the Host
+  dialog.** It always did what it was told and never showed it: a dialog opened
+  with `showModal` is in the top layer, where nothing the page paints can reach
+  it, so the overlay was drawn underneath and the page simply reloaded half a
+  minute later. The same button in the banner at the top has always worked,
+  which is what made it look like two buttons. `showFarewell` had already met
+  this wall and closed the dialog by name; that is one rule in one place now,
+  and the login form uses it too.
+
 ## 0.11.0
 
 **A seat has two menus and only one of them was being kept honest.** Reported
