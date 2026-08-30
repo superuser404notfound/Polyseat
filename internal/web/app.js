@@ -24,6 +24,7 @@ let ready = true;
 let openLogs = new Set();
 let openPairing = new Set();
 let openSoftware = new Set();
+let openFiles = new Set();
 let stream = null;
 
 // A page that renders nothing is worse than one that says what broke. Without
@@ -208,6 +209,22 @@ function installButton(choice) {
   return button;
 }
 
+// closeDialogs takes down whatever dialog is open, for the things that take the
+// whole page.
+//
+// A dialog opened with showModal lives in the top layer, and nothing the page
+// paints can be drawn over that: the top layer is above every z-index there is,
+// and .restarting asking for twenty was never going to matter. So an overlay
+// appended to the body while the Host dialog is open goes behind that dialog
+// and behind its backdrop, which is what pressing Restart now in there did:
+// the dialog sat where it was, the restart happened, and the page reloaded out
+// of nowhere half a minute later. The screen that exists to say what is going
+// on was painted underneath the thing it was started from. showFarewell has
+// closed the Host dialog by name since the removal met the same wall.
+function closeDialogs() {
+  for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
+}
+
 // awaitRestart takes the page over while the daemon goes away and comes back.
 //
 // Over the whole page rather than in the button, because a restart takes the
@@ -232,6 +249,10 @@ async function awaitRestart() {
     stream.close();
     stream = null;
   }
+
+  // Before the overlay exists, because one of the two buttons that reach here
+  // is inside the Host dialog and the overlay cannot be seen from under it.
+  closeDialogs();
 
   const overlay = document.createElement("div");
   overlay.className = "restarting";
@@ -722,6 +743,8 @@ function forgetMissingSeats() {
       softwareSeen.delete(name);
       openSoftware.delete(name);
       openPairing.delete(name);
+      openFiles.delete(name);
+      uploaded.delete(name);
       openLogs.delete(name);
       logViews.delete(name);
     }
@@ -1154,6 +1177,7 @@ function card(seat) {
     // device is paired with it there is nothing to install software for.
     pairingPanel(seat),
     softwarePanel(seat),
+    filesPanel(seat),
     logPanel(seat),
   );
 
@@ -1564,6 +1588,324 @@ function drawResults(seat, body, results, found, have) {
 // Loaded when the panel is opened rather than with the rest of the state: each
 // of these is a call into that seat's Sunshine, and doing three of them every
 // time anything changes would be rude to something that is busy encoding video.
+// Files from this machine into a seat, which is the one direction nothing else
+// here covers.
+//
+// Everything else a seat can be given comes from somewhere else: a flatpak from
+// Flathub, an AppImage from an address, a game from another seat. What somebody
+// already has on the host had no way in at all, and the answers that existed
+// were a share to set up on both ends or an upload to a cloud and back, for
+// files that are sitting on the same disk as the daemon.
+//
+// Into Downloads and no further. Where a save or a mod belongs differs per
+// emulator, per install method and per title, and a daemon that wrote into
+// those would have to know all three and be wrong about them later.
+function filesPanel(seat) {
+  const details = document.createElement("details");
+  details.className = "log";
+  details.open = openFiles.has(seat.name);
+
+  const summary = document.createElement("summary");
+  summary.textContent = "Files";
+
+  const body = document.createElement("div");
+  body.className = "files";
+
+  details.append(summary, body);
+
+  details.ontoggle = () => {
+    if (details.open) openFiles.add(seat.name);
+    else openFiles.delete(seat.name);
+  };
+
+  drawFiles(seat, body);
+
+  return details;
+}
+
+// What each seat's upload is doing, and what its last one did.
+//
+// Outside the card, because the card is rebuilt whenever the seat's own state
+// changes and an upload is one of the things that changes it: every file that
+// arrives is a line in the seat's log. A progress line held in the card would
+// be thrown away by the redraw the upload itself caused.
+let uploading = new Map();
+let uploaded = new Map();
+
+function drawFiles(seat, body) {
+  body.replaceChildren(
+    note(
+      "Files from this machine, put in the player's Downloads folder inside " +
+        "the seat. Whole folders too, so a save or a set of mods arrives as " +
+        "the folder it is. An AppImage dropped here is picked up from there " +
+        "and turns into an entry in Moonlight within a minute; anything else " +
+        "is moved where it belongs with the file manager in the seat.",
+    ),
+  );
+
+  const zone = document.createElement("div");
+  zone.className = "drop";
+
+  const label = document.createElement("p");
+  label.textContent = "Drop files or a folder here";
+
+  const buttons = document.createElement("div");
+  buttons.className = "picks";
+  buttons.append(
+    filePicker(seat, "Choose files", false),
+    filePicker(seat, "Choose a folder", true),
+  );
+
+  zone.append(label, buttons);
+
+  // Without these two the browser navigates to whatever was dropped, which
+  // replaces the page and takes the upload with it.
+  zone.ondragover = (event) => {
+    event.preventDefault();
+    zone.classList.add("over");
+  };
+
+  zone.ondragleave = () => zone.classList.remove("over");
+
+  zone.ondrop = (event) => {
+    event.preventDefault();
+    zone.classList.remove("over");
+
+    // Read before anything is awaited. A drop's item list is emptied as soon as
+    // the event handler yields, so walking it after an await finds nothing at
+    // all, and a folder dropped on the page would quietly upload nothing.
+    const entries = [...event.dataTransfer.items]
+      .map((item) => (item.webkitGetAsEntry ? item.webkitGetAsEntry() : null))
+      .filter(Boolean);
+
+    const flat = [...event.dataTransfer.files];
+
+    run(async () => send(seat.name, await picked(entries, flat)));
+  };
+
+  const line = document.createElement("p");
+  line.className = "note uploads";
+  line.dataset.seat = seat.name;
+
+  body.append(zone, line);
+
+  // The line by hand rather than by looking it up: this card is not in the
+  // page yet, and the one that is holds the line of the card it is replacing.
+  drawUpload(seat.name, line);
+}
+
+// A button rather than the file input itself, which no browser lets a page
+// style and every browser draws differently.
+function filePicker(seat, text, folder) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.multiple = true;
+  input.hidden = true;
+
+  // No standard name for this one. Every browser that can pick a folder at all
+  // takes the webkit spelling, including Firefox.
+  if (folder) input.webkitdirectory = true;
+
+  input.onchange = () => {
+    const chosen = [...input.files].map((file) => ({
+      file,
+      // The path under the folder that was chosen, which is empty for files
+      // picked one at a time.
+      path: file.webkitRelativePath || file.name,
+    }));
+
+    // Cleared so that choosing the same folder twice in a row is two uploads
+    // and not one: change does not fire for a value that did not change.
+    input.value = "";
+
+    run(async () => send(seat.name, chosen));
+  };
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = text;
+  button.onclick = () => input.click();
+
+  const wrap = document.createElement("span");
+  wrap.append(button, input);
+
+  return wrap;
+}
+
+// What was dropped, flattened into files that each know the path they keep.
+//
+// A folder arrives as a directory entry rather than as its files, and the entry
+// API is the only way to walk it. Building the path while walking is what makes
+// a dropped save arrive as a save rather than as forty loose files in one heap.
+async function picked(entries, flat) {
+  // A browser that cannot hand over entries still hands over files, and a flat
+  // list of them is worth more than a refusal.
+  if (entries.length === 0) return flat.map((file) => ({ file, path: file.name }));
+
+  const out = [];
+
+  for (const entry of entries) await walkEntry(entry, "", out);
+
+  return out;
+}
+
+async function walkEntry(entry, prefix, out) {
+  if (entry.isFile) {
+    const file = await new Promise((ok, no) => entry.file(ok, no));
+
+    out.push({ file, path: prefix + entry.name });
+
+    return;
+  }
+
+  if (!entry.isDirectory) return;
+
+  const reader = entry.createReader();
+
+  // Read until it says there is nothing left. readEntries answers a hundred at
+  // a time at most, so a directory read once is a directory mostly missing, and
+  // the shape that hides it is that a hundred files is more than anybody tests
+  // with by hand.
+  for (;;) {
+    const batch = await new Promise((ok, no) => reader.readEntries(ok, no));
+
+    if (batch.length === 0) return;
+
+    for (const child of batch) {
+      await walkEntry(child, prefix + entry.name + "/", out);
+    }
+  }
+}
+
+async function send(name, chosen) {
+  if (chosen.length === 0) return;
+
+  // One at a time per seat. Two at once would each report their own progress
+  // into the same line, and the second would be drawn as though the first had
+  // gone backwards.
+  if (uploading.has(name)) {
+    throw new Error("that seat is already being sent files, one moment");
+  }
+
+  const total = chosen.reduce((sum, { file }) => sum + file.size, 0);
+  const form = new FormData();
+
+  // The third argument is the part's file name, and it is where the path goes:
+  // a folder upload is one part per file and this is the only thing carrying
+  // the folder.
+  chosen.forEach(({ file, path }) => form.append("file", file, path));
+
+  uploading.set(name, { count: chosen.length, total, sent: 0 });
+  uploaded.delete(name);
+  drawUpload(name);
+
+  try {
+    const got = await upload(`/api/seats/${name}/files`, form, (sent) => {
+      const now = uploading.get(name);
+
+      if (!now) return;
+
+      now.sent = sent;
+      drawUpload(name);
+    });
+
+    uploaded.set(name, describeUpload(got));
+  } finally {
+    uploading.delete(name);
+    drawUpload(name);
+  }
+}
+
+// XMLHttpRequest and not fetch, for the one thing fetch still cannot do: say
+// how far an upload has got. A folder of games is minutes of somebody's uplink,
+// and a page that says nothing for that long is indistinguishable from one that
+// did nothing at all.
+function upload(path, form, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+
+    request.open("POST", path);
+
+    request.upload.onprogress = (event) => onProgress(event.loaded);
+
+    request.onload = () => {
+      let data = {};
+
+      try {
+        data = request.responseText ? JSON.parse(request.responseText) : {};
+      } catch (err) {
+        data = {};
+      }
+
+      if (request.status === 401) {
+        const err = new Error(data.error || "not logged in");
+        err.unauthorized = true;
+        reject(err);
+
+        return;
+      }
+
+      if (request.status >= 200 && request.status < 300) {
+        resolve(data);
+
+        return;
+      }
+
+      reject(new Error(data.error || request.statusText || "the upload failed"));
+    };
+
+    request.onerror = () =>
+      reject(new Error("the connection broke while the files were going up"));
+
+    request.send(form);
+  });
+}
+
+function drawUpload(name, into) {
+  const line =
+    into || document.querySelector(`.uploads[data-seat="${CSS.escape(name)}"]`);
+
+  if (!line) return;
+
+  const now = uploading.get(name);
+
+  if (!now) {
+    line.textContent = uploaded.get(name) || "";
+
+    return;
+  }
+
+  const percent = now.total
+    ? Math.min(100, Math.round((now.sent / now.total) * 100))
+    : 0;
+
+  const what = now.count === 1 ? "1 file" : `${now.count} files`;
+
+  line.textContent = `Sending ${what}: ${bytes(now.sent)} of ${bytes(now.total)}, ${percent}%`;
+}
+
+// What the daemon accepted, including what it did not.
+//
+// A skipped file is named rather than counted. The reason it was skipped is
+// about that one name, and a drop that says "one file was skipped" leaves
+// somebody to work out which of four hundred it was.
+function describeUpload(got) {
+  const files = got.files === 1 ? "1 file" : `${got.files} files`;
+  const skipped = got.skipped || [];
+
+  let line = `${files} arrived in Downloads inside the seat`;
+
+  if (got.bytes) line += ` (${bytes(got.bytes)})`;
+
+  if (skipped.length > 0) {
+    line +=
+      ". Not accepted: " +
+      skipped.map((one) => `${one.path}, ${one.reason}`).join("; ");
+  }
+
+  return line;
+}
+
 function pairingPanel(seat) {
   const details = document.createElement("details");
   details.className = "log";
@@ -2061,6 +2403,7 @@ function showLogin(setup) {
   }
 
   stopSetupPoll();
+  closeDialogs();
 
   // Forgotten at sign out, or the next person to sign in gets the panel and the
   // log from a session that was not theirs.
@@ -3001,8 +3344,8 @@ function showFarewell(answer) {
   }
 
   stopSetupPoll();
+  closeDialogs();
 
-  el("host").close();
   el("app").hidden = true;
   el("login").hidden = true;
   el("notready").hidden = true;
