@@ -143,6 +143,12 @@ type runtime struct {
 	// nobody needs to learn within ten seconds that a game was uninstalled.
 	appsChecked time.Time
 
+	// lutris is what the last game listing in this seat found, kept here
+	// because it has to outlive the Provisioner, which is built fresh for
+	// every scan. See lutrisMemory: asking Lutris costs a GPU stutter on
+	// every compositor sharing the card, and the sweep asks once a minute.
+	lutris *lutrisMemory
+
 	// fresh is what the seat was last found to be behind on, and freshChecked
 	// is when it was asked. Its own clock like appsChecked, and a much slower
 	// one: answering costs a pacman -Sy against the mirrors, and nothing about
@@ -446,7 +452,8 @@ func (m *Manager) runtimeOf(name string) *runtime {
 
 	rt, ok := m.rt[name]
 	if !ok {
-		rt = &runtime{state: StateAbsent, log: NewLog(400), uid: 1000, progress: -1}
+		rt = &runtime{state: StateAbsent, log: NewLog(400), uid: 1000, progress: -1,
+			lutris: &lutrisMemory{}}
 		m.rt[name] = rt
 	}
 
@@ -1992,6 +1999,7 @@ func (m *Manager) startSession(ctx context.Context, name string) error {
 		Seat:   seat,
 		Image:  m.cfg.Image,
 		Log:    func(f string, a ...any) { m.logf(name, f, a...) },
+		lutris: m.runtimeOf(name).lutris,
 	}
 
 	if err := p.waitSystemd(ctx); err != nil {

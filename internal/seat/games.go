@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -271,13 +272,127 @@ func (p *Provisioner) steamGames(ctx context.Context) ([]Game, error) {
 	return games, nil
 }
 
+// lutrisAbsent is what lutrisProbe says when the seat has no Lutris. A seat
+// without one is the common case and it should cost nothing at all.
+const lutrisAbsent = "no lutris"
+
+// lutrisProbe answers with something that changes when Lutris does.
+//
+// Everything Lutris knows about installed games is in pga.db, and a native
+// installation and a flatpak one keep their own. What the answer says does not
+// matter, only whether it is the same answer as last time, so a seat where
+// Lutris has never been run has a stable one too and is asked once rather than
+// once a minute.
+const lutrisProbe = `
+command -v lutris >/dev/null 2>&1 || { echo "` + lutrisAbsent + `"; exit 0; }
+
+# The word first, and always. Without it a Lutris that has never been run
+# answers with nothing at all, an empty answer is how the caller says it could
+# not read the seat, and that seat would be asked again every minute: exactly
+# the case this exists to stop.
+echo "lutris"
+
+# An "if" rather than a test and a stat joined by "and", for the reason
+# polyseat-fps carries the same shape: with the last file missing, the joined
+# form is a false last command and the whole script reports failure. A failure
+# here reads as "the seat could not be asked", and then it is asked again a
+# minute later, which is the thing being fixed.
+for db in "$HOME/.local/share/lutris/pga.db" \
+          "$HOME/.var/app/net.lutris.Lutris/data/lutris/pga.db"; do
+    if [ -e "$db" ]; then
+        stat -c "%n %Y %s" "$db"
+    fi
+done
+`
+
+// lutrisMemory is what a seat's last Lutris listing found.
+//
+// Asking Lutris is not a cheap read. It is a GTK application and has to be
+// started to answer, which brings up Xwayland and lets Lutris probe the card
+// with glxinfo and vulkaninfo. Measured on the machine that reported it: three
+// fresh GPU contexts once a minute, and every compositor sharing that card, the
+// host's and both seats', stops drawing for about a second while they are made.
+// A game list is not worth a stutter in somebody's game.
+//
+// So the answer is kept and reused until something about Lutris changes on
+// disk. The stamp is compared and never read.
+type lutrisMemory struct {
+	mu    sync.Mutex
+	stamp string
+	games []Game
+	held  bool
+}
+
+// recall answers with the listing taken at this stamp, if it is the one held.
+func (m *lutrisMemory) recall(stamp string) ([]Game, bool) {
+	if m == nil {
+		return nil, false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.held || m.stamp != stamp {
+		return nil, false
+	}
+
+	return m.games, true
+}
+
+// remember keeps a listing against the state of Lutris it was taken from.
+func (m *lutrisMemory) remember(stamp string, games []Game) {
+	if m == nil {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.stamp, m.games, m.held = stamp, games, true
+}
+
+// lutrisState reads the stamp from inside the seat.
+//
+// Deliberately not run as a login shell or with a display: this is a stat and
+// it must never be the thing that starts anything.
+func (p *Provisioner) lutrisState(ctx context.Context) (string, error) {
+	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
+		"HOME=/home/"+Player, "sh", "-c", lutrisProbe)
+	if err != nil {
+		return "", err
+	}
+
+	if code != 0 {
+		return "", nil
+	}
+
+	return strings.TrimSpace(out), nil
+}
+
 // lutrisGames lists what Lutris has installed.
 //
 // Through Lutris itself rather than by reading its database, because the
 // database is its own business and the command is documented. It needs a
-// display even to print a list, since it is one GTK application either way,
-// which is part of why the whole scan is on a slow timer.
+// display even to print a list, since it is one GTK application either way.
+//
+// What that costs is why lutrisMemory exists: the listing is taken again only
+// when the stamp above says Lutris has changed. An empty stamp means the seat
+// could not be asked, and then the listing is taken and not remembered, so that
+// one failed read does not freeze the app list until somebody installs a game.
 func (p *Provisioner) lutrisGames(ctx context.Context) ([]Game, error) {
+	stamp, err := p.lutrisState(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if stamp == lutrisAbsent {
+		return nil, nil
+	}
+
+	if games, ok := p.lutris.recall(stamp); ok {
+		return games, nil
+	}
+
 	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
 		"HOME=/home/"+Player,
 		"DISPLAY=:0",
@@ -321,6 +436,13 @@ func (p *Provisioner) lutrisGames(ctx context.Context) ([]Game, error) {
 			Image:  f.CoverPath,
 			Source: "lutris",
 		})
+	}
+
+	// Only a listing that was really taken is remembered, and only against a
+	// stamp the seat actually answered with. Remembering an empty stamp would
+	// hold whatever a failed read returned for as long as the daemon lives.
+	if stamp != "" {
+		p.lutris.remember(stamp, games)
 	}
 
 	return games, nil

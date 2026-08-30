@@ -474,6 +474,7 @@ func (m *Manager) refreshApps(ctx context.Context, name string) {
 		Image:  m.cfg.Image,
 		Log:    func(f string, a ...any) { m.logf(name, f, a...) },
 		uid:    m.runtimeOf(name).uid,
+		lutris: m.runtimeOf(name).lutris,
 	}
 
 	apps, changed, err := p.WriteApps(ctx)

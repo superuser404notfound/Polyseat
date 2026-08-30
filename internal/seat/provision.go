@@ -71,6 +71,12 @@ type Provisioner struct {
 	// without one and says so, rather than failing to build at all.
 	Library *library.Pool
 
+	// lutris is what the last game listing found, kept per seat by the manager
+	// so that the scan can skip starting Lutris when nothing has changed. Nil
+	// asks every time, which is right for a build: there is nothing to reuse
+	// and the seat is being made anyway. See lutrisMemory.
+	lutris *lutrisMemory
+
 	uid int64 // the player's uid inside the container, learned during the run
 }
 
