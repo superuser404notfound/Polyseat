@@ -3,6 +3,10 @@ package seat
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -363,5 +367,192 @@ func TestTheSameAnswerIsNotLoggedTwice(t *testing.T) {
 
 	if lines() == after {
 		t.Error("a changed answer was not logged")
+	}
+}
+
+// runCheckUpdates runs the real script against stubbed commands.
+//
+// The script is what runs inside every seat as root and the only thing that
+// ever reports why the package list could not be refreshed, so it is worth
+// running rather than reading. pacman and timeout are both stubs: the seconds
+// this bounds are real ones, and a test that waits out a real timeout is a test
+// nobody runs twice.
+func runCheckUpdates(t *testing.T, tmp, pacman, timeout string) (string, int) {
+	t.Helper()
+
+	dir := t.TempDir()
+
+	for name, body := range map[string]string{"pacman": pacman, "timeout": timeout} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A local database to link, since the script insists on one being there.
+	local := filepath.Join(dir, "root", "var", "lib", "pacman", "local")
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	script := strings.ReplaceAll(checkUpdatesScript, "/var/lib/pacman/local", local)
+
+	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+":"+os.Getenv("PATH"),
+		// Where the script puts its database. A parameter rather than this
+		// run's own directory, because the one test that matters most here
+		// needs two runs to share it: given a directory each, two runs cannot
+		// collide whatever the script does, and the test would be measuring
+		// its own scaffolding.
+		"TMPDIR="+tmp)
+
+	out, err := cmd.CombinedOutput()
+
+	code := 0
+	if exit := (&exec.ExitError{}); errors.As(err, &exit) {
+		code = exit.ExitCode()
+	} else if err != nil {
+		t.Fatal(err)
+	}
+
+	return string(out), code
+}
+
+// The ordinary answer: the sync worked and what is waiting is listed.
+func TestTheUpdateCheckListsWhatIsWaiting(t *testing.T) {
+	out, code := runCheckUpdates(t, t.TempDir(),
+		`case "$1" in -Sy) exit 0;; -Qu) echo "linux 1 -> 2"; echo "mesa 3 -> 4";; esac`,
+		`shift; exec "$@"`)
+
+	if code != 0 {
+		t.Fatalf("a working sync answered %d: %s", code, out)
+	}
+
+	if count, _ := pendingUpdates(out); count != 2 {
+		t.Errorf("counted %d packages in %q, want 2", count, out)
+	}
+}
+
+// What the seat says when the sync fails is now pacman's own last word rather
+// than an assumption about the network. Everything from a name that will not
+// resolve to a full disk used to arrive as one sentence about mirrors.
+func TestAFailedSyncCarriesWhatPacmanSaid(t *testing.T) {
+	out, code := runCheckUpdates(t, t.TempDir(),
+		`case "$1" in -Sy) echo "error: failed retrieving file 'core.db': Could not resolve host" >&2; exit 1;; esac`,
+		`shift; exec "$@"`)
+
+	if code != 3 {
+		t.Fatalf("a failed sync answered %d, want 3: %s", code, out)
+	}
+
+	problem := syncProblem(out)
+
+	if !strings.Contains(problem, "Could not resolve host") {
+		t.Errorf("the seat reports %q, which does not say what pacman said", problem)
+	}
+}
+
+// A sync that never returns is bounded, and says so in the words of the bound
+// rather than pacman's, because pacman was killed and said nothing.
+func TestASyncThatHangsIsBoundedAndSaysSo(t *testing.T) {
+	out, code := runCheckUpdates(t, t.TempDir(),
+		`exit 0`,
+		`exit 124`)
+
+	if code != 3 {
+		t.Fatalf("a bounded sync answered %d, want 3: %s", code, out)
+	}
+
+	problem := syncProblem(out)
+
+	if !strings.Contains(problem, syncPatience) {
+		t.Errorf("the seat reports %q, which does not say how long it waited", problem)
+	}
+}
+
+// And when pacman fails with nothing to say, the old sentence is still the best
+// there is. It was the only sentence before, which is the bug; it is the
+// fallback now.
+func TestASilentFailureKeepsTheOldSentence(t *testing.T) {
+	out, code := runCheckUpdates(t, t.TempDir(),
+		`case "$1" in -Sy) exit 1;; esac`,
+		`shift; exec "$@"`)
+
+	if code != 3 {
+		t.Fatalf("a failed sync answered %d, want 3: %s", code, out)
+	}
+
+	if problem := syncProblem(out); problem != "the package mirrors could not be reached from this seat" {
+		t.Errorf("a silent failure reports %q", problem)
+	}
+}
+
+// Two runs at once must not touch each other's database.
+//
+// This is the bug the whole thing was reported for. The pass on its six hour
+// timer and somebody pressing Check for updates are two callers that know
+// nothing of one another, and with one fixed directory between them the second
+// one's rm -rf takes the sync database out from under the first. What the seat
+// then reports is that the mirrors could not be reached, which is a sentence
+// about the network and was never true, and running the same command by hand
+// afterwards works every time because nothing collides with it.
+//
+// The stub is what measures it: it writes a file into the database directory,
+// waits long enough for the other run to get to its own setup, and fails if
+// what it wrote is gone.
+func TestTwoUpdateChecksAtOnceLeaveEachOtherAlone(t *testing.T) {
+	const pacman = `
+case "$1" in
+-Sy)
+	dbpath=$3
+	# Named after this run and not "marker". The first version of this stub
+	# wrote one name for both runs and passed against the very directory it was
+	# written to catch: the second run deletes the first one's file and then
+	# writes a file of the same name, so the check found somebody else's and
+	# called it its own.
+	echo mine > "$dbpath/marker.$$"
+	sleep 0.4
+	[ -f "$dbpath/marker.$$" ] || { echo "another run deleted this database" >&2; exit 1; }
+	;;
+-Qu)
+	echo "linux 1 -> 2"
+	;;
+esac
+`
+
+	type answer struct {
+		out  string
+		code int
+	}
+
+	done := make(chan answer, 2)
+
+	// One directory between them, which is what a seat really has: TMPDIR is
+	// not set inside a container, so both runs of the real script land in the
+	// same /tmp and only the name mktemp picks keeps them apart.
+	tmp := t.TempDir()
+
+	// Staggered, because that is the shape of it: the pass is in the middle of
+	// its sync when somebody presses the button. Two runs started at the same
+	// instant do their setup together and never notice each other, which is
+	// what made the first version of this test pass against the fixed
+	// directory it was written to catch.
+	for i := range 2 {
+		if i > 0 {
+			time.Sleep(150 * time.Millisecond)
+		}
+
+		go func() {
+			out, code := runCheckUpdates(t, tmp, pacman, `shift; exec "$@"`)
+			done <- answer{out, code}
+		}()
+	}
+
+	for i := range 2 {
+		got := <-done
+
+		if got.code != 0 {
+			t.Errorf("run %d answered %d: %s", i+1, got.code, got.out)
+		}
 	}
 }

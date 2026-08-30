@@ -212,13 +212,49 @@ func pendingUpdates(out string) (int, []string) {
 // runs as root inside the container.
 const checkUpdatesScript = `
 set -eu
-db=/tmp/polyseat-checkupdates
-rm -rf "$db"
-mkdir -p "$db"
+
+# A directory of this run's own, and not the one fixed name this used to have.
+#
+# Two things start this script and neither knows about the other: the six hour
+# pass, and somebody pressing Check for updates. With one path between them, the
+# rm -rf at the top of the second run deletes the sync database the first run is
+# in the middle of writing, pacman stops on a file that vanished under it, and
+# the seat reports that the mirrors could not be reached. The mirrors were fine.
+# That is what makes it worth a comment: the failure lands on the network, which
+# is the one thing here nobody can reproduce by hand afterwards, because running
+# the command yourself never collides with anything.
+db=$(mktemp -d "${TMPDIR:-/tmp}/polyseat-checkupdates.XXXXXX")
+trap 'rm -rf "$db"' EXIT
 ln -s /var/lib/pacman/local "$db/local"
-pacman -Sy --dbpath "$db" --logfile /dev/null >/dev/null 2>&1 || exit 3
+
+status=0
+err=$(timeout ` + syncPatience + ` pacman -Sy --dbpath "$db" --logfile /dev/null 2>&1 >/dev/null) || status=$?
+
+if [ "$status" -eq 124 ]; then
+	echo "no mirror answered within ` + syncPatience + ` seconds"
+	exit 3
+fi
+
+if [ "$status" -ne 0 ]; then
+	echo "$err" | grep -v "^[[:space:]]*$" | tail -1
+	exit 3
+fi
+
 pacman -Qu --dbpath "$db" 2>/dev/null || true
 `
+
+// syncPatience bounds the sync inside the seat.
+//
+// Because there is no bound in pacman worth relying on here. It tries every
+// mirror in the list in turn and each connection has its own timeout, so a seat
+// whose way out is broken rather than absent spends minutes finding that out,
+// and the button in the interface waits for all of it: pressing Check for
+// updates on such a seat looked like a button that had hung.
+//
+// Forty five seconds because a working sync of the four databases is seconds,
+// on a slow link still well under half of this, and because the whole look is
+// bounded at two minutes and the Sunshine half has to fit in it as well.
+const syncPatience = "45"
 
 // record stores what a look found, and is the only thing that does.
 //
@@ -319,10 +355,10 @@ func (m *Manager) Freshness(ctx context.Context, name string) Freshness {
 	case err != nil:
 		f.Problem = fmt.Sprintf("the seat could not be asked: %v", err)
 	case code == 3:
-		// The mirrors did not answer. Not the seat's fault and not worth a
-		// fault on its card: it means the count is unknown for now, and the
-		// count being unknown is what an empty Packages with a Problem says.
-		f.Problem = "the package mirrors could not be reached from this seat"
+		// The sync failed. Not the seat's fault and not worth a fault on its
+		// card: it means the count is unknown for now, and the count being
+		// unknown is what an empty Packages with a Problem says.
+		f.Problem = syncProblem(out)
 	case code != 0:
 		f.Problem = fmt.Sprintf("pacman answered %d when asked what is waiting", code)
 	default:
@@ -330,6 +366,28 @@ func (m *Manager) Freshness(ctx context.Context, name string) Freshness {
 	}
 
 	return f
+}
+
+// syncProblem is what the seat said, rather than what it was assumed to mean.
+//
+// This line used to be the sentence "the package mirrors could not be reached
+// from this seat", written whatever had happened, because the script sent
+// pacman's own complaint to /dev/null. Everything that can go wrong there came
+// out as one guess about the network: a mirror really being unreachable, but
+// also a name that does not resolve, a signature that will not check, a full
+// disk, or /tmp being read only. It read as a measurement and was not one, and
+// on a machine where it appeared on every seat it said nothing about which of
+// those to go and look at.
+func syncProblem(out string) string {
+	said := strings.TrimSpace(lastLines(out, 1))
+
+	// Keeping the old sentence for the case it was always right about: pacman
+	// said nothing at all, so there is nothing to report but the assumption.
+	if said == "" {
+		return "the package mirrors could not be reached from this seat"
+	}
+
+	return "the package list could not be refreshed: " + said
 }
 
 // Summary is the one line the interface shows for a seat that is behind.
