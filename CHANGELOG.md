@@ -10,6 +10,46 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.12.1
+
+**Both seats said the package mirrors could not be reached, and they were
+reachable.** Reported against 0.12.0 from a running machine, with the same sync
+answering in two seconds when it was run inside the seat by hand. Pressing Check
+for updates took a very long time to arrive at the same sentence. Nothing about
+the network was wrong.
+
+**Seats are not touched by this.** Nothing here changes how one is built, so an
+existing machine updates with a restart and no seat has to be provisioned again.
+
+- **The check ran in one fixed directory whose first act is `rm -rf`.** Two
+  callers start it and neither knows about the other: the six hour pass, and the
+  button. The pass does not mark a seat busy and the button only refuses a seat
+  that is busy, so both can run in one seat at once, and the second one deletes
+  the sync database the first is in the middle of writing. pacman stops on a
+  file that vanished under it, and what the seat reports is a failure of the
+  network. It is also the one shape of this nobody can reproduce afterwards: a
+  command somebody runs themselves collides with nothing. Every run gets a
+  directory of its own from `mktemp -d` now, and takes it away again.
+
+- **Whatever pacman said went to `/dev/null`,** and every non-zero exit became
+  the same sentence about mirrors. A name that will not resolve, a signature
+  that will not check, a full disk and a database deleted underneath all arrived
+  as one guess, which read as a measurement and was not one. The last line of
+  what pacman said is what the card shows now. The old sentence is kept for the
+  case it was always right about: pacman failing with nothing to say.
+
+- **The wait is bounded at 45 seconds.** pacman works through the mirrorlist
+  with a timeout per connection and no bound of its own, and the button holds
+  the request open for all of it, so a seat whose sync fails slowly looked like
+  a button that had hung. A working sync of the four databases is two seconds.
+
+- **The tests run the real script against a stubbed pacman and timeout,** and
+  the one that matters took two goes to measure anything. Two runs started at
+  the same instant do their setup together and never collide; a marker file of
+  one name is replaced by the run that deleted it, so the first finds somebody
+  else's and calls it its own. Staggered by 150ms with a marker per run, it
+  fails against the old fixed directory with the exit code the seats reported.
+
 ## 0.12.0
 
 **Files from the host now have a way into a seat.** Every other route into a
