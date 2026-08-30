@@ -482,6 +482,41 @@ esac`, `shift; exec "$@"`)
 	}
 }
 
+// The directory the script makes has to be one the download user can get into.
+//
+// pacman downloads as alpm since 6.1 and Arch ships DownloadUser set, so a root
+// owned directory nobody else may enter stops the sync with "could not open
+// file ... Permission denied" before a single byte is fetched. mktemp makes one
+// of exactly that kind, which is how this arrived: the fix for two runs sharing
+// a directory shipped a directory neither run could download into.
+//
+// The stub asks the only question that matters, which is whether somebody who
+// is not root can enter and read it. pacman creates what it needs underneath
+// itself.
+func TestTheDatabaseDirectoryLetsTheDownloadUserIn(t *testing.T) {
+	out, code := runCheckUpdates(t, t.TempDir(), `
+case "$1" in
+-Sy)
+	mode=$(stat -c %a "$3")
+	case "$mode" in
+	*5|*7) : ;;
+	*)
+		echo "error: could not open file $3/sync/core.db.part: Permission denied" >&2
+		echo "mode is $mode" >&2
+		exit 1
+		;;
+	esac
+	;;
+-Qu)
+	echo "linux 1 -> 2"
+	;;
+esac`, `shift; exec "$@"`)
+
+	if code != 0 {
+		t.Errorf("the sync could not use the directory the script made: %s", out)
+	}
+}
+
 // A sync that never returns is bounded, and says so in the words of the bound
 // rather than pacman's, because pacman was killed and said nothing.
 func TestASyncThatHangsIsBoundedAndSaysSo(t *testing.T) {

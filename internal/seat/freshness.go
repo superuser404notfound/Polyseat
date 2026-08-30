@@ -225,6 +225,21 @@ set -eu
 # the command yourself never collides with anything.
 db=$(mktemp -d "${TMPDIR:-/tmp}/polyseat-checkupdates.XXXXXX")
 trap 'rm -rf "$db"' EXIT
+
+# mktemp makes it 0700 and pacman cannot work in that.
+#
+# Since 6.1 the download itself runs as another user, alpm, in a sandbox, and
+# Arch ships DownloadUser set. That user has to reach the file pacman opened for
+# it underneath this directory, and a root owned 0700 keeps it out:
+#
+#     error: could not open file .../sync/download-XXXX/core.db.part: Permission denied
+#     error: failed to setup a download payload for core.db
+#
+# 0755 is what pacman's own /var/lib/pacman/sync has, for the same reason. There
+# is nothing private in here: it is the public package databases, in a container
+# whose only other account is the player.
+chmod 0755 "$db"
+
 ln -s /var/lib/pacman/local "$db/local"
 
 status=0
