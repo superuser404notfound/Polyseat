@@ -10,6 +10,37 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.12.2
+
+**0.12.1 stopped the update check from working at all, and this puts it back.**
+The directory it started making for each run is one only its owner may enter,
+and pacman has not downloaded as its owner since 6.1. Anybody who installed
+0.12.1 sees every seat report a failed sync; this is the fix and there is
+nothing else in it.
+
+**Seats are not touched by this.** Nothing here changes how one is built, so an
+existing machine updates with a restart and no seat has to be provisioned again.
+
+- **`mktemp -d` makes a directory at 0755 now.** It makes one at 0700, and the
+  download runs as `alpm` in a sandbox because Arch ships `DownloadUser` set, so
+  the sync stopped before a byte was fetched:
+
+  ```
+  error: could not open file .../sync/download-XXXX/core.db.part: Permission denied
+  error: failed to setup a download payload for core.db
+  ```
+
+  0755 is what pacman's own `/var/lib/pacman/sync` has, for the same reason.
+  Measured in a seat with the two modes run side by side, 0700 exit 1 and 0755
+  exit 0. The test asks the same question the download user was asking, and
+  fails against 0.12.1 with `mode is 700`.
+
+- **The card reports the line that names the file.** A failed sync ends with
+  "failed to synchronize all databases (failed to retrieve some files)", which
+  is the last line and the least useful one: no database, no mirror, no reason.
+  0.12.1 put exactly that on the card. The lines above it carry all three, and
+  the first of them is what is shown now.
+
 ## 0.12.1
 
 **Both seats said the package mirrors could not be reached, and they were
