@@ -10,6 +10,59 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.13.0
+
+**A seat's software came from three places and the update knew about two of
+them.** pacman does not know a flatpak exists, nothing in the daemon ever ran
+`flatpak update`, and no timer inside a seat does either, so a seat could report
+itself up to date with every application the player installed months old. Found
+by reviewing the update path rather than reported.
+
+**And Big Picture came back windowed after every game.** Reported from a couch,
+with a photograph: quit a game and Steam Big Picture is an ordinary tiled window
+next to the welcome terminal. Not a Steam problem, and not the title race the
+existing helper was written for.
+
+**Seats have to be built again.** The recipe is at generation 36, so every seat
+is marked stale and wants provisioning. That is what puts the new helper in it
+and adds the line that starts it. A few minutes per seat, and the flatpak half
+of this needs no rebuild at all.
+
+- **The check asks Flathub what is waiting, and the update installs it.** As the
+  player, because a flatpak installed with `--user` lives in their home and
+  root's installation in a seat is empty. The card counts it separately,
+  "3 packages, 1 flatpak", because the two are updated by different things.
+
+- **Applications only, not runtimes.** A runtime update is fetched by the update
+  either way, and a count of three that means Discord and two things called
+  `org.freedesktop.Platform` is not one anybody can act on.
+
+- **A flatpak failure does not fail the update.** By the time it runs, the
+  packages and Sunshine are installed. A Flathub outage marking the seat as
+  failed would also skip the session restart that makes the rest of it take
+  effect, so it is a line in the seat's log and a count that stays where it was,
+  which is the seat saying it is still behind, which it is.
+
+- **sway allows one fullscreen container per workspace.** So a game going
+  fullscreen is sway taking fullscreen away from Big Picture, and nothing gave
+  it back: the rule in the configuration fires when a window is mapped, and that
+  window was mapped long before. `polyseat-bigpicture` stops insisting once it
+  has seen fullscreen, deliberately, so that leaving Big Picture for the desktop
+  does not drag you back into it.
+
+- **`polyseat-bigpicture-watch` watches instead of polling.** It reacts to a
+  fullscreen window closing, which is a game ending, and to a window becoming
+  Big Picture by being mapped or renamed as it, which is the cold Steam case the
+  title rule cannot catch. It ignores `fullscreen_mode` changing on a window
+  that stays, because that is `$mod+f` and undoing it would mean killing the
+  helper to use the seat.
+
+- **The Sunshine lookup can no longer spend a seat's whole turn.** Both halves
+  of a look ran on one context, so a request to GitHub that hangs rather than
+  refuses left nothing for the seat, and the card reported "the seat could not be
+  asked" about a seat nobody had asked. Twenty seconds for the lookup now,
+  inside whatever the caller allowed.
+
 ## 0.12.2
 
 **0.12.1 stopped the update check from working at all, and this puts it back.**
