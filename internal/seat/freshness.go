@@ -368,14 +368,7 @@ func (m *Manager) Freshness(ctx context.Context, name string) Freshness {
 		f.Sunshine = installedSunshine(out)
 	}
 
-	// The lookup and the seat are separate failures. GitHub being unreachable
-	// says nothing about the packages waiting inside the container, so it must
-	// not take the package half of the answer down with it.
-	if latest, err := m.sunshine.latest(ctx, time.Now); err != nil {
-		m.log.Debug("the published Sunshine version could not be looked up", "err", err)
-	} else {
-		f.SunshineLatest = latest
-	}
+	f.SunshineLatest = m.publishedSunshine(ctx)
 
 	out, code, err = m.client.Try(ctx, name, "sh", "-c", checkUpdatesScript)
 
@@ -394,6 +387,43 @@ func (m *Manager) Freshness(ctx context.Context, name string) Freshness {
 	}
 
 	return f
+}
+
+// sunshinePatience bounds the question asked of GitHub, inside whatever the
+// caller allowed for the whole look.
+//
+// Because the two halves of this were separate in their errors and not in their
+// time. A failed lookup was already kept from taking the package count down
+// with it, but both ran on one context, and a request that hangs rather than
+// refuses spends the caller's entire budget: the pass allows two minutes, so a
+// connection that never answers left nothing for the seat and the card reported
+// "the seat could not be asked: context deadline exceeded". The seat was never
+// asked at all, and the machine this was found on had a resolver that dropped
+// out for a minute at a time, which is exactly the shape that produces it.
+//
+// Twenty seconds because this is one small request to an API that answers in
+// well under a second when it answers, and because what is left has to be
+// enough for the sync, which has forty five of its own.
+const sunshinePatience = 20 * time.Second
+
+// publishedSunshine is what LizardByte have published, or an empty string when
+// that could not be found out.
+//
+// Empty rather than an error on purpose: not knowing what is published is not a
+// fault of the seat, and SunshineBehind already treats an unknown as "nothing to
+// offer" rather than as a reason to offer an update nobody can be sure of.
+func (m *Manager) publishedSunshine(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, sunshinePatience)
+	defer cancel()
+
+	latest, err := m.sunshine.latest(ctx, time.Now)
+	if err != nil {
+		m.log.Debug("the published Sunshine version could not be looked up", "err", err)
+
+		return ""
+	}
+
+	return latest
 }
 
 // syncProblem is what the seat said, rather than what it was assumed to mean.

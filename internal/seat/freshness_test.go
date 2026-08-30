@@ -3,6 +3,8 @@ package seat
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -619,5 +621,76 @@ esac
 		if got.code != 0 {
 			t.Errorf("run %d answered %d: %s", i+1, got.code, got.out)
 		}
+	}
+}
+
+// The question asked of GitHub must not be able to spend the whole look.
+//
+// The two halves were separate in their errors and not in their time. A request
+// that hangs rather than refuses takes everything the caller allowed, and what
+// the card then says is "the seat could not be asked: context deadline
+// exceeded" about a seat that was never asked. A resolver that drops out for a
+// minute at a time produces exactly that, and one did on the machine this was
+// found on.
+func TestTheSunshineLookupCannotSpendTheWholeLook(t *testing.T) {
+	var deadline time.Time
+
+	var ok bool
+
+	m := &Manager{
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		sunshine: &sunshineCache{ask: func(ctx context.Context) (string, error) {
+			deadline, ok = ctx.Deadline()
+
+			return "", errors.New("nothing answered")
+		}},
+	}
+
+	// What the pass allows for a whole seat.
+	ctx, cancel := context.WithTimeout(context.Background(), freshPatience)
+	defer cancel()
+
+	if got := m.publishedSunshine(ctx); got != "" {
+		t.Errorf("a failed lookup answered %q, and an unknown version has to be empty", got)
+	}
+
+	if !ok {
+		t.Fatal("the lookup was given no deadline at all, so a request that hangs takes the whole look")
+	}
+
+	if left := time.Until(deadline); left > sunshinePatience+time.Second {
+		t.Errorf("the lookup may run for %s, which is more than the %s it is allowed",
+			left.Round(time.Second), sunshinePatience)
+	}
+
+	// And what is left has to be enough for the seat itself, which is the whole
+	// point: the sync alone is allowed 45 seconds.
+	if remaining := freshPatience - sunshinePatience; remaining < time.Minute {
+		t.Errorf("a look leaves only %s for the seat after the lookup", remaining)
+	}
+}
+
+// A caller with less time than the bound keeps its own. WithTimeout takes the
+// shorter of the two, and a test that never checks it would not notice the day
+// somebody replaces it with a context built from Background.
+func TestTheSunshineLookupNeverExtendsTheCallersTime(t *testing.T) {
+	var deadline time.Time
+
+	m := &Manager{
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		sunshine: &sunshineCache{ask: func(ctx context.Context) (string, error) {
+			deadline, _ = ctx.Deadline()
+
+			return "", errors.New("nothing answered")
+		}},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	m.publishedSunshine(ctx)
+
+	if left := time.Until(deadline); left > time.Second {
+		t.Errorf("the lookup runs for %s on a caller that allowed 50ms", left.Round(time.Millisecond))
 	}
 }
