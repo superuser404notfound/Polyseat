@@ -8,6 +8,11 @@
 # appeared to fix it: the window came up small in the corner of the screen the
 # first time and correctly the second.
 #
+# The title is matched as a fragment because Steam translates it: English says
+# "Steam Big Picture Mode", German "Big-Picture-Modus". The sway configuration
+# and polyseat-bigpicture-watch carry the same pattern, and a test holds the
+# three to it.
+#
 # So the rule stays as the fast path and this insists afterwards. Asking for
 # fullscreen on a window that already has it does nothing, and asking for it on
 # a window that does not exist yet does nothing either, so the only cost of
@@ -37,13 +42,23 @@ while [ "$i" -lt 60 ]; do
     i=$((i + 1))
 
     state=$(swaymsg -t get_tree 2>/dev/null | python3 -c '
-import json, sys
+import json, re, sys
 
-want = "Steam Big Picture Mode"
+want = re.compile(r"[Bb]ig[ _-][Pp]icture")
+
+
+def mine(node):
+    if not node.get("pid"):
+        return False
+
+    if (node.get("window_properties") or {}).get("class") != "steam":
+        return False
+
+    return bool(want.search(node.get("name") or ""))
 
 
 def walk(node):
-    if node.get("name") == want and node.get("pid"):
+    if mine(node):
         return "full" if node.get("fullscreen_mode") else "windowed"
 
     for key in ("nodes", "floating_nodes"):
@@ -64,7 +79,7 @@ except Exception:
     case "$state" in
         full) exit 0 ;;
         windowed)
-            swaymsg '[class="^steam$" title="^Steam Big Picture Mode$"] fullscreen enable' \
+            swaymsg '[class="^steam$" title="[Bb]ig[ _-][Pp]icture"] fullscreen enable' \
                 >/dev/null 2>&1
             ;;
     esac
