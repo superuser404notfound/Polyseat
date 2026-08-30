@@ -10,6 +10,63 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.13.1
+
+**The whole machine stuttered for about a second, every 70 seconds, whenever
+seats were running.** Reported from the host's desktop and confirmed inside a
+seat's game, so it was not a desktop problem: everything drawing on that machine
+stopped at the same moment. Found by measurement rather than by reading code,
+and what the measurements ruled out matters as much as what they found. No gap
+in the scheduling, none in the input path, no error and no throttling from the
+card, and the driver answering a query every 250ms straight through it.
+
+What lined up was the period. Six stutters came 70, 71, 69, 71 and 71 seconds
+apart, and a watch on every process start found four things on exactly that
+clock in one seat: `lutris`, `Xwayland`, `glxinfo` and `vulkaninfo`. Running the
+listing command by hand reproduced the stutter on demand.
+
+**Big Picture still came back windowed after a game**, because the fix in 0.13.0
+matched an English window title and Steam translates it. A German session calls
+the window "Big-Picture-Modus", so the watcher, the sway rule and the launcher
+all matched a window nobody had.
+
+**Seats have to be built again.** The recipe is at generation 37, which is what
+puts the new watcher and the corrected rule into a seat. A few minutes per seat.
+The stutter is fixed in the daemon alone and needs no rebuild.
+
+- **The game listing is kept until Lutris changes on disk.** Asking Lutris what
+  it has means starting Lutris, and it is a GTK application: it brings up
+  Xwayland and probes the card with glxinfo and vulkaninfo. Three fresh GPU
+  contexts once a minute, on a card shared by the host's compositor and every
+  seat's. A stat of its database now answers whether anything changed, without
+  starting anything.
+
+- **A seat with no Lutris costs a stat.** It used to cost a failed exec a
+  minute, and a Lutris that has never been run answered with nothing at all,
+  which read as "could not be asked" and had it asked again a minute later.
+
+- **The listing is only remembered when it was really taken**, so one failed
+  read does not freeze Moonlight's list until somebody installs a game.
+
+- **Big Picture is found by what happened, not by what it is called.** The
+  watcher follows sway's own events: a window loses fullscreen, another takes it
+  in the same moment, and when that one closes the first gets it back. That is
+  language independent and application independent, and it leaves $mod+f alone,
+  because leaving fullscreen by hand is the same first event with nothing after
+  it. The whole recorded session from the seat runs as a test.
+
+- **The title match that remains is a pattern the three files share**, and a
+  test holds them to it. The cold start branch also fires only the first time it
+  sees a window, so a rename by Steam no longer drags a player back into Big
+  Picture after they left it.
+
+- **The input broker reads an extended attribute instead of starting getfacl.**
+  Two seats meant 23 getfacl processes a second, forever, to ask whether a
+  device node still carries an access list naming somebody. Measured at 885us a
+  call against 0.7us for the read. It also fixes what that call had wrong: it
+  looked only at named users, and an entry naming a group opens a node exactly
+  as far.
+
 ## 0.13.0
 
 **A seat's software came from three places and the update knew about two of
