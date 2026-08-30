@@ -10,6 +10,45 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.10.0
+
+**Flatpak in a seat has to be paid for differently now.** Upstream removed the
+thing this project was using, on a Wednesday, and the first sign of it here was
+that a brand new seat installed no packages at all.
+
+**Seats have to be built again.** The recipe is at generation 34, so every
+existing seat is marked stale in the interface and wants provisioning again.
+That is a few minutes per seat and it is not optional: a seat built by
+generation 33 still has the removed package installed, and its next update would
+stop on it.
+
+- **A new seat installed nothing, and said `target not found: bubblewrap-suid`.**
+  bubblewrap 0.12.0 removed the setuid build outright on 2026-08-26, and Arch
+  dropped the `bubblewrap-suid` package the same day. A seat syncing a package
+  database from after that date asks for a package that no longer exists, pacman
+  refuses the whole transaction over the one missing target, and so not one of
+  the sixty-odd session packages arrives. Nothing about the seat is wrong; the
+  package simply stopped existing between one build and the next.
+
+- **Seats carry `security.nesting=true` instead.** This is the fix that
+  `docs/security.md` has described since M4 as the obvious one and declined to
+  take, in favour of a setuid bwrap. The reasoning behind that preference has
+  not changed and no longer has anywhere to go: the setuid build was deprecated
+  in 0.11.2 after CVE-2026-41163 and is gone in 0.12.0, so keeping it would mean
+  building an abandoned version with an unfixed advisory in every seat. One key
+  on the container is the smaller thing to own than that. What it widens, and
+  what it does not, is written out in `docs/security.md`.
+
+- **Provisioning removes the setuid package where it finds one.** It is orphaned
+  now that nothing carries it, and it conflicts with the plain `bubblewrap` that
+  replaces it, which pacman will not resolve on its own. Provisioning takes the
+  old one out with `-Rdd` and the same transaction puts the plain one back.
+
+- **Proton is not involved in any of this**, in either direction. The mount that
+  fails needs `--unshare-pid`, Steam's pressure-vessel does not use it, and
+  flatpak does. That was true when the setuid binary was the answer and it is
+  true now.
+
 ## 0.9.1
 
 **Installed games went missing from Moonlight.** Reported against 0.9.0 from a
