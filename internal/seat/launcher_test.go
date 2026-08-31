@@ -140,8 +140,16 @@ func launcherStubs(t *testing.T) (home, dump, state, script string) {
 	dump = filepath.Join(home, "environment")
 	state = filepath.Join(home, "open")
 
+	// The fake fuzzel says it is running before it says anything else. A test
+	// waits on the environment dump and then asks whether the launcher is open,
+	// and with the two writes the other way round there was a moment in between
+	// where the dump was there and the launcher was not: a started process that
+	// had not got to its second line yet, read as a refresh that closed the
+	// launcher and left nothing in its place. It failed one CI run in two on
+	// 0.13.3 and never on the machine this is written on, which is what that
+	// order buys.
 	stubs := map[string]string{
-		"fuzzel": "#!/bin/sh\nenv > " + dump + "\ntouch " + state + "\n",
+		"fuzzel": "#!/bin/sh\ntouch " + state + "\nenv > " + dump + "\n",
 		"pgrep":  "#!/bin/sh\n[ -e " + state + " ]\n",
 		"pkill":  "#!/bin/sh\nrm -f " + state + "\n",
 	}
