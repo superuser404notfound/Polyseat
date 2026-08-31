@@ -1958,7 +1958,7 @@ func (m *Manager) Start(name string) error {
 		}
 
 		if status != "Running" {
-			if err := m.client.Start(ctx, name); err != nil {
+			if err := startContainer(ctx, m.client, name, func(f string, a ...any) { m.logf(name, f, a...) }); err != nil {
 				return err
 			}
 		} else if m.active(ctx, name, "polyseat-sway.service") &&

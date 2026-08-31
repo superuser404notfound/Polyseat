@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/superuser404notfound/Polyseat/internal/config"
+	"github.com/superuser404notfound/Polyseat/internal/hostcg"
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
 	"github.com/superuser404notfound/Polyseat/internal/library"
 	"github.com/superuser404notfound/Polyseat/internal/seat"
@@ -192,12 +193,35 @@ func (o *out) machine() {
 	}
 
 	o.line("kernel", strings.TrimSpace(readOr("/proc/sys/kernel/osrelease")))
+
+	// Which layout the host is in, because one legacy mount under the unified
+	// tree makes LXC refuse every container start, and what Incus reports when
+	// that happens names neither cgroups nor the mount. A report that did not
+	// carry this line would send somebody looking at seats, devices and Incus
+	// versions for an afternoon, which is where this line comes from.
+	o.line("cgroup layout", cgroupLayout())
 	o.line("cpu", firstField("/proc/cpuinfo", "model name"))
 	o.line("memory", firstField("/proc/meminfo", "MemTotal"))
 
 	if name, err := os.Hostname(); err == nil {
 		o.line("host name", name)
 	}
+}
+
+// cgroupLayout says whether this host is unified, and names what makes it not.
+func cgroupLayout() string {
+	legacy := hostcg.Mounts()
+	if len(legacy) == 0 {
+		return "unified"
+	}
+
+	parts := make([]string, 0, len(legacy))
+
+	for _, l := range legacy {
+		parts = append(parts, fmt.Sprintf("%s (%s, %d processes)", l.Point, l.Controllers, l.Users))
+	}
+
+	return fmt.Sprintf("hybrid, so no container can start here: %s", strings.Join(parts, ", "))
 }
 
 func (o *out) graphics(cfg config.Config) {

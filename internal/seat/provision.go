@@ -282,7 +282,7 @@ func (p *Provisioner) stepContainer(ctx context.Context) error {
 	if status != "Running" {
 		p.Log("starting the container")
 
-		if err := p.Client.Start(ctx, p.name()); err != nil {
+		if err := startContainer(ctx, p.Client, p.name(), p.Log); err != nil {
 			return err
 		}
 	}
