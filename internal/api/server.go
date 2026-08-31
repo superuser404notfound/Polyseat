@@ -7,6 +7,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -298,6 +300,38 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// instance names this process, and only for as long as it runs.
+//
+// The page that asks for a restart has to know when the daemon it was talking
+// to has been replaced, and "is the API answering" cannot tell it: the restart
+// is scheduled a second out, so for the first moment it is the old process
+// answering, and a stop that takes its time keeps it answering for longer than
+// that. Waiting a fixed number of seconds and reloading was the same guess
+// with a nicer spinner in front of it. A value made once at startup settles it
+// with a fact: a different one is a different process, whatever the timing.
+//
+// Eight random bytes and not the startup time, which would have done the same
+// job while telling anybody who asked how long this machine had been up. What
+// carries it answers before there is a session, because the page has to know
+// which of the two interfaces to draw before it can ask for anything else, so
+// what it says is said to whoever reaches the port.
+var instance = newInstance()
+
+// newInstance is one such name, made once.
+func newInstance() string {
+	b := make([]byte, 8)
+
+	if _, err := rand.Read(b); err != nil {
+		// The startup time in base 36. crypto/rand does not fail on a Linux
+		// this daemon can run on, and if it ever did, a name that merely
+		// differs from the last one is still the whole of what is needed here:
+		// two runs are a restart apart and cannot share a nanosecond.
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+
+	return hex.EncodeToString(b)
+}
+
 // session tells the interface whether it has to ask for a password, and
 // whether there is one to ask for yet.
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
@@ -315,6 +349,10 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		// by fetching state and looking at what came back would mean drawing
 		// the wrong one first.
 		"ready": s.ready(),
+
+		// Which process is answering, for the page waiting out a restart. See
+		// instance.
+		"instance": instance,
 	})
 }
 
@@ -1829,6 +1867,13 @@ func (s *Server) runUpdate(rel *update.Release) {
 	s.notify()
 }
 
+// startRestart is update.Restart behind a name a test can replace.
+//
+// The same seam as startRemoval and for the same reason: the real one hands a
+// job to systemd, which a test cannot take back, and what is worth checking
+// here is the answer the page gets rather than what systemd does with it.
+var startRestart = update.Restart
+
 // restart schedules a restart of the daemon, refusing while somebody plays.
 //
 // Separate from the update on purpose. Replacing the binary leaves the running
@@ -1864,7 +1909,7 @@ func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := update.Restart(); err != nil {
+	if err := startRestart(); err != nil {
 		fail(w, http.StatusInternalServerError, err)
 
 		return
@@ -1872,5 +1917,12 @@ func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Info("a restart was asked for from the interface")
 
-	writeJSON(w, http.StatusAccepted, map[string]any{"restarting": true})
+	// Named, because the page is about to spend two minutes deciding whether
+	// the daemon it is talking to is still this one. This is the process that
+	// agreed to go, said by the process itself in the answer that agreed to it,
+	// which leaves nothing for the page to have got out of date about.
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"restarting": true,
+		"instance":   instance,
+	})
 }

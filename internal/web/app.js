@@ -237,14 +237,29 @@ function closeDialogs() {
 // the request that asks for it is answered before the process dies. That is
 // also why "is the API answering" is not on its own enough to say it came back:
 // for the first second it is the old process answering, and reloading against
-// that lands on a page whose daemon disappears underneath it. So a success only
-// counts once the daemon has been seen to go, or once long enough has passed
-// that it must have gone and come back.
+// that lands on a page whose daemon disappears underneath it.
+//
+// So the daemon is asked which daemon it is. Every process names itself once at
+// startup and gives that name out on /api/session, and before is the name of the
+// one that agreed to go, taken from the answer in which it agreed: whatever
+// answers afterwards, a different name is a different process, and that is a
+// finished restart said as a fact rather than guessed from a clock. Having seen
+// it go and answer again counts too, for the one case a name cannot cover: a
+// restart into a build old enough not to have one.
+//
+// What stood in for both was a reload after eight seconds, on the grounds that
+// by then it must have gone and come back. It need not have. Stopping is
+// allowed thirty seconds by the unit and this daemon can use twenty-five of
+// them waiting for the seat manager, the transient unit fires a second out and
+// then queues like any other systemd job, and a machine under load is slower
+// than all of that. Each of those ends the same way: the spinner stops while
+// the old process is still on its way out, the page reloads into it, and the
+// daemon dies underneath a page that has just been told everything is fine.
 //
 // It gives up rather than spinning forever. A restart that has not finished in
 // two minutes is not a slow restart, it is one that failed, and a machine
 // somebody has to go and look at should say so instead of animating.
-async function awaitRestart() {
+async function awaitRestart(before) {
   if (stream) {
     stream.close();
     stream = null;
@@ -281,10 +296,17 @@ async function awaitRestart() {
     waited.textContent = `${seconds}s`;
   }, 1000);
 
-  const reachable = () =>
-    fetch("/api/session", { credentials: "same-origin" }).then(
-      (r) => r.ok || r.status === 401,
-      () => false,
+  const probe = () =>
+    fetch("/api/session", { credentials: "same-origin", cache: "no-store" }).then(
+      (r) =>
+        r.json().then(
+          (session) => ({ up: true, instance: session.instance || null }),
+          // Answering is the half of this that matters. A body this cannot
+          // read, or a 401 in place of one, still came from a process that is
+          // listening; it just cannot say which.
+          () => ({ up: true, instance: null }),
+        ),
+      () => ({ up: false, instance: null }),
     );
 
   let sawDown = false;
@@ -293,26 +315,50 @@ async function awaitRestart() {
     await new Promise((done) => setTimeout(done, 1000));
 
     const elapsed = Date.now() - started;
-    const up = await reachable();
+    const { up, instance } = await probe();
 
     if (!up) {
       sawDown = true;
-    } else if (sawDown || elapsed > 8000) {
-      clearInterval(tick);
-      location.reload();
+    } else {
+      // Two names is the whole question answered, and having gone quiet in
+      // between says nothing next to it: a dropped connection is a daemon that
+      // is stopping, but it is also a laptop's radio, and a process that gives
+      // its old name back afterwards is the old process either way. Only when
+      // there is no name to compare, which means a restart into a build that
+      // has none, does going and coming back have to stand in for it.
+      const named = Boolean(before) && instance !== null;
 
-      return;
+      if (named ? instance !== before : sawDown) {
+        clearInterval(tick);
+        location.reload();
+
+        return;
+      }
     }
 
     if (elapsed > 120000) {
       clearInterval(tick);
       spinner.remove();
-      title.textContent = "The daemon has not come back";
-      text.textContent =
-        "Two minutes without an answer. It is worth looking at the machine " +
-        "itself: systemctl status polyseatd, and journalctl -u polyseatd for " +
-        "why it stopped. Nothing here can say more than that.";
       waited.textContent = "";
+
+      if (up && !sawDown) {
+        // Two minutes of the same process answering is not a daemon that failed
+        // to come back, it is one that never left, and the thing that was to
+        // send it away is the transient unit. --collect takes that unit away
+        // once it is done, so its journal is what is left of it.
+        title.textContent = "The restart never happened";
+        text.textContent =
+          "Two minutes, and the daemon answering is the same one that was " +
+          "asked to go. Whatever was to restart it did not: journalctl -u " +
+          "polyseat-restart is where that was to happen, and journalctl -u " +
+          "polyseatd is the daemon itself. Nothing here can say more than that.";
+      } else {
+        title.textContent = "The daemon has not come back";
+        text.textContent =
+          "Two minutes without an answer. It is worth looking at the machine " +
+          "itself: systemctl status polyseatd, and journalctl -u polyseatd for " +
+          "why it stopped. Nothing here can say more than that.";
+      }
 
       const again = document.createElement("button");
       again.textContent = "Reload anyway";
@@ -348,8 +394,10 @@ function restartButton(choice) {
     // and the button being pressed, or this machine is in the middle of being
     // prepared — and covering the page before knowing that would hide the
     // refusal behind an animation of something that is not happening.
+    let accepted;
+
     try {
-      await api("POST", "/api/restart");
+      accepted = await api("POST", "/api/restart");
     } catch (err) {
       button.disabled = false;
 
@@ -362,7 +410,7 @@ function restartButton(choice) {
       return;
     }
 
-    await awaitRestart();
+    await awaitRestart(accepted.instance);
   };
 
   return button;
@@ -2881,8 +2929,10 @@ function preparePanel(options) {
     restart.disabled = true;
     restart.textContent = "Restarting";
 
+    let accepted;
+
     try {
-      await api("POST", "/api/restart");
+      accepted = await api("POST", "/api/restart");
     } catch (err) {
       restart.disabled = false;
       restart.textContent = "Restart the daemon";
@@ -2895,7 +2945,7 @@ function preparePanel(options) {
     // reached after preparing the machine, where the restart is the step that
     // makes Incus and the observer reachable at all, so leaving somebody
     // guessing whether it worked is worse here rather than better.
-    await awaitRestart();
+    await awaitRestart(accepted.instance);
   };
 
   done.append(doneText, restart);
