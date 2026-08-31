@@ -10,6 +10,52 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.13.3
+
+**The screen that says Polyseat is restarting ended before the restart did.**
+It covered the page, counted the seconds, and after eight of them reloaded
+whether or not anything had happened. Often enough the daemon was still on its
+way out at that point, so the page reloaded into the old process and that
+process then died underneath a page that had just been told everything was
+fine: cards that were true a moment ago, an event stream that dropped again,
+and no sign left that a restart had been asked for.
+
+Eight seconds was a guess about a stop that has no fixed length. The unit
+allows thirty seconds for it and this daemon can use twenty-five of them
+waiting for the seat manager to let go, the transient unit that does the
+restarting fires a second out and then queues like any other systemd job, and
+a machine with something heavy running is slower than all of that.
+
+**The daemon now says which daemon it is, and the page waits for that to
+change.** Every process names itself once at startup, gives the name out on
+`/api/session` and puts it in the answer that agrees to a restart, so the page
+holds the name of the process that agreed to go. Whatever answers afterwards, a
+different name is a different process and the restart is over. Nothing is read
+off a clock.
+
+**No seat has to be built again.** This is the daemon and the page it serves.
+
+- **The name is eight random bytes and not the startup time.** The startup time
+  would have done the same job while telling anybody who reached the port how
+  long the machine had been up, and the endpoint that carries the name answers
+  before there is a session: the page has to know which of the two interfaces
+  to draw before it can ask for anything else.
+
+- **Having seen the daemon go and answer again still counts, but no longer on
+  its own.** It is what decides a restart into a build old enough to have no
+  name, and there it is the only thing there is. Where there are two names to
+  compare, they decide it: a dropped connection is a daemon that is stopping,
+  but it is also a laptop's radio, and a process that gives its old name back
+  afterwards is the old process either way. Before this, any blip followed by
+  any answer was read as a finished restart.
+
+- **Two minutes without an end now says which of the two failures it was.** A
+  daemon that answered the whole time is not one that failed to come back, it
+  is one that never left, and what did not happen is the transient unit. That
+  unit is started with `--collect`, so it is gone by the time anybody looks;
+  the page names `journalctl -u polyseat-restart` rather than a status that
+  would report nothing.
+
 ## 0.13.2
 
 **A seat that had been stopped would not start again, and what said so named
