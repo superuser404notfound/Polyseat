@@ -10,6 +10,73 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.13.2
+
+**A seat that had been stopped would not start again, and what said so named
+nothing to do with the reason.** The interface showed
+
+    Failed to run: /usr/lib/incus/incusd forklxc joser ... exit status 1
+
+which is a helper and an exit code. The reason was in
+`/var/log/incus/<seat>/lxc.log`, a file only root can read: `Unsupported cgroup
+layout (hybrid)`. LXC 7 refuses to start any container on a host it calls
+hybrid, and one cgroup v1 mount anywhere under `/sys/fs/cgroup` earns that name
+even when everything else on the machine is unified.
+
+The mount was nothing the machine's owner had done. `mullvad-daemon` mounts
+`net_cls` for its split tunneling every time it starts, has no option to leave
+it alone, and puts it back after every reboot and every update. Seats that were
+already running when it appeared kept running, so what it looked like was one
+broken seat rather than a host that could no longer start any. An afternoon went
+into the seat, its devices and the Incus version before the layout was even
+suspected, which is the failure this release is really about: not the mount, but
+that nothing on the way from the button to the log mentioned cgroups.
+
+**The daemon now clears such a hierarchy out of the way itself, and only when
+nothing is in it.** An empty hierarchy is evidence that nobody uses the feature
+it belongs to, and clearing it costs its owner nothing they would notice. One
+with processes in it belongs to somebody who is relying on it, and that one is
+left alone and explained instead, with the command that would clear it and what
+clearing it would cost. Split tunneling stops working until `mullvad-daemon` is
+next started, and the mount comes back when it is.
+
+**No seat has to be built again.** This is in the daemon alone.
+
+- **The check happens after a start has failed, not before one is attempted.**
+  Refusing a start because the layout looks wrong would be a claim that it
+  cannot work, and that claim is only as good as one reading of a version of LXC
+  that has changed before. Get it wrong and a machine that would have run seats
+  is told it cannot, with no way for the person in front of it to disagree.
+  Asked only after a real failure, it cannot be wrong in that direction: on a
+  host where everything works, none of this ever runs.
+
+- **What it looks at, though, is read before the start rather than after it.** A
+  failing start destroys the evidence it would be judged on. LXC makes cgroups
+  of its own in every hierarchy on the host and moves the attempt's processes
+  through them, so a host asked afterwards reports processes that belong to the
+  failure itself, and the failure ends up vouching for its own irreparability.
+  On hardware it reported two processes, none a second later, in a cgroup that
+  no exclusion list would have been written for in advance.
+
+- **Counting who uses a hierarchy counts the child cgroups and never the root.**
+  In cgroup v1 every process on the machine is a member of the root of every
+  mounted hierarchy, so a host with nothing in `net_cls` still shows several
+  hundred there. Counting those would call an untouched hierarchy busy and turn
+  the one case that can be fixed into the one case that is refused.
+
+- **Whether the mount is gone is decided by the mount table, not by what
+  `umount` printed.** A failed start can remove the mount by itself: it is a
+  shared mount, and an unmount inside the namespace LXC builds propagates back
+  to the host. `umount` then says "not mounted" and exits 32, which is the
+  wanted state arriving by another route. An earlier version of this read that
+  as a failure and skipped the retry while standing in front of the result it
+  had asked for.
+
+- **`polyseat-report` gains a `cgroup layout` line.** It sits with the kernel
+  and the CPU in the Machine section, because it is exactly the kind of fact a
+  report exists to carry and no amount of reading a seat's own state would have
+  produced it.
+
 ## 0.13.1
 
 **The whole machine stuttered for about a second, every 70 seconds, whenever
