@@ -10,6 +10,29 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.14.1
+
+**The package wrote into a directory belonging to another package and did not
+say so.** 0.14.0 installs the launcher icon into
+`/usr/share/icons/hicolor/scalable/apps`, and that hierarchy belongs to
+`hicolor-icon-theme`. `namcap` reported it as an error rather than as one of the
+six warnings `packaging/README.md` calls expected, which is the difference that
+list exists to make visible.
+
+**All three packages now name it.** It is a few kilobytes, it pulls in nothing,
+and every desktop has it already. What it covers is the host that does not: the
+directories the package made would have belonged to nobody, and without the
+theme's `index.theme` there is nothing for the icon to be found through.
+
+**No seat has to be built again**, and the daemon is untouched. This is one line
+in `packaging/aur/PKGBUILD` and one in `packaging/nfpm.yaml`.
+
+**What is proven and what is not.** namcap found this in the build of 0.14.0 and
+the fix is the dependency it named; whether its output is back to the six known
+warnings is what this release's build says rather than something claimed here.
+The `.deb` and the `.rpm` are in the position they have been in since 0.9.0:
+built, reasoned about, and never installed on a Debian or a Fedora machine.
+
 ## 0.14.0
 
 **Getting to the interface began with remembering a port number.** Polyseat is a
