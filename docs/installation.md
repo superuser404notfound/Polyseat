@@ -57,6 +57,14 @@ belongs, and the package puts them under `/usr`, which is the only place it is
 allowed to write. The daemon is the same binary either way and looks in both,
 local first, which is the order a shell uses for the binary itself.
 
+The launcher entry follows that split rather than making a third rule of its
+own: `host/polyseat.desktop` and `host/polyseat.svg` go to `/usr/local/share`
+from a checkout and to `/usr/share` from a package, and every desktop that sets
+`XDG_DATA_DIRS` has both in it, so a menu finds whichever one is there. The
+entry opens `https://localhost:47800`, which is the host talking to itself; the
+address the installer prints when it finishes is the one every other machine on
+this network uses.
+
 Both are tested against a fresh virtual machine, because neither can be
 exercised on a machine that already has them: `host/test-install.sh` for the
 checkout, `host/test-package.sh` for the package.

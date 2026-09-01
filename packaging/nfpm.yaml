@@ -118,6 +118,18 @@ contents:
     file_info:
       mode: 0644
 
+  # The entry in the application menu of a host that has a desktop of its own,
+  # and its icon. The interface is a web page, and a web page nobody has
+  # bookmarked is a port number somebody has to remember.
+  - src: host/polyseat.desktop
+    dst: /usr/share/applications/polyseat.desktop
+    file_info:
+      mode: 0644
+  - src: host/polyseat.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/polyseat.svg
+    file_info:
+      mode: 0644
+
   - src: LICENSE
     dst: /usr/share/doc/polyseat/LICENSE
     file_info:

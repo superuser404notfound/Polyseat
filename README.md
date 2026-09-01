@@ -112,6 +112,11 @@ The interface answers on the whole network, so seats can be managed from the
 same phone that runs Moonlight. To keep it on this machine only, set `listen`
 to `127.0.0.1:47800` in `/etc/polyseat/polyseatd.json`.
 
+On a host with a desktop of its own there is a **Polyseat** entry in the
+application menu as well, placed by the installer and by all three packages. It
+opens the same page at `https://localhost:47800`, so the port is one fewer thing
+to have written down.
+
 **3. Press *Prepare this host*.** It is the first thing on the page, above
 the seats, until this machine has one. The button installs the missing packages,
 writes the idmap range every container start needs, brings Incus up and

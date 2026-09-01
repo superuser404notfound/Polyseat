@@ -116,6 +116,8 @@ The package does what a package is allowed to do and no more:
 | `/usr/lib/polyseat/*.py` | the input broker and its helpers |
 | `/usr/lib/systemd/system/polyseatd.service` | with `ExecStart` rewritten to `/usr/bin` |
 | `/usr/lib/udev/rules.d/72-polyseat-hide.rules` | pacman's own hooks reload udev and systemd |
+| `/usr/share/applications/polyseat.desktop` | the entry that opens the interface on this machine |
+| `/usr/share/icons/hicolor/scalable/apps/polyseat.svg` | its icon, the same file both other packages ship |
 
 It does not write `/etc/subuid`, does not run `incus admin init`, does not add
 anybody to a group and does not start anything. Those are what

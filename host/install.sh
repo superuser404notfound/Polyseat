@@ -36,6 +36,8 @@ LIBDIR=/usr/local/lib/polyseat
 UNITDIR=/etc/systemd/system
 RULEDIR=/etc/udev/rules.d
 MODULESDIR=/usr/local/lib/modules-load.d
+APPDIR=/usr/local/share/applications
+ICONDIR=/usr/local/share/icons/hicolor/scalable/apps
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd -- "$HERE/.." && pwd)"
 SRC="$REPO/spike/m2-input-broker"
@@ -173,6 +175,40 @@ for cmd in prepare uninstall lan-bridge; do
     ok "$BINDIR/polyseat-$cmd"
 done
 
+step "Desktop entry"
+# A way into the interface for whoever is sitting at this machine. It is a web
+# page, and a web page nobody has bookmarked is a port number somebody has to
+# remember; the entry opens https://localhost:47800, which is this host talking
+# to itself rather than the address printed at the end of this script.
+#
+# /usr/local/share and not /usr/share, for the same reason the binary goes to
+# /usr/local/bin: this is the checkout install and the package owns /usr. Both
+# are in XDG_DATA_DIRS on every desktop that sets one, so a menu finds whichever
+# of the two is there.
+# The icon first, and the order is not tidiness. A running desktop watches the
+# applications directory and reads a new entry the moment it appears; one that
+# names an icon which is not on disk yet gets remembered without a picture, and
+# on Plasma it stays that way until the shell is restarted, long after the file
+# has arrived. Placing the icon first closes that window.
+install -Dm644 "$HERE/polyseat.svg" "$ICONDIR/polyseat.svg"
+install -Dm644 "$HERE/polyseat.desktop" "$APPDIR/polyseat.desktop"
+ok "$ICONDIR/polyseat.svg"
+ok "$APPDIR/polyseat.desktop"
+
+# Both caches are refreshed when the tool that owns them is installed, and
+# neither is required: a desktop that reads the directories directly needs
+# nothing done here. One that caches shows an entry with no icon until something
+# updates them, and that something is otherwise the next package install, which
+# can be days away. gtk-update-icon-cache refuses a theme directory with no
+# index.theme, which is the normal case under /usr/local, so its failure is
+# expected and ignored rather than reported.
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$APPDIR" 2>/dev/null || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -qtf /usr/local/share/icons/hicolor 2>/dev/null || true
+fi
+
 step "udev rule"
 # The number matters. Sunshine's own rules hand its virtual devices to the
 # desktop user, which is right for a Sunshine on this machine and wrong for one
@@ -237,6 +273,9 @@ that page first sets it, and the seats are made there.
 The certificate is self signed, so the browser asks about it once. To keep the
 page on this machine only, set "listen" to "127.0.0.1:47800" in
 /etc/polyseat/polyseatd.json.
+
+There is now a Polyseat entry in this machine's application menu as well, which
+opens the same page at https://localhost:47800.
 
 Two more commands, for later:
 

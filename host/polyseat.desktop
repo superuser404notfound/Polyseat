@@ -1,0 +1,34 @@
+[Desktop Entry]
+# The entry in the application menu of the machine Polyseat runs on.
+#
+# localhost, and not the address install.sh prints when it finishes. That one is
+# the machine's address on this network, meant for the phone or the laptop the
+# seats are managed from; this file is only ever read on the host itself, and
+# the default listens on every interface, so the loopback is one of them.
+#
+# The port is the default out of internal/config/config.go, written out again
+# because a .desktop file cannot read a config. There are already two other
+# copies of it for the same reason, in install.sh and in polyseat.install, and a
+# host that has moved "listen" somewhere else edits this line.
+#
+# Exec=xdg-open rather than Type=Link. A link entry is how a file manager writes
+# down a URL and is not shown in an application menu, which is the whole point
+# of this file. StartupNotify is off because xdg-open hands the address to a
+# browser and exits: with it on, the pointer spins for a program that has
+# already finished.
+#
+# One main category and not two. Game and System both fit something that manages
+# gaming seats, and a menu given both is entitled to show the entry twice;
+# desktop-file-validate says so. Game is the one somebody looking for this would
+# open, which is what decides it.
+Type=Application
+Version=1.0
+Name=Polyseat
+GenericName=Seat manager
+Comment=Open the Polyseat web interface
+Exec=xdg-open https://localhost:47800
+Icon=polyseat
+Terminal=false
+Categories=Game;
+Keywords=seat;seats;streaming;moonlight;sunshine;incus;
+StartupNotify=false

@@ -165,3 +165,33 @@ jobs:
       # somebody's container manager with Polyseat.
       - name: The package manager table
         run: ./host/test-distro.sh
+
+  # Two files nothing else in this repository reads, in front of the one part of
+  # Polyseat a person meets before the daemon has said anything: the entry in
+  # their application menu. A key misspelt in the .desktop file or an unclosed
+  # tag in the icon does not fail a build, a test or vet. It fails as an entry
+  # that is not in the menu, or is in it without a picture, on a machine nobody
+  # here is sitting at, and the file has to be reinstalled to try again.
+  desktop:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tools that read them
+        run: sudo apt-get install -y -qq desktop-file-utils librsvg2-bin
+
+      # --warn-kde is not passed. It reports keys this entry has no reason to
+      # carry, and a check that has to be read past is one nobody reads.
+      - name: Validate the desktop entry
+        run: desktop-file-validate host/polyseat.desktop
+
+      # Rendered rather than parsed, and at the size that decided the drawing.
+      # A renderer is what a menu uses, so a file that only an XML parser accepts
+      # is not proof of anything; this is the same librsvg the seat icon tests
+      # already need, so it costs the job nothing extra.
+      - name: Render the icon at panel size
+        run: |
+          rsvg-convert -w 22 -h 22 host/polyseat.svg -o /tmp/polyseat-22.png
+          rsvg-convert -w 128 -h 128 host/polyseat.svg -o /tmp/polyseat-128.png
+          file /tmp/polyseat-22.png /tmp/polyseat-128.png

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The launcher icon, installed as polyseat.svg under
+  icons/hicolor/scalable/apps and named by Icon= in polyseat.desktop.
+
+  A screen that is switched on, divided into four seats, one of them taken. It
+  is drawn on a filled tile because a launcher gives an icon no ground of its
+  own and a panel can be any colour; the tile is the blue the interface uses as
+  its accent and the taken seat is the amber next to it, both out of
+  internal/web/style.css, so the icon and the page it opens agree.
+
+  The shape was decided at 22 pixels rather than at this size. Four rectangles
+  with four units of gap between them still read as four when the whole thing is
+  22 pixels wide, which is what a panel gives it; a bezel outline and a monitor
+  stand were both in an earlier draft and both closed up into a smear there.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="14" fill="#3b6ea5"/>
+  <rect x="6" y="12" width="52" height="40" rx="7" fill="#16171a"/>
+  <g fill="#f6f6f4">
+    <rect x="11" y="17" width="19" height="13" rx="3"/>
+    <rect x="34" y="17" width="19" height="13" rx="3"/>
+    <rect x="11" y="34" width="19" height="13" rx="3"/>
+  </g>
+  <rect x="34" y="34" width="19" height="13" rx="3" fill="#e0b062"/>
+</svg>

@@ -195,6 +195,8 @@ check "polyseat-uninstall is a command"  vm test -x /usr/local/bin/polyseat-unin
 check "the systemd unit is registered"   vm test -f /etc/systemd/system/polyseatd.service
 check "systemd can read that unit"       vm systemctl cat polyseatd.service
 check "the udev rule is in place"        vm test -f /etc/udev/rules.d/72-polyseat-hide.rules
+check "the desktop entry is in place"    vm test -f /usr/local/share/applications/polyseat.desktop
+check "and its icon"                     vm test -f /usr/local/share/icons/hicolor/scalable/apps/polyseat.svg
 check "the old rule number is not"       vm bash -c '! test -e /etc/udev/rules.d/70-polyseat-hide.rules'
 
 # udevadm verify parses the file the way udevd will and reports what it does not

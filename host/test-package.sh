@@ -218,6 +218,13 @@ check "the unit is registered"            vm systemctl cat polyseatd.service
 # pacman's own hooks do this, which is why the package does not.
 check "udev has the rule"                 vm test -f /usr/lib/udev/rules.d/72-polyseat-hide.rules
 
+# The launcher entry. Checked here because it is the one file whose absence
+# nothing complains about: a menu with no Polyseat in it looks exactly like a
+# menu that has not been rebuilt yet, and there is nobody sitting in front of
+# this machine to notice either way.
+check "the desktop entry is installed"    vm test -f /usr/share/applications/polyseat.desktop
+check "and its icon with it"              vm test -f /usr/share/icons/hicolor/scalable/apps/polyseat.svg
+
 # The version has to survive packaging, or the interface shows "dev" and the
 # update check refuses to run because it cannot compare a development build
 # with a release.
@@ -389,6 +396,8 @@ check "the binary is gone"                vm bash -c '! test -e /usr/bin/polysea
 check "the helpers are gone"              vm bash -c '! test -e /usr/lib/polyseat'
 check "the unit is gone"                  vm bash -c '! test -e /usr/lib/systemd/system/polyseatd.service'
 check "the udev rule is gone"             vm bash -c '! test -e /usr/lib/udev/rules.d/72-polyseat-hide.rules'
+check "the desktop entry is gone"         vm bash -c '! test -e /usr/share/applications/polyseat.desktop'
+check "and its icon"                      vm bash -c '! test -e /usr/share/icons/hicolor/scalable/apps/polyseat.svg'
 
 # It removed the file it was running from, which is why it copies itself to /tmp
 # and hands over before it starts.

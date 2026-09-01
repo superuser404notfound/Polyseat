@@ -135,6 +135,14 @@ package() {
   install -Dm644 host/polyseat-modules-load.conf \
     "$pkgdir/usr/lib/modules-load.d/polyseat.conf"
 
+  # The entry in the application menu of a host that has a desktop of its own,
+  # and its icon. Nothing has to be refreshed after placing them: pacman's own
+  # hooks run update-desktop-database and gtk-update-icon-cache, the same way
+  # they reload udev and systemd for the two files above.
+  install -Dm644 host/polyseat.desktop "$pkgdir/usr/share/applications/polyseat.desktop"
+  install -Dm644 host/polyseat.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/polyseat.svg"
+
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 
   for doc in README.md CHANGELOG.md SECURITY.md docs/architecture.md docs/security.md \

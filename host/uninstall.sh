@@ -317,7 +317,9 @@ if $checkout; then
            /usr/local/bin/polyseat-lan-bridge \
            /etc/systemd/system/polyseatd.service \
            /etc/systemd/system/polyseat-uhid-observer.service \
-           /etc/systemd/system/polyseat-broker@.service
+           /etc/systemd/system/polyseat-broker@.service \
+           /usr/local/share/applications/polyseat.desktop \
+           /usr/local/share/icons/hicolor/scalable/apps/polyseat.svg
     rm -rfv /usr/local/lib/polyseat
     # Placed by that installer, so removed by it. The module itself is left
     # loaded: unloading it would reach past this installation, since uhid is
