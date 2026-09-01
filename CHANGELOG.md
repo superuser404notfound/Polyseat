@@ -10,6 +10,74 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.14.0
+
+**Getting to the interface began with remembering a port number.** Polyseat is a
+web page, and the machine it runs on had nothing on its own desktop that pointed
+at it: no entry in the menu, no icon, nothing to click. Whoever sat down at the
+host typed an address they had to know already, or went looking for the line the
+installer printed on the day it was installed.
+
+**There is now a Polyseat entry in the application menu**, placed by
+`host/install.sh` into `/usr/local/share` and by all three packages into
+`/usr/share`. It opens `https://localhost:47800`, which is the host talking to
+itself.
+
+**No seat has to be built again.** This is two files and where they are put.
+
+- **localhost, and not the address the installer prints.** That one is this
+  machine's address on the network, meant for the phone or the laptop the seats
+  are managed from. This file is only ever read on the host itself, and the
+  default listens on every interface, so the loopback is one of them.
+
+- **The port is written out a third time**, because a `.desktop` file cannot
+  read a config. `install.sh` and `polyseat.install` already carry a copy for
+  the same reason. A host that has moved `listen` elsewhere edits the `Exec`
+  line.
+
+- **`Exec=xdg-open` rather than `Type=Link`.** A link entry is how a file
+  manager writes down a URL, and it is not shown in an application menu, which
+  is the whole point of the file.
+
+- **One main category and not two.** Game and System both fit something that
+  manages gaming seats, and a menu given both is entitled to show the entry
+  twice; `desktop-file-validate` says so. Game is the one somebody looking for
+  this would open, which is what decides it.
+
+- **The icon was drawn at 22 pixels and checked at 128.** A screen that is
+  switched on, divided into four seats with one of them taken, in the blue and
+  the amber `internal/web/style.css` already uses, so the icon and the page it
+  opens agree. A bezel outline and a monitor stand were both in an earlier draft
+  and both closed up into a smear at panel size.
+
+- **The icon is placed before the entry, and that order is a fix rather than
+  tidiness.** A running desktop reads a new entry the moment it appears, and one
+  that names an icon which is not on disk yet is remembered without a picture.
+  On Plasma it stays that way until the shell is restarted, long after the file
+  has arrived. Found the way these things are found: on the desktop this was
+  written on, with the two files half a second apart.
+
+- **There is no tray icon**, which is where this started. It would want a second
+  binary with a GUI toolkit and C libraries, in a project whose package has
+  three dependencies and is meant to run on a host with no desktop at all; a
+  tray that Plasma has, GNOME needs an extension for and sway does not have; and
+  a polkit rule so that a user session may restart a system service, which is a
+  security decision rather than a convenience. The interface already has a
+  restart button, and it is reachable from the entry this release adds.
+
+- **CI reads both files with the tools a desktop uses.**
+  `desktop-file-validate` on the entry, and librsvg rendering the icon at 22 and
+  128 pixels. Neither kind of mistake fails a build, a test or `go vet`: they
+  fail as an entry that is not in the menu, or is in it without a picture, on a
+  machine nobody here is sitting at.
+
+**What is proven and what is not.** Both files were installed on the Plasma 6
+Wayland desktop this was written on, and the entry is in the menu with its icon.
+`host/test-install.sh` and `host/test-package.sh` gained three assertions
+between them and neither has been run against a virtual machine since. The
+`.deb` and the `.rpm` are in the position they have been in since 0.9.0: built,
+reasoned about, and never installed on a Debian or a Fedora machine.
+
 ## 0.13.3
 
 **The screen that says Polyseat is restarting ended before the restart did.**
