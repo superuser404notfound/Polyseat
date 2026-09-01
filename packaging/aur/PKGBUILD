@@ -21,7 +21,13 @@ license=('GPL-3.0-or-later')
 # daemon calls systemctl, prepare.sh calls ip and both call findmnt, so they are
 # genuinely used, and all three are members of `base`, which every Arch
 # installation has. Listing them is noise that namcap flags and nobody acts on.
-depends=('incus' 'bpftrace' 'python')
+# hicolor-icon-theme owns /usr/share/icons/hicolor, which the launcher icon is
+# installed into. Named because namcap says so and namcap is right here, unlike
+# the three above: a package that writes into a directory hierarchy belonging to
+# another package and does not depend on it leaves those directories owned by
+# nobody, and on a host that never had the theme there is no index.theme for the
+# icon to be found through. It is a few kilobytes and pulls in nothing.
+depends=('incus' 'bpftrace' 'python' 'hicolor-icon-theme')
 
 makedepends=('go' 'git')
 

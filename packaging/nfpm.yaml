@@ -42,6 +42,11 @@ depends:
   - incus
   - bpftrace
   - python3
+  # Owns /usr/share/icons/hicolor, which the launcher icon is installed into.
+  # Both distributions call it this, and both would almost always have it
+  # already; naming it is what keeps the directories the package writes into
+  # owned by something.
+  - hicolor-icon-theme
 
 overrides:
   rpm:
@@ -49,6 +54,7 @@ overrides:
       - incus
       - bpftrace
       - python3
+      - hicolor-icon-theme
     recommends:
       - libva-utils
   deb:
