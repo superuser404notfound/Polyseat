@@ -10,6 +10,58 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.15.0
+
+**A virtual machine could stop every seat on the host from starting, and what
+said so blamed the VPN.** After a reboot both seats failed with the line 0.13.2
+was written for
+
+    Failed to run: /usr/lib/incus/incusd forklxc joser ... exit status 1
+
+and the repair that release added did not run. It clears the `net_cls`
+hierarchy `mullvad-daemon` mounts only when nothing is in it, and this time
+something was: one process, which the message then called "almost certainly
+mullvad-daemon". It was `qemu-system-x86_64`. libvirt puts every virtual machine
+it starts into each cgroup v1 controller it finds mounted, and systemd does the
+same for its scopes, so a Windows VM had been sitting in Mullvad's hierarchy
+since boot without anybody having put it there. Two daemons that know nothing
+about each other, and between them a host that could not start a seat until one
+of them was shut down.
+
+**What a hierarchy is for now decides who counts as using it.** `net_cls` does
+one thing: it writes a class id onto the packets of the processes in a cgroup,
+for something further down the stack to match on. A cgroup whose
+`net_cls.classid` is zero has no id to write, so nothing about its processes'
+traffic depends on the hierarchy being mounted, and unmounting it takes nothing
+away from them. Mullvad's own cgroup carries a real class id — 5087041 on the
+machine this was found on — and a process in that one is an application
+deliberately kept outside the tunnel. That is the case the restraint was written
+for, it is the case it still refuses to touch, and it is now the only one. A
+hierarchy for some other controller, where there is no class id to read the
+question off, is counted as before.
+
+**A hierarchy that is left alone now names what is holding it.** The message
+used to say "with 1 process in it" and then point at `mullvad-daemon`, which is
+right about the mount and was wrong about the process. It now carries the cgroup
+and the name of what is in it — `with 1 process in mullvad-exclusions (firefox)`
+— because somebody deciding by hand whether unmounting is safe needs to know
+which of the two daemons they are looking at, and one number told them the
+wrong one.
+
+**No seat has to be built again.** This is `internal/hostcg` and nothing else.
+
+**What is proven and what is not.** On this host, with the VM running and its
+cgroup in `net_cls`, both seats started at 18:12 on 2026-09-03 and the mount was
+gone from `/proc/self/mountinfo` afterwards while `mullvad-daemon` had been
+running untouched since 17:04. Shutting the VM down after that unmount, which
+leaves libvirt tearing down a cgroup under a mount point that is no longer
+there, produced a clean `Deactivated successfully` and nothing else — the one
+cost of clearing a hierarchy somebody's virtual machine is in, paid and
+measured. What is not proven is the other half: `mullvad-exclusions` was empty
+here, so the refusal path was measured against a fixture rather than an
+application really kept outside the tunnel. The `.deb` and the `.rpm` are where
+they have been since 0.9.0: built, reasoned about, never installed.
+
 ## 0.14.1
 
 **The package wrote into a directory belonging to another package and did not
