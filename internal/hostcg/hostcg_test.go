@@ -83,6 +83,69 @@ func hierarchy(t *testing.T, child int) string {
 	return dir
 }
 
+// classify gives a cgroup a net_cls.classid, which is the only thing that
+// distinguishes a cgroup somebody put processes in on purpose from one another
+// daemon made because the hierarchy happened to be there.
+func classify(t *testing.T, dir string, id uint32) {
+	t.Helper()
+
+	if err := os.WriteFile(filepath.Join(dir, "net_cls.classid"), fmt.Appendf(nil, "%d\n", id), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// occupy makes a child cgroup with processes in it and the given classid.
+func occupy(t *testing.T, dir, name string, id uint32, pids ...int) {
+	t.Helper()
+
+	sub := filepath.Join(dir, name)
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var body strings.Builder
+	for _, pid := range pids {
+		fmt.Fprintf(&body, "%d\n", pid)
+	}
+
+	if err := os.WriteFile(filepath.Join(sub, "cgroup.procs"), []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	classify(t, sub, id)
+}
+
+// named gives a process a name to be found under, so a message that claims to
+// say what is holding a hierarchy can be checked for saying it.
+func named(t *testing.T, pid int, name string) {
+	t.Helper()
+
+	root := t.TempDir()
+
+	dir := filepath.Join(root, fmt.Sprint(pid))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "comm"), []byte(name+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := procRoot
+	procRoot = root
+
+	t.Cleanup(func() { procRoot = old })
+}
+
+// legacy is the hierarchy at dir as Mounts would record it.
+func legacy(t *testing.T, dir string) Legacy {
+	t.Helper()
+
+	found := occupants(dir)
+
+	return Legacy{Point: dir, Controllers: "net_cls", Occupants: found, Users: total(found)}
+}
+
 func TestUnifiedHostHasNoLegacyMounts(t *testing.T) {
 	if got := mounts(t, unified); len(got) != 0 {
 		t.Fatalf("a unified host reported %d legacy mounts: %+v", len(got), got)
@@ -125,7 +188,7 @@ func TestLegacyMountOutsideTheUnifiedTreeIsIgnored(t *testing.T) {
 func TestRootMembershipDoesNotCountAsUse(t *testing.T) {
 	dir := hierarchy(t, 0)
 
-	if n := users(dir); n != 0 {
+	if n := legacy(t, dir).Users; n != 0 {
 		t.Fatalf("users = %d, want 0: the %d processes in the root were counted", n, 615)
 	}
 }
@@ -133,7 +196,7 @@ func TestRootMembershipDoesNotCountAsUse(t *testing.T) {
 func TestProcessesInAChildCgroupCount(t *testing.T) {
 	dir := hierarchy(t, 3)
 
-	if n := users(dir); n != 3 {
+	if n := legacy(t, dir).Users; n != 3 {
 		t.Fatalf("users = %d, want 3", n)
 	}
 }
@@ -155,7 +218,7 @@ func TestTheRuntimesOwnCgroupDoesNotCountAsUse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if n := users(dir); n != 0 {
+	if n := legacy(t, dir).Users; n != 0 {
 		t.Fatalf("users = %d, want 0: a failed start left processes in lxc.pivot and they were counted", n)
 	}
 }
@@ -174,8 +237,61 @@ func TestAnUnknownChildCgroupStillCountsAsUse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if n := users(dir); n != 1 {
+	if n := legacy(t, dir).Users; n != 1 {
 		t.Fatalf("users = %d, want 1", n)
+	}
+}
+
+// libvirt puts every virtual machine it starts into each v1 controller it finds
+// mounted, so a running VM appears in net_cls without anybody having asked for
+// it. Its cgroup classifies nothing, and counting it made this daemon refuse
+// the repair it knows on a host where nothing was excluded from the tunnel.
+func TestACgroupThatClassifiesNothingIsNotAUser(t *testing.T) {
+	dir := hierarchy(t, 0)
+	classify(t, dir, 0)
+	occupy(t, dir, "machine.slice", 0, 1113)
+
+	if got := legacy(t, dir); !got.Idle() {
+		t.Fatalf("users = %d, want 0: a VM parked in the hierarchy was counted as using it: %+v", got.Users, got.Occupants)
+	}
+}
+
+// The other half of the same rule: Mullvad's own cgroup carries a real classid,
+// and a process in it is somebody deliberately kept outside the tunnel. That
+// hierarchy has to be left alone.
+func TestACgroupThatClassifiesItsProcessesIsAUser(t *testing.T) {
+	named(t, 4321, "firefox")
+
+	dir := hierarchy(t, 0)
+	classify(t, dir, 0)
+	occupy(t, dir, "mullvad-exclusions", 5087041, 4321)
+
+	got := legacy(t, dir)
+
+	if got.Idle() {
+		t.Fatal("a hierarchy with an excluded application in it was reported as idle")
+	}
+
+	if len(got.Occupants) != 1 || got.Occupants[0].Path != "mullvad-exclusions" || got.Occupants[0].Comm != "firefox" {
+		t.Fatalf("occupants = %+v, want one mullvad-exclusions holding firefox", got.Occupants)
+	}
+}
+
+// Somebody deciding whether to unmount by hand needs to know what is in there.
+// The message used to say "1 process" and then blame mullvad-daemon for it,
+// which on the machine this was found on was a virtual machine.
+func TestDescribeNamesWhatIsHoldingTheMount(t *testing.T) {
+	got := Describe([]Legacy{{
+		Point:       "/sys/fs/cgroup/net_cls",
+		Controllers: "net_cls",
+		Occupants:   []Occupant{{Path: "mullvad-exclusions", Comm: "firefox", Procs: 1}},
+		Users:       1,
+	}})
+
+	for _, want := range []string{"1 process in mullvad-exclusions", "firefox"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the message never mentions %q:\n%s", want, got)
+		}
 	}
 }
 
@@ -195,7 +311,7 @@ func TestRecoverClearsAnIdleHierarchy(t *testing.T) {
 
 	var log []string
 
-	if !RecoverFor([]Legacy{{Point: dir, Controllers: "net_cls", Users: users(dir)}}, func(f string, a ...any) {
+	if !RecoverFor([]Legacy{legacy(t, dir)}, func(f string, a ...any) {
 		log = append(log, fmt.Sprintf(f, a...))
 	}) {
 		t.Fatal("Recover reported no change for an idle hierarchy")
@@ -224,7 +340,7 @@ func TestRecoverLeavesAHierarchyInUseAlone(t *testing.T) {
 
 	var log []string
 
-	if RecoverFor([]Legacy{{Point: dir, Controllers: "net_cls", Users: users(dir)}}, func(f string, a ...any) {
+	if RecoverFor([]Legacy{legacy(t, dir)}, func(f string, a ...any) {
 		log = append(log, fmt.Sprintf(f, a...))
 	}) {
 		t.Fatal("Recover claimed to have changed something")
