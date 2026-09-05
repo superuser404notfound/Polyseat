@@ -2286,11 +2286,17 @@ function facts(seat) {
       row("Updates", `nothing waiting, checked ${ago}`);
     }
 
-    // A release exists that this seat is not going to be given. Not a flag,
-    // because nothing is wrong: Polyseat installs a version somebody has run,
-    // and the number moves when somebody has run this one. The line exists so
-    // that "somebody" finds out a new one is there without watching a release
-    // page, which is the only part of pinning that a person has to do.
+    // What LizardByte call current, beside what seats are actually given. Not a
+    // flag, because nothing is wrong: Polyseat installs a version somebody has
+    // run, and the number moves when somebody has run another one. The line
+    // exists so that finding out takes no release page.
+    //
+    // Written so that it reads correctly in both directions, because it goes
+    // both ways in practice. The pin can sit behind stable, waiting for an
+    // evening to test it, and it can sit ahead of stable, on a pre-release
+    // carrying something the stable line will not have for months. "Newer
+    // available" would be a lie half the time, so neither version is called
+    // newer here and the two are simply named.
     if (
       updates.sunshine_upstream &&
       updates.sunshine_latest &&
@@ -2298,8 +2304,8 @@ function facts(seat) {
     ) {
       row(
         "Sunshine upstream",
-        `${updates.sunshine_upstream} is published; seats stay on ` +
-          `${updates.sunshine_latest} until it has been tested by hand`,
+        `${updates.sunshine_upstream} is the current stable release; ` +
+          `seats stay on the pinned ${updates.sunshine_latest}`,
       );
     }
   }

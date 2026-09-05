@@ -655,18 +655,28 @@ func download(ctx context.Context, url string) ([]byte, error) {
 // answer 400 to the call Polyseat had been making for fifteen releases. The
 // other renames the virtual input devices, which is what the fast path in
 // 72-polyseat-hide.rules matches on, and a client's mouse reached the host
-// desktop before the slow path caught it. Neither is in a release yet. Both
-// would have arrived in every seat the first time somebody pressed "update
-// software" after the release that carries them, at a moment nobody chose,
-// with no version in between to notice it at.
+// desktop before the slow path caught it. Both would have arrived in every seat
+// the first time somebody pressed "update software" after the release that
+// carries them, at a moment nobody chose, with no version in between to notice
+// them at.
 //
 // An update that installs software nobody here has run is not an update. So
 // this is a line in the source, and moving it is a deliberate act: install the
-// release into one seat by hand, pair a client against it, check that input
-// still stops at the seat boundary, and only then change the number. The seat
-// still reports what LizardByte have published, so a new release is visible
-// without being taken.
-const SunshinePin = "2026.516.143833"
+// version into one seat, pair a client against it, check that input still stops
+// at the seat boundary, and only then change the number.
+//
+// Whether a version is a release or a pre-release does not decide anything
+// here, and this pin is currently a pre-release. LizardByte's stable line moves
+// a few times a year - the one before this was four months earlier - and every
+// change described above lives in the pre-releases in between. What makes a
+// version safe to pin is that somebody ran it, not which list GitHub files it
+// under. Following the pre-releases as a channel would be the old behaviour
+// with a higher frequency; pinning to one that has been tested is not.
+//
+// The seat still reports LizardByte's current stable, which is a different
+// number from this one in both directions and is there to be looked at rather
+// than acted on.
+const SunshinePin = "2026.904.234309"
 
 // sunshinePackage finds the Arch package belonging to one Sunshine release.
 //
