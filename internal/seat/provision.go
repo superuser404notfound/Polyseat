@@ -578,23 +578,27 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 // came from. LizardByte publish an Arch package with every release, the seat is
 // an Arch container, so this is both simpler and better matched.
 func (p *Provisioner) stepSunshine(ctx context.Context) error {
-	url, version, err := sunshineRelease(ctx)
-	if err != nil {
-		return err
-	}
-
 	installed, code, err := p.Client.Try(ctx, p.name(), "pacman", "-Q", "sunshine")
 	if err != nil {
 		return err
 	}
 
-	if code == 0 && strings.Contains(installed, version) {
-		p.Log("sunshine %s already installed", version)
+	if code == 0 && strings.Contains(installed, SunshinePin) {
+		p.Log("sunshine %s already installed", SunshinePin)
 
 		return nil
 	}
 
-	p.Log("installing sunshine %s", version)
+	// Asked for only once it is known that something has to be installed. The
+	// lookup used to come first, which meant every provisioning run and every
+	// update of an already current seat spent a request on somebody else's
+	// rate limit to be told what this source already says.
+	p.Log("installing sunshine %s", SunshinePin)
+
+	url, err := sunshinePackage(ctx, SunshinePin)
+	if err != nil {
+		return err
+	}
 
 	// Downloaded here and pushed in, rather than handing pacman the URL.
 	// pacman applies RemoteFileSigLevel to a URL, which on Arch is Required,
@@ -642,30 +646,87 @@ func download(ctx context.Context, url string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// sunshineRelease asks GitHub for the current release and its Arch package.
+// SunshinePin is the Sunshine release every seat gets.
 //
-// Resolved at provisioning time rather than pinned: a pinned version rots, and
-// the asset name carries the version, so there is no stable "latest" URL to
-// use instead.
-func sunshineRelease(ctx context.Context) (url, version string, err error) {
-	const api = "https://api.github.com/repos/LizardByte/Sunshine/releases/latest"
+// This was resolved from GitHub's "latest" until 0.15.1, and the comment here
+// argued for it: a pinned version rots. It does. The alternative turned out to
+// be worse, and not as a matter of taste - it was measured. Two changes landed
+// on Sunshine's master that a seat cannot absorb unattended. One makes pairing
+// answer 400 to the call Polyseat had been making for fifteen releases. The
+// other renames the virtual input devices, which is what the fast path in
+// 72-polyseat-hide.rules matches on, and a client's mouse reached the host
+// desktop before the slow path caught it. Neither is in a release yet. Both
+// would have arrived in every seat the first time somebody pressed "update
+// software" after the release that carries them, at a moment nobody chose,
+// with no version in between to notice it at.
+//
+// An update that installs software nobody here has run is not an update. So
+// this is a line in the source, and moving it is a deliberate act: install the
+// release into one seat by hand, pair a client against it, check that input
+// still stops at the seat boundary, and only then change the number. The seat
+// still reports what LizardByte have published, so a new release is visible
+// without being taken.
+const SunshinePin = "2026.516.143833"
+
+// sunshinePackage finds the Arch package belonging to one Sunshine release.
+//
+// By tag rather than by a URL written down here, because the asset name carries
+// the version and there is no stable path to guess at. That is the same reason
+// the old code gave for not pinning at all, and it was a reason to look the
+// download up rather than a reason to take whatever was newest.
+func sunshinePackage(ctx context.Context, version string) (string, error) {
+	release, err := sunshineAsset(ctx, "tags/v"+version)
+	if err != nil {
+		return "", err
+	}
+
+	if release.url == "" {
+		return "", fmt.Errorf("sunshine %s carries no Arch package", version)
+	}
+
+	return release.url, nil
+}
+
+// sunshineLatest is what LizardByte have published, for saying so and nothing
+// else. Nothing installs what this returns.
+func sunshineLatest(ctx context.Context) (string, error) {
+	release, err := sunshineAsset(ctx, "latest")
+	if err != nil {
+		return "", err
+	}
+
+	return release.version, nil
+}
+
+type sunshineAssetInfo struct {
+	version string
+	url     string
+}
+
+// sunshineAsset asks GitHub about one release and picks the Arch package out of
+// it. The path is "latest" or "tags/vX", which is the only difference between
+// the two questions this file asks.
+func sunshineAsset(ctx context.Context, path string) (sunshineAssetInfo, error) {
+	var info sunshineAssetInfo
+
+	api := "https://api.github.com/repos/LizardByte/Sunshine/releases/" + path
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, api, nil)
 	if err != nil {
-		return "", "", err
+		return info, err
 	}
 
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("ask GitHub for the Sunshine release: %w", err)
+		return info, fmt.Errorf("ask GitHub for the Sunshine release: %w", err)
 	}
 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("the Sunshine release could not be looked up: %s", resp.Status)
+		return info, fmt.Errorf("the Sunshine release could not be looked up: %s", resp.Status)
 	}
 
 	var release struct {
@@ -677,16 +738,20 @@ func sunshineRelease(ctx context.Context) (url, version string, err error) {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", "", err
+		return info, err
 	}
+
+	info.version = strings.TrimPrefix(release.TagName, "v")
 
 	for _, asset := range release.Assets {
 		if strings.HasPrefix(asset.Name, "sunshine-") && strings.HasSuffix(asset.Name, "-x86_64.pkg.tar.zst") {
-			return asset.URL, strings.TrimPrefix(release.TagName, "v"), nil
+			info.url = asset.URL
+
+			break
 		}
 	}
 
-	return "", "", fmt.Errorf("release %s carries no Arch package", release.TagName)
+	return info, nil
 }
 
 // --------------------------------------------------------------------- steam

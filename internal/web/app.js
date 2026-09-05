@@ -2285,6 +2285,23 @@ function facts(seat) {
     } else {
       row("Updates", `nothing waiting, checked ${ago}`);
     }
+
+    // A release exists that this seat is not going to be given. Not a flag,
+    // because nothing is wrong: Polyseat installs a version somebody has run,
+    // and the number moves when somebody has run this one. The line exists so
+    // that "somebody" finds out a new one is there without watching a release
+    // page, which is the only part of pinning that a person has to do.
+    if (
+      updates.sunshine_upstream &&
+      updates.sunshine_latest &&
+      updates.sunshine_upstream !== updates.sunshine_latest
+    ) {
+      row(
+        "Sunshine upstream",
+        `${updates.sunshine_upstream} is published; seats stay on ` +
+          `${updates.sunshine_latest} until it has been tested by hand`,
+      );
+    }
   }
 
   (seat.notes || []).forEach((note) => row("Note", note, "flag"));

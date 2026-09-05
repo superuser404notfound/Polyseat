@@ -22,11 +22,26 @@ import (
 // to rebuild it.
 type Freshness struct {
 	// Sunshine is the version in the seat, as pacman reports it, and
-	// SunshineLatest is what LizardByte have published. Equal means there is
-	// nothing to do; SunshineLatest empty means the lookup has not answered
-	// yet or could not.
+	// SunshineLatest is the version Polyseat installs: SunshinePin, a constant
+	// in this package. Equal means there is nothing to do.
+	//
+	// It used to be whatever LizardByte had published most recently, which made
+	// this pair say "a newer Sunshine exists" and the update button mean "take
+	// it, untested". Those are different claims and only the first one was ever
+	// wanted here. Now the pair says "this seat is behind what Polyseat has
+	// tested", which is the one an update can actually settle.
 	Sunshine       string `json:"sunshine,omitempty"`
 	SunshineLatest string `json:"sunshine_latest,omitempty"`
+
+	// SunshineUpstream is what LizardByte have published, which is now a
+	// different question and is reported rather than acted on. Empty when the
+	// lookup has not answered yet or could not, and equal to SunshineLatest
+	// whenever the pin is current.
+	//
+	// This is the half that says a new release is worth an evening: somebody
+	// has to install it into a seat, pair against it and watch where the input
+	// goes before SunshinePin moves. Nothing here does any of that.
+	SunshineUpstream string `json:"sunshine_upstream,omitempty"`
 
 	// Packages is how many of the seat's distribution packages have a newer
 	// version waiting, and PackageNames is the first few of them, for a line
@@ -101,9 +116,7 @@ func (c *sunshineCache) lookup(ctx context.Context) (string, error) {
 		return c.ask(ctx)
 	}
 
-	_, version, err := sunshineRelease(ctx)
-
-	return version, err
+	return sunshineLatest(ctx)
 }
 
 // sunshineAsk is how long an answer is reused. Sunshine releases every few
@@ -379,7 +392,8 @@ func (m *Manager) Freshness(ctx context.Context, name string) Freshness {
 		f.Sunshine = installedSunshine(out)
 	}
 
-	f.SunshineLatest = m.publishedSunshine(ctx)
+	f.SunshineLatest = SunshinePin
+	f.SunshineUpstream = m.upstreamSunshine(ctx)
 
 	out, code, err = m.client.Try(ctx, name, "sh", "-c", checkUpdatesScript)
 
@@ -489,13 +503,14 @@ func flatpakUpdates(out string) (int, []string) {
 // enough for the sync, which has forty five of its own.
 const sunshinePatience = 20 * time.Second
 
-// publishedSunshine is what LizardByte have published, or an empty string when
+// upstreamSunshine is what LizardByte have published, or an empty string when
 // that could not be found out.
 //
 // Empty rather than an error on purpose: not knowing what is published is not a
-// fault of the seat, and SunshineBehind already treats an unknown as "nothing to
-// offer" rather than as a reason to offer an update nobody can be sure of.
-func (m *Manager) publishedSunshine(ctx context.Context) string {
+// fault of the seat. It carries no less weight than it used to carry more - the
+// answer is now shown and never installed, so a lookup that fails costs a line
+// in the interface and nothing else.
+func (m *Manager) upstreamSunshine(ctx context.Context) string {
 	ctx, cancel := context.WithTimeout(ctx, sunshinePatience)
 	defer cancel()
 

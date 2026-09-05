@@ -651,7 +651,7 @@ func TestTheSunshineLookupCannotSpendTheWholeLook(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), freshPatience)
 	defer cancel()
 
-	if got := m.publishedSunshine(ctx); got != "" {
+	if got := m.upstreamSunshine(ctx); got != "" {
 		t.Errorf("a failed lookup answered %q, and an unknown version has to be empty", got)
 	}
 
@@ -689,7 +689,7 @@ func TestTheSunshineLookupNeverExtendsTheCallersTime(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	m.publishedSunshine(ctx)
+	m.upstreamSunshine(ctx)
 
 	if left := time.Until(deadline); left > time.Second {
 		t.Errorf("the lookup runs for %s on a caller that allowed 50ms", left.Round(time.Millisecond))
@@ -780,5 +780,68 @@ func TestFlatpaksCountAsBeingBehind(t *testing.T) {
 
 	if got := both.Summary(); got != "3 packages, 1 flatpak" {
 		t.Errorf("the line reads %q", got)
+	}
+}
+
+// The pin is what a seat is measured against, and it is compared with what
+// pacman prints. pacman prints "sunshine 2026.516.143833-1" and installedSunshine
+// takes the decorations off; a pin written the way the git tag writes it, with a
+// leading v or a trailing pkgrel, compares unequal to every seat forever. The
+// symptom is not a failure - it is every seat reported behind and every update
+// downloading a package it already has.
+//
+// This is here because moving the pin is meant to be routine, and the number is
+// copied from a release page that spells it differently.
+func TestThePinIsWrittenTheWayPacmanWritesIt(t *testing.T) {
+	if SunshinePin == "" {
+		t.Fatal("there is no pinned Sunshine version")
+	}
+
+	if got := normaliseVersion(SunshinePin); got != SunshinePin {
+		t.Errorf("the pin is %q but compares as %q, so no seat will ever match it", SunshinePin, got)
+	}
+
+	// What a seat carrying exactly the pin looks like coming out of pacman.
+	if got := installedSunshine("sunshine " + SunshinePin + "-1"); got != SunshinePin {
+		t.Errorf("a seat on the pin reads back as %q rather than %q", got, SunshinePin)
+	}
+}
+
+// The whole point of pinning: upstream moving does not make a seat behind.
+//
+// This is the case that used to be the other way round, and it is the one that
+// took two breakages into a seat unattended. A seat carrying the tested version
+// is current, whatever LizardByte published this morning.
+func TestUpstreamMovingDoesNotMakeASeatBehind(t *testing.T) {
+	f := Freshness{
+		Sunshine:         SunshinePin,
+		SunshineLatest:   SunshinePin,
+		SunshineUpstream: "2099.1.1",
+	}
+
+	if f.SunshineBehind() {
+		t.Error("a seat on the pinned version is reported behind because something newer exists upstream")
+	}
+
+	if f.Behind() {
+		t.Error("the same, through Behind, which is what draws the badge")
+	}
+}
+
+// And the case that still has to work: behind the pin is behind, and an update
+// is worth offering because it can actually settle it.
+func TestBehindThePinIsStillBehind(t *testing.T) {
+	f := Freshness{
+		Sunshine:         "2025.122.4",
+		SunshineLatest:   SunshinePin,
+		SunshineUpstream: SunshinePin,
+	}
+
+	if !f.SunshineBehind() {
+		t.Fatal("a seat older than the pin is not reported behind")
+	}
+
+	if got := f.Summary(); !strings.Contains(got, SunshinePin) {
+		t.Errorf("the summary does not say what the update would install: %q", got)
 	}
 }
