@@ -1581,9 +1581,28 @@ func (m *Manager) startBroker(name string) {
 		return
 	}
 
-	proc := supervise.New([]string{
+	argv := []string{
 		m.cfg.Python, "-u", m.cfg.HelperDir + "/broker.py", "--seat", name,
-	})
+	}
+
+	// The other seats by name, so that the broker can tell a device claiming to
+	// belong somewhere else from one that claims nothing.
+	//
+	// It cannot work this out for itself, and guessing is worse than not
+	// knowing: the first attempt treated any bracketed word as a foreign tag,
+	// and Sunshine calls a pad "Sunshine (libvirtualhid) X-Box Series
+	// Controller". "(libvirtualhid)" is a library, "(virtual)" and "(absolute)"
+	// are shapes, and a seat would have been refused its own controller.
+	//
+	// A list that goes stale is the safe direction. A seat created after this
+	// broker started is missing from it, so a device carrying that seat's tag
+	// does not contradict, and the structural answer decides on its own - which
+	// is what happens for every untagged device anyway.
+	for _, other := range m.otherSeatNames(name) {
+		argv = append(argv, "--other-seat", other)
+	}
+
+	proc := supervise.New(argv)
 	rt.broker = proc
 	m.mu.Unlock()
 
@@ -1593,6 +1612,30 @@ func (m *Manager) startBroker(name string) {
 	}
 
 	proc.Start()
+}
+
+// otherSeatNames is every seat on this host except the one asked about.
+//
+// Empty when the store cannot be read, which is deliberate rather than an
+// omission: the list only ever adds refusals, so not having it costs nothing
+// that the structural check was not already covering.
+func (m *Manager) otherSeatNames(name string) []string {
+	seats, err := m.store.List()
+	if err != nil {
+		return nil
+	}
+
+	out := make([]string, 0, len(seats))
+
+	for _, seat := range seats {
+		if seat.Name != name {
+			out = append(out, seat.Name)
+		}
+	}
+
+	sort.Strings(out)
+
+	return out
 }
 
 func (m *Manager) stopBroker(name string) {

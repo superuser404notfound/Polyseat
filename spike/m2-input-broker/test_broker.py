@@ -18,41 +18,52 @@ import broker
 
 class TheNamesRealBuildsProduce(unittest.TestCase):
     """contradicts() against every device name seen on the machine this was
-    written on, from both Sunshine builds."""
+    written on, from both Sunshine builds and both controllers."""
+
+    SEATS = ("joser", "vince")
 
     def test_a_name_with_no_parentheses_makes_no_claim(self):
         # The libvirtualhid build. There is nothing here to agree or disagree
         # with, and treating that as disagreement is exactly the bug.
-        for name in ("libvirtualhid Mouse", "libvirtualhid Keyboard"):
-            self.assertFalse(broker.contradicts(name, "vince"), name)
-            self.assertFalse(broker.contradicts(name, "joser"), name)
+        for name in ("libvirtualhid Mouse", "libvirtualhid Keyboard",
+                     "libvirtualhid Touchscreen", "libvirtualhid Pen Tablet",
+                     "Wireless Controller", "Wireless Controller Touchpad"):
+            self.assertFalse(broker.contradicts(name, "vince", self.SEATS), name)
+            self.assertFalse(broker.contradicts(name, "joser", self.SEATS), name)
 
     def test_our_own_tag_does_not_contradict_us(self):
-        self.assertFalse(broker.contradicts("Mouse passthrough (vince)", "vince"))
-
-    def test_a_second_parenthesised_word_is_not_a_foreign_tag(self):
-        # "Mouse passthrough (vince) (absolute)" is one of this seat's own
-        # devices. Reading only the last group would call it somebody else's,
-        # and it is a real name rather than a hypothetical one.
         self.assertFalse(
-            broker.contradicts("Mouse passthrough (vince) (absolute)", "vince"))
+            broker.contradicts("Mouse passthrough (vince)", "vince", self.SEATS))
+
+    def test_a_word_in_brackets_that_is_not_a_seat_means_nothing(self):
+        # The case that broke the first version of this, found on a real device
+        # rather than by thinking: the pad Sunshine emulates for a seat is
+        # called "Sunshine (libvirtualhid) X-Box Series Controller". A rule that
+        # counts any bracketed word as a foreign tag refuses that seat its own
+        # controller. "(virtual)" and "(absolute)" are the same kind of word.
+        for name in ("Sunshine (libvirtualhid) X-Box Series Controller",
+                     "Mouse passthrough (vince) (absolute)",
+                     "Sunshine X-Box One (virtual) pad"):
+            self.assertFalse(broker.contradicts(name, "vince", self.SEATS), name)
 
     def test_a_tag_that_is_not_last_still_counts(self):
-        # And the mirror image: the pad names carry "(virtual)" after the model
-        # and the seat at the end.
         self.assertFalse(
-            broker.contradicts("Sunshine X-Box One (virtual) pad (seat1)", "seat1"))
+            broker.contradicts("Sunshine X-Box One (virtual) pad (seat1)",
+                               "seat1", ("seat1", "seat2")))
 
     def test_another_seats_device_does_contradict(self):
         self.assertTrue(
-            broker.contradicts("Mouse passthrough (joser) (absolute)", "vince"))
+            broker.contradicts("Mouse passthrough (joser) (absolute)", "vince",
+                               self.SEATS))
         self.assertTrue(
-            broker.contradicts("Sunshine X-Box One (virtual) pad (seat1)", "seat2"))
+            broker.contradicts("Sunshine X-Box One (virtual) pad (seat1)",
+                               "seat2", ("seat1", "seat2")))
 
-    def test_no_tag_to_check_against_means_no_objection(self):
-        # --tag "" is "ignore names entirely", not "refuse everything".
-        self.assertFalse(broker.contradicts("Mouse passthrough (joser)", None))
-        self.assertFalse(broker.contradicts("anything at all", None))
+    def test_with_no_other_seats_named_nothing_can_contradict(self):
+        # One seat on the host, or a daemon that did not pass the list. The
+        # structural answer then decides alone, which is the safe direction.
+        self.assertFalse(broker.contradicts("Mouse passthrough (joser)", "vince", ()))
+        self.assertFalse(broker.contradicts("anything at all", None, ()))
 
 
 class WhoOwnsADevice(unittest.TestCase):

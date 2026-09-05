@@ -45,6 +45,11 @@ carries none says nothing either way and is left to the structural answer. A
 device with no tag and no structural answer is still refused, because accepting
 that would be accepting on no evidence at all.
 
+A name only contradicts when it carries the name of *another* seat, which the
+daemon passes in with `--other-seat`. Not every parenthesised word is a seat:
+"(virtual)", "(absolute)" and "(libvirtualhid)" all appear in names Sunshine
+writes, and treating those as foreign tags refuses a seat's own gamepad.
+
 `--tag ""` turns the name check off entirely.
 
     ./broker.py --seat seat1
@@ -197,30 +202,36 @@ _reported = set()
 _uhid_seen = {}
 
 
-def contradicts(name, tag):
+def contradicts(name, tag, others):
     """Does this device name claim a seat that is not ours?
 
-    Only a positive contradiction counts. "Mouse passthrough (joser)" seen by
-    vince is one; "libvirtualhid Mouse" is not, because it makes no claim to
-    disagree with. That distinction is the whole change: the old check treated
-    silence as disagreement, which was harmless while every device was tagged
-    and refuses everything on a Sunshine that tags nothing.
+    Only a positive contradiction counts, and only against a seat that exists.
+    "Mouse passthrough (joser)" seen by vince is one; "libvirtualhid Mouse" is
+    not, because it makes no claim to disagree with. That distinction is the
+    point: the old check treated silence as disagreement, which was harmless
+    while every device was tagged and refuses everything on a Sunshine that tags
+    nothing.
 
-    Every parenthesised word is looked at, not the last one. Sunshine writes
-    names like "Mouse passthrough (vince) (absolute)" and "Sunshine X-Box One
-    (virtual) pad (seat1)", where the tag is neither reliably first nor last,
-    and reading only one position would call one of this seat's own devices
-    foreign.
+    `others` is why this takes three arguments. An earlier version of this asked
+    whether the name carried any parenthesised word that was not our tag, which
+    is wrong and was caught by a real device rather than by thinking about it:
+    Sunshine calls the pad it emulates for another seat "Sunshine
+    (libvirtualhid) X-Box Series Controller", and "(libvirtualhid)" is not a
+    seat, it is a library. So are "(virtual)" and "(absolute)", both of which
+    appear in names this project has been reading for a year. Only a word that
+    is the name of another seat means anything, and only the daemon knows those.
+
+    Every parenthesised word is looked at rather than the last one, because the
+    tag is neither reliably first nor last: "Mouse passthrough (vince)
+    (absolute)" and "Sunshine X-Box One (virtual) pad (seat1)" put it in
+    different places.
     """
-    if not tag:
-        return False
+    stated = set(re.findall(r"\(([^()]*)\)", name))
 
-    stated = re.findall(r"\(([^()]*)\)", name)
-
-    return bool(stated) and tag not in stated
+    return bool(stated & {s for s in others if s != tag})
 
 
-def attribute(candidates, seat, tag):
+def attribute(candidates, seat, tag, others=()):
     """Decide which of the candidates belong to this seat.
 
     Two sources of truth, in order of trustworthiness:
@@ -285,7 +296,7 @@ def attribute(candidates, seat, tag):
                     # cross-check, so an untagged name no longer overrules it.
                     # A name claiming somebody else still does: two sources
                     # disagreeing is a reason to take neither.
-                    if not contradicts(dev["name"], tag):
+                    if not contradicts(dev["name"], tag, others):
                         mine[node] = dev
                     elif dev["syspath"] not in _reported:
                         _reported.add(dev["syspath"])
@@ -714,6 +725,14 @@ def main():
                          "XDG_SEAT is set and newer builds append nothing, so "
                          "this is checked where present rather than required. "
                          "\"\" ignores names entirely.")
+    ap.add_argument("--other-seat", action="append", default=[], metavar="NAME",
+                    help="the name of another seat on this host, repeatable. A "
+                         "device name that carries one of these in brackets is "
+                         "claiming to belong elsewhere and is refused even when "
+                         "something structural points here. Without them nothing "
+                         "can contradict, which leaves the structural answer to "
+                         "decide on its own and is the safe direction to be "
+                         "wrong in.")
     ap.add_argument("--interval", type=float, default=0.5)
     args = ap.parse_args()
 
@@ -738,6 +757,9 @@ def main():
     if tag:
         print(f"Broker running for seat '{args.seat}', believing tag '({tag})' "
               f"where a device name carries one.")
+        if args.other_seat:
+            print(f"Other seats whose tags would contradict: "
+                  f"{', '.join(sorted(args.other_seat))}.")
     else:
         print(f"Broker running for seat '{args.seat}' WITHOUT a tag check, so "
               f"only the structural answer decides.")
@@ -767,7 +789,7 @@ def main():
     known = {}
     try:
         while True:
-            current = attribute(scan(args.match), args.seat, tag)
+            current = attribute(scan(args.match), args.seat, tag, args.other_seat)
             for node, dev in current.items():
                 # Before attaching, and on every pass afterwards: a udev
                 # retrigger puts the permissions back to what the name rules
