@@ -89,8 +89,27 @@
 #
 # A controller the host itself pairs over Bluetooth is also a uhid device, and
 # the observer has no record of it, so it comes back unknown and is left alone.
+#
+# Both directories, and that is a bug fix rather than tidiness. This file named
+# /usr/local only, which is where install.sh puts the helpers from a checkout;
+# the package puts them in /usr/lib. So on every packaged install the program
+# behind this IMPORT did not exist, udev set nothing, and the structural gate
+# below could never fire. Nothing looked wrong, because every device a seat made
+# was also caught by one of the name patterns further down - until Sunshine
+# began emulating a DualSense and called it "Wireless Controller", which is what
+# a real one is called too and therefore cannot go on that list. A PS5 pad in a
+# seat was readable on the host: /dev/input/js2 carried an ACL for the desktop
+# user, and js is exactly how Steam finds a controller.
+#
+# /usr/local first and /usr second, the order the daemon already uses to find
+# its own commands. TEST== rather than trusting one path, because a missing
+# IMPORT program is not an error udev reports anywhere a person would see it.
 SUBSYSTEM=="input|hidraw", DEVPATH=="*/uhid/*", \
+  TEST=="/usr/local/lib/polyseat/device_owner.py", \
   IMPORT{program}="/usr/local/lib/polyseat/device_owner.py --udev $devpath"
+SUBSYSTEM=="input|hidraw", DEVPATH=="*/uhid/*", ENV{POLYSEAT_OWNER}=="", \
+  TEST=="/usr/lib/polyseat/device_owner.py", \
+  IMPORT{program}="/usr/lib/polyseat/device_owner.py --udev $devpath"
 SUBSYSTEM=="input|hidraw", ENV{POLYSEAT_OWNER}=="container", GOTO="polyseat_hide"
 
 SUBSYSTEM=="input", ATTRS{name}=="polyseat:*",      GOTO="polyseat_hide"

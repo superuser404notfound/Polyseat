@@ -69,6 +69,35 @@ if [[ -e /etc/udev/rules.d/70-polyseat-hide.rules ]]; then
     echo "     sudo rm /etc/udev/rules.d/70-polyseat-hide.rules && sudo udevadm control --reload"
 fi
 
+# The rule calls a helper by absolute path, and a path that is not there is not
+# a failure anybody sees: IMPORT{program} sets nothing, the structural gate that
+# follows it never fires, and the report still looks healthy because the name
+# patterns underneath catch every ordinary device. That is not a hypothesis.
+# This file named /usr/local only, which is where install.sh puts the helpers,
+# while the package puts them in /usr/lib, so on every packaged install the
+# structural half had never run once. It surfaced when a seat's PS5 pad turned
+# up readable on the host: Sunshine emulates a DualSense and calls it "Wireless
+# Controller", which is what a real one is called, so no name pattern can ever
+# claim that device and only the structural answer can.
+if [[ -n $rule_found ]]; then
+    helper_found=
+    while read -r helper; do
+        if [[ -x $helper ]]; then
+            helper_found=$helper
+            break
+        fi
+    done < <(grep -o 'IMPORT{program}="[^" ]*' "$rule_found" | cut -d'"' -f2)
+
+    if [[ -n $helper_found ]]; then
+        ok "structural check runs $helper_found"
+    else
+        bad "the rule names a helper that is not installed, so a seat's gamepad is hidden by name alone"
+        echo "     Sunshine names an emulated DualSense the same as a real one, and"
+        echo "     no name pattern can tell those apart. Reinstalling Polyseat places"
+        echo "     the helper the rule looks for."
+    fi
+fi
+
 step "Virtual devices readable by the desktop user?"
 leaky=0
 
@@ -109,7 +138,21 @@ for h in /sys/class/hidraw/hidraw*; do
     check_node "/dev/${h##*/}" "${name:-unnamed}"
 done
 
-((leaky)) || ok "all virtual input and raw HID devices are root:root 0600 with no ACL"
+if ((leaky)); then
+    # Learned the slow way, and worth the three lines: fixing the rule does not
+    # close a device that is already open. A reload plus a trigger left a
+    # leaking PS5 pad exactly as it was, and only unplugging it helped. The
+    # likely reason - not proven here - is that the rules did run again and
+    # correctly stripped the tag, while the entry logind had already granted
+    # stays: a rule that no longer asks for uaccess is not the same as something
+    # asking for it to be taken back. Either way the entry goes when the device
+    # does, so the instruction is the same.
+    echo "     Reloading the rule does not close a device that is already open."
+    echo "     Unplug and replug the controller, or restart the seat's session, so"
+    echo "     the device is created again under the rule now in place."
+else
+    ok "all virtual input and raw HID devices are root:root 0600 with no ACL"
+fi
 
 step "SysRq"
 # Virtual keyboards are attached to the sysrq handler, so a client can send
