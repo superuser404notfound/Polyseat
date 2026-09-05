@@ -15,11 +15,19 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
+
+// errNotFound is how a call reports a route this Sunshine does not have.
+//
+// Kept apart from the other failures because it means "an older build" rather
+// than "something is wrong", and Polyseat has to speak to both. See Pair.
+var errNotFound = errors.New("this Sunshine has no such route")
 
 // Port is where Sunshine serves its web interface.
 const Port = 47990
@@ -88,14 +96,93 @@ type statusResponse struct {
 	Status bool `json:"status"`
 }
 
+// Pairing is a client waiting for somebody to type its PIN.
+type Pairing struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Address string `json:"address"`
+}
+
+type pairingsResponse struct {
+	// A pointer, and that is the whole trick. An older Sunshine has no GET on
+	// this route and answers with something carrying no pairings key at all,
+	// while a newer one with nobody waiting answers with an empty list. Those
+	// two mean opposite things and a plain slice cannot tell them apart.
+	Pairings *[]Pairing `json:"pairings"`
+}
+
+// PendingPairings lists the clients waiting for a PIN.
+//
+// The second return says whether this Sunshine understands the question. Older
+// builds do not, and that is not an error: it is the answer that sends Pair
+// down the other path.
+func (c *Client) PendingPairings(ctx context.Context) ([]Pairing, bool, error) {
+	var out pairingsResponse
+
+	if err := c.call(ctx, http.MethodGet, "/api/pin", nil, &out); err != nil {
+		// A route that is not there, or an answer that is not the JSON this
+		// asked for, both mean the same thing: this build predates the change.
+		// Anything else is a real failure and is passed on.
+		var syntax *json.SyntaxError
+		var typ *json.UnmarshalTypeError
+
+		if errors.Is(err, errNotFound) || errors.As(err, &syntax) || errors.As(err, &typ) {
+			return nil, false, nil
+		}
+
+		return nil, false, err
+	}
+
+	if out.Pairings == nil {
+		return nil, false, nil
+	}
+
+	return *out.Pairings, true, nil
+}
+
 // Pair submits the PIN Moonlight is showing.
 //
-// There is no way to ask Sunshine whether a device is waiting, and none is
-// needed: it is Moonlight that shows the PIN, so the person doing the pairing
-// already has it in front of them. A PIN with nothing waiting for it comes back
-// as a plain refusal rather than an error.
+// Sunshine changed this route. It used to take the PIN and a name and pair
+// whatever single request was outstanding; it now tracks several at once, each
+// with an id, and refuses a POST without one:
+//
+//	if (!nvhttp::is_valid_pairing_id(pairing_id)) {
+//	  bad_request(response, request, "pairing_id must contain exactly 32 hexadecimal characters");
+//
+// So against a newer seat the old call fails with "Sunshine answered 400 Bad
+// Request" and pairing is simply broken. Both shapes are spoken here because
+// both are in the field: a seat built last month runs the old one.
+//
+// The new shape is the better one for this project, which is worth saying
+// plainly: it can name the devices that are waiting, and this file used to
+// carry a comment regretting that it could not.
+//
+// **Never guess which pairing a PIN belongs to.** A wrong PIN is not merely
+// refused, it destroys the request it was aimed at - nvhttp::pin() erases the
+// session on failure - so trying a PIN against each waiting device in turn
+// would take innocent ones down with it. With more than one waiting, this says
+// so and pairs nothing.
 func (c *Client) Pair(ctx context.Context, pin, name string) error {
+	pending, versioned, err := c.PendingPairings(ctx)
+	if err != nil {
+		return err
+	}
+
 	body := map[string]string{"pin": pin, "name": name}
+
+	if versioned {
+		switch len(pending) {
+		case 0:
+			return fmt.Errorf("no device is waiting to be paired with this seat. " +
+				"Moonlight has to be showing the PIN while this is entered")
+		case 1:
+			body["pairing_id"] = pending[0].ID
+		default:
+			return fmt.Errorf("%d devices are waiting to be paired with this seat, "+
+				"and a PIN belongs to exactly one of them: %s. Pair them one at a "+
+				"time", len(pending), describe(pending))
+		}
+	}
 
 	var out statusResponse
 	if err := c.call(ctx, http.MethodPost, "/api/pin", body, &out); err != nil {
@@ -108,6 +195,26 @@ func (c *Client) Pair(ctx context.Context, pin, name string) error {
 	}
 
 	return nil
+}
+
+// describe names the waiting devices for a message somebody has to act on.
+func describe(pending []Pairing) string {
+	names := make([]string, 0, len(pending))
+
+	for _, p := range pending {
+		switch {
+		case p.Name != "" && p.Address != "":
+			names = append(names, p.Name+" at "+p.Address)
+		case p.Name != "":
+			names = append(names, p.Name)
+		case p.Address != "":
+			names = append(names, p.Address)
+		default:
+			names = append(names, "an unnamed device")
+		}
+	}
+
+	return strings.Join(names, ", ")
 }
 
 // Unpair removes one paired client.
@@ -165,6 +272,8 @@ func (c *Client) call(ctx context.Context, method, path string, body, into any) 
 	case http.StatusUnauthorized:
 		return fmt.Errorf("Sunshine rejected the credentials. Provision the seat " +
 			"again to reset them")
+	case http.StatusNotFound:
+		return fmt.Errorf("%w: Sunshine answered %s", errNotFound, resp.Status)
 	default:
 		return fmt.Errorf("Sunshine answered %s", resp.Status)
 	}
