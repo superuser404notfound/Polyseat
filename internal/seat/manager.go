@@ -2465,6 +2465,21 @@ func (m *Manager) PairedDevices(ctx context.Context, name string) ([]sunshine.De
 	return client.Devices(ctx)
 }
 
+// PendingPairings lists the clients waiting for a PIN on this seat.
+//
+// The second return says whether the seat's Sunshine can answer the question at
+// all: builds before the pairing route changed cannot, and the difference
+// matters to what is drawn. "Nobody is waiting" and "this build cannot say" are
+// different claims, and only one of them is earned by an empty list.
+func (m *Manager) PendingPairings(ctx context.Context, name string) ([]sunshine.Pairing, bool, error) {
+	client, err := m.sunshineClient(name)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return client.PendingPairings(ctx)
+}
+
 // Pair hands a seat the PIN Moonlight is showing.
 func (m *Manager) Pair(ctx context.Context, name, pin, label string) error {
 	client, err := m.sunshineClient(name)

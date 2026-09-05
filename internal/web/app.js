@@ -2005,14 +2005,19 @@ async function loadPairing(seat, body) {
   }
 
   try {
-    const [clients, access] = await Promise.all([
+    const [clients, access, pending] = await Promise.all([
       api("GET", `/api/seats/${seat.name}/clients`),
       api("GET", `/api/seats/${seat.name}/sunshine`),
+      api("GET", `/api/seats/${seat.name}/pending`),
     ]);
 
+    const devices = clients.devices || [];
+    const form = pairForm(seat, body, devices.length);
+
     body.replaceChildren(
-      deviceList(seat, clients.devices, body),
-      pairForm(seat, body),
+      deviceList(seat, devices, body),
+      waitingPanel(seat, pending, form),
+      form,
       sunshineAccess(access),
     );
   } catch (err) {
@@ -2067,7 +2072,139 @@ function deviceList(seat, devices, body) {
   return wrap;
 }
 
-function pairForm(seat, body) {
+// Who the seat can see waiting for a PIN.
+//
+// This is the half of pairing that was guesswork until Sunshine grew a route
+// for it. The PIN is in front of the person, so that part was never the
+// problem; what they could not see was whether the seat had noticed them at
+// all. A PIN typed at a seat that saw no request looks exactly like a PIN typed
+// wrong, and the name field was a box to write something in from memory.
+//
+// Drawn only when the seat can answer. An older Sunshine says nothing here
+// rather than "nobody is waiting", because it was not asked and did not say so.
+//
+// The button is a button and not a poll. Each of these is a call into a seat
+// that is probably encoding video, and the list is empty until somebody opens
+// Moonlight, so this is the one moment where asking again is worth it and the
+// person watching knows when that moment is.
+function waitingPanel(seat, pending, form) {
+  const wrap = document.createElement("div");
+  wrap.className = "waiting";
+
+  if (!pending || !pending.supported) return wrap;
+
+  const draw = (list) => {
+    const parts = [];
+    const devices = list || [];
+
+    if (devices.length === 0) {
+      parts.push(
+        note(
+          "No device is waiting. In Moonlight, add this seat and start " +
+            "pairing: it shows a PIN and then appears here.",
+        ),
+      );
+    } else if (devices.length === 1) {
+      parts.push(note(`${describePending(devices[0])} is waiting for a PIN.`));
+
+      // Only into an empty field. Somebody who has started typing a name of
+      // their own meant it, and a suggestion that overwrites it is worse than
+      // no suggestion.
+      if (form.nameField && !form.nameField.value) {
+        form.nameField.value = devices[0].name || "";
+      }
+    } else {
+      parts.push(
+        note(
+          `${devices.length} devices are waiting: ${devices
+            .map(describePending)
+            .join(", ")}. A PIN belongs to exactly one of them and a wrong ` +
+            "one cancels the request it was aimed at, so pair them one at a " +
+            "time - finish or close the others first.",
+        ),
+      );
+    }
+
+    const again = document.createElement("button");
+    again.textContent = "Check again";
+    again.onclick = (event) => {
+      event.preventDefault();
+      again.disabled = true;
+
+      run(async () => {
+        try {
+          const fresh = await api("GET", `/api/seats/${seat.name}/pending`);
+          draw(fresh.pairings);
+        } finally {
+          again.disabled = false;
+        }
+      });
+    };
+
+    parts.push(again);
+    wrap.replaceChildren(...parts);
+  };
+
+  draw(pending.pairings);
+
+  return wrap;
+}
+
+// What Moonlight sent, as much of it as there is. Both fields are the client's
+// to fill in and either can be missing, so this never builds a sentence around
+// an empty string.
+function describePending(device) {
+  if (device.name && device.address) return `${device.name} at ${device.address}`;
+
+  return device.name || device.address || "an unnamed device";
+}
+
+// Pairing is not finished when the PIN is accepted.
+//
+// POST /api/pin hands Sunshine the PIN and answers straight away, but the
+// pairing itself is a handshake with Moonlight that runs afterwards over the
+// streaming port: certificate, challenge, response, secret. The client only
+// joins the paired list at the end of it. Asking for the list the instant the
+// POST returns therefore gets the list from before, which is why this panel
+// used to need a page reload to show what had just been paired.
+//
+// So the list is asked for until it grows, and the wait is bounded because a
+// handshake that never finishes has to end as a drawn list rather than as a
+// spinner. Fifteen seconds is far longer than it takes and short enough that
+// nobody sits through it wondering; a device that turns up later than that is
+// there the next time the panel is opened.
+//
+// Only the client list is polled, not the whole panel. The other two calls
+// cannot change while this is happening, and each one goes into a seat that is
+// probably encoding video.
+async function settleAfterPairing(seat, body, before) {
+  body.replaceChildren(
+    note("PIN accepted. Waiting for the client to finish pairing."),
+  );
+
+  const deadline = Date.now() + 15000;
+
+  for (;;) {
+    await new Promise((done) => setTimeout(done, 500));
+
+    let devices;
+
+    try {
+      devices = (await api("GET", `/api/seats/${seat.name}/clients`)).devices || [];
+    } catch (err) {
+      // Whatever went wrong, the full redraw below reports it properly. The
+      // binding is unused and written out anyway: an omitted one is ES2019 and
+      // nothing else in this file relies on it.
+      break;
+    }
+
+    if (devices.length > before || Date.now() > deadline) break;
+  }
+
+  await loadPairing(seat, body);
+}
+
+function pairForm(seat, body, paired) {
   const form = document.createElement("form");
   form.className = "pair";
 
@@ -2087,6 +2224,11 @@ function pairForm(seat, body) {
 
   form.append(pin, label, submit);
 
+  // Named rather than found by position. The panel above fills this in when the
+  // seat can say who is waiting, and a selector counting inputs would go quietly
+  // wrong the day a third one is added.
+  form.nameField = label;
+
   form.onsubmit = (event) => {
     event.preventDefault();
     submit.disabled = true;
@@ -2097,7 +2239,7 @@ function pairForm(seat, body) {
           pin: pin.value.trim(),
           name: label.value.trim(),
         });
-        await loadPairing(seat, body);
+        await settleAfterPairing(seat, body, paired || 0);
       } finally {
         submit.disabled = false;
       }

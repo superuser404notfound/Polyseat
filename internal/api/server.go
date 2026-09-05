@@ -186,6 +186,7 @@ func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker
 	guarded.HandleFunc("GET /api/seats/{name}/log", s.seatLog)
 	guarded.HandleFunc("GET /api/seats/{name}/clients", s.pairedClients)
 	guarded.HandleFunc("GET /api/seats/{name}/sunshine", s.sunshineAccess)
+	guarded.HandleFunc("GET /api/seats/{name}/pending", s.pendingPairings)
 	guarded.HandleFunc("POST /api/seats/{name}/pair", s.pair)
 	guarded.HandleFunc("POST /api/seats/{name}/unpair", s.unpair)
 	guarded.HandleFunc("GET /api/seats/{name}/software", s.getSoftware)
@@ -987,6 +988,34 @@ func (s *Server) pairedClients(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"devices": devices})
+}
+
+// pendingPairings says which clients are waiting for a PIN.
+//
+// Asked for on its own rather than folded into the paired list, because the two
+// answer different questions and one of them changes while somebody watches:
+// the waiting list is empty until a person opens Moonlight, so the interface has
+// to be able to ask again without reloading everything around it.
+//
+// "supported" is not decoration. A seat whose Sunshine predates the pairing
+// route cannot be asked, and an empty list from that seat would read as "nobody
+// is waiting" - a claim about the seat made from an answer that was never given.
+func (s *Server) pendingPairings(w http.ResponseWriter, r *http.Request) {
+	pairings, supported, err := s.manager.PendingPairings(r.Context(), r.PathValue("name"))
+	if err != nil {
+		fail(w, http.StatusBadGateway, err)
+
+		return
+	}
+
+	if pairings == nil {
+		pairings = []sunshine.Pairing{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"supported": supported,
+		"pairings":  pairings,
+	})
 }
 
 // sunshineAccess hands out a seat's own Sunshine login.
