@@ -10,6 +10,116 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.16.0
+
+**A seat's PS5 controller was readable on the host desktop, and the check meant
+to stop that had never run in a packaged install.** `/dev/input/js2` carried an
+access control entry for the desktop user, and `js` is how Steam finds a
+controller. The udev rule calls a helper by absolute path to ask which container
+created a device; it named `/usr/local/lib/polyseat/device_owner.py`, which is
+where `host/install.sh` puts the helpers when Polyseat is built from a checkout.
+The package puts them in `/usr/lib/polyseat` and ships the same rule file. So
+the program behind that `IMPORT` did not exist, udev set nothing, and the
+structural gate could not fire once. Both directories are named now, `/usr/local`
+first and `/usr` second, the order the daemon already uses to find its own
+commands.
+
+**It went unnoticed because the name patterns underneath were carrying it
+alone.** Everything a seat created was also called `*passthrough*` or
+`Sunshine*`, so the belt was missing and the braces held. Sunshine then began
+emulating a DualSense and naming it `Wireless Controller`, which is exactly what
+a real DualSense is called - that name cannot go on the list without hiding the
+controller somebody plugs into the host from the host - and with the structural
+half dead there was nothing left. The answer had been there the whole time: the
+uhid observer had already written `{"0005:054C:0CE6.002A": "joser"}`.
+
+**`check-hardening.sh` now reports whether the helper the installed rule names
+actually exists.** A missing `IMPORT` program is not an error udev tells anybody
+about, which is how this survived several releases. It also says, when it finds
+an open device, that reloading the rule will not close it: a reload and a
+trigger left the leaking pad exactly as it was, and only unplugging it helped.
+
+**Sunshine is pinned, and no longer updated to whatever is newest.** Every seat
+used to take GitHub's latest release, resolved at provisioning time and again
+whenever somebody pressed "update software". Two changes now on Sunshine's
+master break a seat: one answers 400 to the pairing call Polyseat has made for
+fifteen releases, the other is the rename above. Both would have arrived in
+every seat at once, on the first update after the release carrying them, at a
+moment nobody chose. `SunshinePin` is a constant in `internal/seat`, and moving
+it means installing that version into one seat, pairing a client against it,
+watching where the input goes, and only then changing the number.
+
+**The pin is 2026.904.234309, which is a pre-release, and that was done in that
+order.** Stable is four months old and has neither change; the pre-releases in
+between carry every one worth having. Whether a version is a release or a
+pre-release decides nothing here - what makes it safe to pin is that somebody
+ran it. Following the pre-releases as a channel would be the old behaviour at a
+higher frequency; pinning to one that has been tested is not. **A seat's
+"update software" therefore now installs a pre-release**, and seats already
+built stay where they are until somebody presses it.
+
+**"Behind" means behind the pin.** It used to mean behind upstream, so the
+interface said a newer Sunshine existed while the button beside it meant "take
+it, untested". What LizardByte have published is still looked up and has a line
+of its own, without a flag, naming both versions and calling neither one newer:
+the pin sits ahead of stable today and will sit behind it again.
+
+**Pairing works against both Sunshine builds, and says who is waiting.** The new
+route needs a `pairing_id` and refuses a body without one, so both shapes are
+spoken; telling the builds apart turns on a field being absent rather than empty,
+because an older Sunshine says nothing about what is waiting and a newer one with
+nobody waiting says so with an empty list. The panel now names the waiting device
+and its address, fills in the name field while it is empty, says nobody is
+waiting before a PIN is typed rather than after, and refuses to guess between
+several - a wrong PIN cancels the request it was aimed at. A seat whose Sunshine
+predates the route draws none of this rather than claiming nobody is waiting.
+
+**The device list stopped needing a page reload**, which is older than all of
+this. `POST /api/pin` hands over the PIN and answers immediately while the
+pairing itself is a handshake that runs afterwards over the streaming port, so
+asking for the list the instant the POST returned got the list from before.
+
+**The input broker checks a seat tag where a name carries one instead of
+requiring one**, and the tag matters less than it looked. A uinput device is
+traced to the cgroup of the process holding the descriptor that made it, so
+keyboards and mice are attributed structurally and the rename changes nothing
+for them. Gamepads are the exception, and there the old rule refused a device
+whose descriptor pointed at this very seat because the name did not also say so:
+silence treated as disagreement. A name contradicts now only when it carries the
+name of another seat that exists, which the daemon passes in - `(libvirtualhid)`
+is a library, `(virtual)` and `(absolute)` are shapes, and a rule counting any
+bracketed word refused a seat its own pad.
+
+**The broker has tests, the first it has ever had, and CI runs them.** It runs as
+root on a host with real seats, which is why nothing could go near it before;
+the two functions that decide which devices enter a seat need no root, no seats
+and no devices. That is the decision here that can be wrong quietly: a device
+that does not arrive is a complaint within the minute, and a device that arrives
+in the wrong seat is somebody else's mouse on your screen.
+
+**HDR is not in this release and there is now a recipe for it.**
+`spike/m8-hdr` gets HDR out of a seat with no monitor behind it, with Moonlight
+reporting Rec. 2020 and SMPTE 2084 PQ at 10 bits and the picture confirmed by
+eye. It needs a patch to wlroots and one to Sunshine, both submitted upstream
+and neither merged, so no seat provisioned by this release does anything new.
+
+**No seat has to be built again**, but two things have to be put in place by
+hand after updating. The udev rule is replaced by `install.sh` or the package,
+and a device that is already open stays open: unplug a controller or restart a
+seat's session so it is created again. And a seat only reaches the pinned
+Sunshine when somebody presses "update software".
+
+**What is proven and what is not.** Everything above was measured on this host
+rather than reasoned about, which is why the release took a day longer than it
+was going to. Pairing was run against a live build carrying the new route. Both
+seats were put on that build with a controller each: nine devices and seven, no
+overlap, every node and both hidraw nodes `root:root 0600` with no ACL, and both
+pads attributed through the observer rather than by name. `POLYSEAT_OWNER=container`
+appears on the pad that leaked. What is not proven is the uhid name fallback in
+anger - both controllers took the structural path, so the rule corrected here
+was not the one deciding - and the `.deb` and `.rpm`, which are where they have
+been since 0.9.0: built, reasoned about, never installed.
+
 ## 0.15.0
 
 **A virtual machine could stop every seat on the host from starting, and what
