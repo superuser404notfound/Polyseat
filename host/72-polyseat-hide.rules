@@ -13,6 +13,28 @@
 #   *passthrough*   Sunshine's keyboard, mouse, touch and pen
 #   Sunshine*       Sunshine's gamepads, named after the emulated model, e.g.
 #                   "Sunshine X-Box One (virtual) pad (seat1)"
+#   libvirtualhid*  the same devices from a Sunshine that has moved its virtual
+#                   input to the libvirtualhid library. Measured on 2026-09-05
+#                   with two seats side by side, one on the packaged build and
+#                   one on a newer one:
+#
+#                       Mouse passthrough (vince)     packaged
+#                       libvirtualhid Mouse           newer
+#
+#                   Two things change at once and this file can only fix the
+#                   first. The name no longer matches anything above, so the
+#                   fast path stopped firing; the broker still caught the
+#                   devices, but a poll interval later, and that interval is
+#                   long enough for a client's mouse to reach the host desktop.
+#                   It was seen doing exactly that.
+#
+#                   The second is not fixable here: the seat tag is gone too.
+#                   Sunshine used to read XDG_SEAT and append "(seatname)", and
+#                   the newer source contains no reference to XDG_SEAT at all.
+#                   The broker assigns devices to seats by that tag, so on such
+#                   a build every seat's devices are indistinguishable by name.
+#                   seat.go already refuses a seat called "seat0" for precisely
+#                   this reason, in the one case where it used to be possible.
 #
 # The right question is not what a device is called but who created it, and
 # device_owner.py answers exactly that: a uinput device lives only as long as
@@ -61,9 +83,10 @@ SUBSYSTEM=="input|hidraw", DEVPATH=="*/uhid/*", \
   IMPORT{program}="/usr/local/lib/polyseat/device_owner.py --udev $devpath"
 SUBSYSTEM=="input|hidraw", ENV{POLYSEAT_OWNER}=="container", GOTO="polyseat_hide"
 
-SUBSYSTEM=="input", ATTRS{name}=="polyseat:*",    GOTO="polyseat_hide"
-SUBSYSTEM=="input", ATTRS{name}=="*passthrough*", GOTO="polyseat_hide"
-SUBSYSTEM=="input", ATTRS{name}=="Sunshine*",     GOTO="polyseat_hide"
+SUBSYSTEM=="input", ATTRS{name}=="polyseat:*",      GOTO="polyseat_hide"
+SUBSYSTEM=="input", ATTRS{name}=="*passthrough*",   GOTO="polyseat_hide"
+SUBSYSTEM=="input", ATTRS{name}=="Sunshine*",       GOTO="polyseat_hide"
+SUBSYSTEM=="input", ATTRS{name}=="libvirtualhid*",  GOTO="polyseat_hide"
 
 # The same devices seen as raw HID, which is a different subsystem and was
 # missed entirely.
@@ -75,9 +98,10 @@ SUBSYSTEM=="input", ATTRS{name}=="Sunshine*",     GOTO="polyseat_hide"
 # So the event node was pinned to root while its hidraw sibling kept an access
 # control entry for the desktop user, and a seat's controller reached the host's
 # Steam, which is exactly how Steam reads a DualSense.
-SUBSYSTEM=="hidraw", ATTRS{name}=="polyseat:*",    GOTO="polyseat_hide"
-SUBSYSTEM=="hidraw", ATTRS{name}=="*passthrough*", GOTO="polyseat_hide"
-SUBSYSTEM=="hidraw", ATTRS{name}=="Sunshine*",     GOTO="polyseat_hide"
+SUBSYSTEM=="hidraw", ATTRS{name}=="polyseat:*",      GOTO="polyseat_hide"
+SUBSYSTEM=="hidraw", ATTRS{name}=="*passthrough*",   GOTO="polyseat_hide"
+SUBSYSTEM=="hidraw", ATTRS{name}=="Sunshine*",       GOTO="polyseat_hide"
+SUBSYSTEM=="hidraw", ATTRS{name}=="libvirtualhid*",  GOTO="polyseat_hide"
 GOTO="polyseat_end"
 
 LABEL="polyseat_hide"
