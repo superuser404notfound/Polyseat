@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # sourced: what looks unused here is used by the callers
 # Shared definitions for the M2 scripts.
 CT="${CT:-seat1}"                  # name of the Incus container
 SEAT="${SEAT:-seat1}"              # seat tag inside the device name

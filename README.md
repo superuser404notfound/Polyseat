@@ -396,6 +396,7 @@ and what is already known and deliberately accepted:
 | **M5** | Daemon + GUI: create, start, pair and monitor seats | ✅ |
 | **M6** | Shared game library: install once, play in every seat | ✅ |
 | **M7** | A usable seat: desktop, app list, software, resolution and framerate per client | ✅ |
+| **M8** | HDR from a seat with no monitor behind it | [spike](spike/m8-hdr/) ✅, upstream pending, not in the daemon |
 
 ## License
 

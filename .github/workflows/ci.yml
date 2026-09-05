@@ -133,7 +133,8 @@ jobs:
       # a stricter check nobody has measured against these files.
       - name: Parse every script
         run: |
-          for f in host/*.sh packaging/scripts/*.sh internal/seat/assets/*.sh; do
+          for f in host/*.sh packaging/scripts/*.sh internal/seat/assets/*.sh \
+                   spike/*/*.sh; do
             bash -n "$f"
           done
 
@@ -155,6 +156,14 @@ jobs:
           # container. They carry their own #!/bin/sh, so unlike the two above
           # they do not have to be told which shell they are.
           shellcheck --severity=warning internal/seat/assets/*.sh
+          # The spikes. Most of them are the record of how a recipe was found
+          # and will never run again, which is exactly why they were outside
+          # this until now. m8-hdr is not history though: it is meant to be run,
+          # against a live seat, by somebody who did not write it. Covering only
+          # that one would be the same mistake this step already made once, so
+          # it is all of them. The three older lib.sh files needed two directive
+          # comments to say they are sourced; nothing else had to change.
+          shellcheck --severity=warning spike/*/*.sh
 
       # The one part of the distribution table that can be checked without the
       # distributions. It replaces every package manager with a script that

@@ -1,0 +1,35 @@
+--- a/backend/headless/output.c	2026-09-04 17:56:00.937274824 +0200
++++ b/backend/headless/output.c	2026-09-04 17:56:34.485680967 +0200
+@@ -11,6 +11,7 @@
+ 	WLR_OUTPUT_STATE_BACKEND_OPTIONAL |
+ 	WLR_OUTPUT_STATE_BUFFER |
+ 	WLR_OUTPUT_STATE_ENABLED |
++	WLR_OUTPUT_STATE_IMAGE_DESCRIPTION |
+ 	WLR_OUTPUT_STATE_MODE;
+ 
+ static size_t last_output_num = 0;
+@@ -148,6 +149,24 @@
+ 	snprintf(description, sizeof(description), "Headless output %zu", output_num);
+ 	wlr_output_set_description(wlr_output, description);
+ 
++	// A headless output has no panel behind it, so unlike a DRM connector it
++	// cannot be wrong about what it is able to show: whatever the compositor
++	// composites is what the consumer of the buffer receives, and the consumer
++	// is a screencopy client rather than a cable. Advertising BT.2020 and the
++	// PQ transfer function here is therefore not a claim about hardware, it is
++	// the statement that this output presents what it is handed.
++	//
++	// Without it wlr_output_state_set_image_description() rejects every HDR
++	// image description, and a compositor cannot put a virtual output into HDR
++	// at all. sway reports it as "BT2020 primaries not supported by output".
++	wlr_output->supported_primaries =
++		WLR_COLOR_NAMED_PRIMARIES_SRGB |
++		WLR_COLOR_NAMED_PRIMARIES_BT2020;
++	wlr_output->supported_transfer_functions =
++		WLR_COLOR_TRANSFER_FUNCTION_SRGB |
++		WLR_COLOR_TRANSFER_FUNCTION_GAMMA22 |
++		WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ;
++
+ 	output->frame_timer = wl_event_loop_add_timer(backend->event_loop, signal_frame, output);
+ 
+ 	wl_list_insert(&backend->outputs, &output->link);

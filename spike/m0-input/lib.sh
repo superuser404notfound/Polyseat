@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # sourced: what looks unused here is used by the callers
 # Shared definitions for the M0 scripts.
 CT="${CT:-m0}"                     # name of the Incus container
 SEAT="${SEAT:-m0}"                 # seat tag inside the device name
