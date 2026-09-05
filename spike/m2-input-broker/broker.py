@@ -21,15 +21,31 @@ Classification (keyboard/mouse/pad) is derived from the capability bitmaps in
 `/sys`, not from the host's udev properties, because those are not set at all
 for Sunshine's devices and are deliberately stripped for Polyseat's own.
 
-**Device to seat assignment:** through the seat tag in the device name. Sunshine
-reads `XDG_SEAT` and appends the seat name as soon as the seat is not "seat0",
-turning "Keyboard passthrough" into "Keyboard passthrough (seat1)". A patch or
-LD_PRELOAD shim, as originally planned, is not needed; the feature already
-exists.
+**Device to seat assignment:** structurally wherever that is possible, and by
+the seat tag in the name only where it is not.
 
-The broker requires the tag by default. `--tag ""` turns the check off and falls
-back to plain name matching, which is only defensible for a single seat; with
-several it would be guesswork.
+A `uinput` device can be traced to its creator: the descriptor that made it is
+still open, so `device_owner` reads the owning process's cgroup and answers with
+a container name. Nothing about that depends on what the creator wrote into the
+device name, and Sunshine's keyboard and mouse are uinput devices. A `uhid`
+device - a gamepad - cannot be traced that way, because `/dev/uhid` has no
+ioctls to ask; those depend on the uhid observer having seen the kernel create
+it, and fall back to the name when it did not.
+
+The tag itself is Sunshine's doing: it reads `XDG_SEAT` and appends the seat
+name as soon as the seat is not "seat0", turning "Keyboard passthrough" into
+"Keyboard passthrough (seat1)".
+
+**It has stopped doing that.** The build that moved virtual input to
+libvirtualhid names its devices "libvirtualhid Mouse" and references XDG_SEAT
+nowhere, so on such a seat there is no tag to require. The tag is therefore
+checked where it is present and not demanded where it is absent: a name that
+carries parenthesised words has to carry ours among them, and a name that
+carries none says nothing either way and is left to the structural answer. A
+device with no tag and no structural answer is still refused, because accepting
+that would be accepting on no evidence at all.
+
+`--tag ""` turns the name check off entirely.
 
     ./broker.py --seat seat1
 """
@@ -181,6 +197,29 @@ _reported = set()
 _uhid_seen = {}
 
 
+def contradicts(name, tag):
+    """Does this device name claim a seat that is not ours?
+
+    Only a positive contradiction counts. "Mouse passthrough (joser)" seen by
+    vince is one; "libvirtualhid Mouse" is not, because it makes no claim to
+    disagree with. That distinction is the whole change: the old check treated
+    silence as disagreement, which was harmless while every device was tagged
+    and refuses everything on a Sunshine that tags nothing.
+
+    Every parenthesised word is looked at, not the last one. Sunshine writes
+    names like "Mouse passthrough (vince) (absolute)" and "Sunshine X-Box One
+    (virtual) pad (seat1)", where the tag is neither reliably first nor last,
+    and reading only one position would call one of this seat's own devices
+    foreign.
+    """
+    if not tag:
+        return False
+
+    stated = re.findall(r"\(([^()]*)\)", name)
+
+    return bool(stated) and tag not in stated
+
+
 def attribute(candidates, seat, tag):
     """Decide which of the candidates belong to this seat.
 
@@ -242,7 +281,11 @@ def attribute(candidates, seat, tag):
                 correlated = next(iter(candidates_from_fresh))
                 dev["attribution"] = "uhid-correlated"
                 if correlated == seat:
-                    if claimed or not tag:
+                    # The descriptor is the evidence and the name is only a
+                    # cross-check, so an untagged name no longer overrules it.
+                    # A name claiming somebody else still does: two sources
+                    # disagreeing is a reason to take neither.
+                    if not contradicts(dev["name"], tag):
                         mine[node] = dev
                     elif dev["syspath"] not in _reported:
                         _reported.add(dev["syspath"])
@@ -253,10 +296,19 @@ def attribute(candidates, seat, tag):
                     print(f"  ! {node:<10} refused: name claims ({seat}) but the "
                           f"uhid descriptor belongs to '{correlated}'")
             else:
-                # Nothing new, or several at once: fall back to the name and say so.
+                # Nothing new, or several at once: the name is all there is.
                 dev["attribution"] = "tag"
                 if claimed:
                     mine[node] = dev
+                elif dev["syspath"] not in _reported:
+                    _reported.add(dev["syspath"])
+                    # Worth a line rather than a silent skip. On a Sunshine that
+                    # tags nothing this is the one case with no answer left, and
+                    # what fixes it is the observer running before the device is
+                    # made - not something anybody would guess from silence.
+                    print(f"  ! {node:<10} refused: nothing saw it created and "
+                          f"the name carries no seat ({dev['name']}); is the "
+                          f"uhid observer running?")
         elif owner is None:
             # Created by a process on the host. Never belongs to a seat.
             dev["attribution"] = "host"
@@ -657,9 +709,11 @@ def main():
                          "which silently excluded anything nobody had thought "
                          "of yet")
     ap.add_argument("--tag", default=None,
-                    help="seat tag the device name must carry (default: the "
-                         "seat name). Sunshine appends it when XDG_SEAT is set. "
-                         "\"\" disables the check.")
+                    help="seat tag to believe when a device name carries one "
+                         "(default: the seat name). Sunshine appends it when "
+                         "XDG_SEAT is set and newer builds append nothing, so "
+                         "this is checked where present rather than required. "
+                         "\"\" ignores names entirely.")
     ap.add_argument("--interval", type=float, default=0.5)
     args = ap.parse_args()
 
@@ -682,10 +736,11 @@ def main():
 
     tag = args.seat if args.tag is None else (args.tag or None)
     if tag:
-        print(f"Broker running for seat '{args.seat}', requiring tag '({tag})'.")
+        print(f"Broker running for seat '{args.seat}', believing tag '({tag})' "
+              f"where a device name carries one.")
     else:
-        print(f"Broker running for seat '{args.seat}' WITHOUT a tag check, "
-              f"which is only defensible for a single seat.")
+        print(f"Broker running for seat '{args.seat}' WITHOUT a tag check, so "
+              f"only the structural answer decides.")
     print("Ctrl-C stops it.\n")
 
     # Clean up orphaned attachments from earlier runs. Sunshine instances that

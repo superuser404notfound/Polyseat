@@ -32,8 +32,9 @@ type InputDevice struct {
 // owner, and it would be wrong exactly when a device is swapped.
 //
 // The seat tag is stripped. Sunshine appends "(seatname)" to the devices it
-// creates, which is how the broker attributes them in the first place, and
-// repeating it on every line of a seat's own card says nothing.
+// creates, and repeating it on every line of a seat's own card says nothing.
+// Newer builds append nothing to strip, which changes what this line looks like
+// and not what it means.
 func describeInput(node, seat string) InputDevice {
 	device := InputDevice{Node: node, Name: node}
 

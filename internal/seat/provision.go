@@ -2191,14 +2191,22 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		return err
 	}
 
-	// The seat tag inside the device names, which is what makes per seat input
-	// attribution possible at all.
+	// The seat tag inside the device names.
 	//
 	// Sunshine reads XDG_SEAT and appends the seat name to its virtual input
 	// devices as soon as the seat is not "seat0", turning "Keyboard
 	// passthrough" into "Keyboard passthrough (seat1)". Without it every seat's
 	// devices carry identical names. A drop-in rather than part of the unit,
 	// because the value differs per seat.
+	//
+	// Not what makes attribution possible, which is how this comment used to
+	// read. The broker traces a uinput device to the cgroup of whatever holds
+	// the descriptor that made it, and that is per container and independent of
+	// every name. The tag is a cross-check there and the only answer for
+	// gamepads that the uhid observer missed. Builds after the move to
+	// libvirtualhid ignore XDG_SEAT entirely, so this is set for the ones that
+	// still read it and for the seat's own session, which greets people with
+	// it.
 	dropin := fmt.Sprintf("[Service]\nEnvironment=XDG_SEAT=%s\n", p.Seat.Name)
 
 	// The same value for the session itself, so that everything started inside

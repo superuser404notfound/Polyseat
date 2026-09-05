@@ -175,6 +175,28 @@ jobs:
       - name: The package manager table
         run: ./host/test-distro.sh
 
+  # The one decision in this project that can be wrong without anybody noticing.
+  #
+  # A device that fails to reach a seat is a complaint within the minute. A
+  # device that reaches the wrong seat is somebody else's mouse on your screen,
+  # and the person best placed to notice is the one it was taken from. The rules
+  # that decide it are two functions in broker.py, and until now nothing checked
+  # them: the broker is Python that runs as root on a host with real seats, so
+  # none of the rest of this file could go near it.
+  #
+  # These need no root, no seats and no devices. They ask the two functions
+  # directly, with the device names both Sunshine builds actually produce.
+  broker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Run from the directory, because broker.py imports its neighbours by
+      # name the same way it does when installed into /usr/lib/polyseat.
+      - name: What the broker decides
+        run: python3 -m unittest discover -s spike/m2-input-broker -t spike/m2-input-broker -v
+
   # Two files nothing else in this repository reads, in front of the one part of
   # Polyseat a person meets before the daemon has said anything: the entry in
   # their application menu. A key misspelt in the .desktop file or an unclosed
