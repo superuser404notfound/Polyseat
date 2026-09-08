@@ -665,18 +665,49 @@ func download(ctx context.Context, url string) ([]byte, error) {
 // version into one seat, pair a client against it, check that input still stops
 // at the seat boundary, and only then change the number.
 //
-// Whether a version is a release or a pre-release does not decide anything
-// here, and this pin is currently a pre-release. LizardByte's stable line moves
-// a few times a year - the one before this was four months earlier - and every
-// change described above lives in the pre-releases in between. What makes a
-// version safe to pin is that somebody ran it, not which list GitHub files it
-// under. Following the pre-releases as a channel would be the old behaviour
-// with a higher frequency; pinning to one that has been tested is not.
+// A pin also has to exist. The one before this, 2026.904.234309, was a
+// pre-release that had been run on a seat here, and LizardByte deleted it from
+// the release list when the stable two days later shipped - pruning
+// pre-releases is apparently what they do. sunshinePackage resolves the pin by
+// tag, so from that moment stepSunshine ended every provisioning run with
 //
-// The seat still reports LizardByte's current stable, which is a different
-// number from this one in both directions and is there to be looked at rather
-// than acted on.
-const SunshinePin = "2026.904.234309"
+//	the Sunshine release could not be looked up: 404 Not Found
+//
+// and no new seat could be built at all. Seats already carrying that build were
+// untouched, because the step returns early when pacman reports the pin
+// installed. Pinning a pre-release is therefore not only a question of whether
+// somebody ran it; it can be withdrawn under the pin. A stable stays.
+//
+// This one also has to move for its contents. 2026.906.222525 is the fix for
+// five advisories, and 2026.904.234309 predates all five: GHSA-36ff-frg7-492f,
+// where a pairing PIN could be applied to a session the operator did not mean
+// to approve, and GHSA-c428-87f8-rrv5, an unauthenticated crash from a short
+// ENet packet, both need nothing but reaching the seat's network. The other
+// three need a paired client. A seat's Sunshine listens on the LAN bridge by
+// design, so these are reachable from where the clients are.
+//
+// What could not be checked here is the part the paragraph above asks for: no
+// seat has run this build. What was checked is that nothing Polyseat says to
+// Sunshine has moved, read out of the source at this tag rather than assumed.
+// /api/pin, /api/clients/list, /api/clients/unpair and /api/apps are all still
+// routed; POST /api/pin still takes {pairing_id, pin, name} and GET still
+// answers {pairings:[{id, name, address}]}, which is the shape internal/sunshine
+// already speaks; the CSRF gate lets a request through untokened when it carries
+// neither Origin nor Referer, which is what a Go client sends, and the handlers
+// want Content-Type: application/json, which it sets. Neither config key this
+// release renamed or repurposed - output_name and ds5_inputtino_randomize_mac -
+// appears in assets/sunshine.conf. libvirtualhid is already the input backend
+// the pin before this carried, and the udev rule and the broker were fixed for
+// it then.
+//
+// The package pulls qt6-base, qt6-svg and gtk3 in now, for a tray a seat has
+// nowhere to draw. stepPackages runs pacman -Syu immediately before this step,
+// so they resolve; they are the reason the seat grows.
+//
+// So what is still owed on hardware is the streaming half: pair a client
+// against a seat built on this, and watch that input still stops at the seat
+// boundary.
+const SunshinePin = "2026.906.222525"
 
 // sunshinePackage finds the Arch package belonging to one Sunshine release.
 //
