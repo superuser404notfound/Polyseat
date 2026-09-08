@@ -10,6 +10,56 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.17.0
+
+**No new seat could be built, because the pinned Sunshine no longer existed.**
+0.16.0 pinned 2026.904.234309, a pre-release that had been run on a seat here.
+LizardByte deleted it from the release list when the stable two days later
+shipped. `sunshinePackage` resolves the pin by tag, so from that moment every
+provisioning run ended at the Sunshine step with `the Sunshine release could not
+be looked up: 404 Not Found`. Seats already carrying that build were untouched:
+the step returns early when pacman reports the pin installed. The lesson is
+narrower than "do not pin" and is written above the constant - a pre-release can
+be withdrawn under the pin, and a stable stays.
+
+**The pin is 2026.906.222525, and it closes five advisories the old pin was
+open to.** Two need nothing but reaching the seat's network:
+[GHSA-36ff-frg7-492f](https://github.com/LizardByte/Sunshine/security/advisories/GHSA-36ff-frg7-492f),
+where a pairing PIN could be applied to a session the operator did not mean to
+approve, and
+[GHSA-c428-87f8-rrv5](https://github.com/LizardByte/Sunshine/security/advisories/GHSA-c428-87f8-rrv5),
+an unauthenticated crash from a short ENet packet. The other three need a paired
+client. A seat's Sunshine listens on the LAN bridge by design, so these are
+reachable from where the clients are. **This one is a stable release**, so
+"update software" no longer installs a pre-release.
+
+**What Polyseat says to Sunshine was checked against the source at that tag
+rather than assumed.** `/api/pin`, `/api/clients/list`, `/api/clients/unpair`
+and `/api/apps` are all still routed; `POST /api/pin` still takes
+`{pairing_id, pin, name}` and `GET` still answers
+`{pairings:[{id, name, address}]}`, which is what `internal/sunshine` already
+speaks. The CSRF gate lets a request through untokened when it carries neither
+`Origin` nor `Referer`, which is what a Go client sends. Neither config key this
+release renamed - `output_name` and `ds5_inputtino_randomize_mac` - appears in
+the seat's `sunshine.conf`. libvirtualhid was already the input backend the
+previous pin carried, and the udev rule and the broker were fixed for it in
+0.16.0. **The streaming half is still owed on hardware:** pair a client against
+a seat built on this and watch that input stops at the seat boundary.
+
+**A seat says who is streaming from it by name now, not only by address.**
+Sunshine puts the paired name of the client it verified into the environment of
+the prep commands as `SUNSHINE_CLIENT_NAME`, which is exactly the thing
+`polyseat-session` carried a comment regretting it could not have. The address
+stays beside it and is not merely a fallback for seats on an older build: it
+answers which machine rather than which pairing, and a name is chosen by whoever
+set the client up, so two of them can be the same. Seats whose Sunshine predates
+the pin leave the field out and read as they did before.
+
+**The seat grows by a tray it has nowhere to draw.** Sunshine's system tray
+moved to Qt, so its Arch package now depends on `qt6-base`, `qt6-svg` and
+`gtk3`. The package step runs `pacman -Syu` immediately before the Sunshine
+step, so they resolve without anything further.
+
 ## 0.16.0
 
 **A seat's PS5 controller was readable on the host desktop, and the check meant
