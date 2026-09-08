@@ -659,10 +659,10 @@ function staleBanner() {
 // now the interface answered it only by implication: the resolution row showed
 // two values when somebody was connected and one when nobody was.
 //
-// An address rather than a name, because Sunshine does not offer one. Moonlight
-// gives its name while pairing and Sunshine keeps that against a certificate,
-// not against an address, and there is no endpoint for the session in progress.
-// The paired devices are listed a few rows below, which is as close as this gets.
+// The paired name where the seat's Sunshine is new enough to report it, and the
+// address where it is not. Both when they are both there: the name says which
+// pairing and the address says which machine, and a name is chosen by whoever
+// set the client up, so two of them can be the same.
 function describeSession(session) {
   const parts = [session.app || "something"];
 
@@ -675,7 +675,14 @@ function describeSession(session) {
   }
 
   if (session.hdr === "1") parts.push("HDR");
-  if (session.peer) parts.push(`from ${session.peer}`);
+
+  if (session.client && session.peer) {
+    parts.push(`from ${session.client} at ${session.peer}`);
+  } else if (session.client) {
+    parts.push(`from ${session.client}`);
+  } else if (session.peer) {
+    parts.push(`from ${session.peer}`);
+  }
 
   const started = session.started && new Date(session.started);
   if (started && !Number.isNaN(started.getTime())) {

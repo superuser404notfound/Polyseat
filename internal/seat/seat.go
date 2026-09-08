@@ -168,11 +168,17 @@ type Session struct {
 	// HDR is what Sunshine reported, "1" or "0" or absent.
 	HDR string `json:"hdr,omitempty"`
 
+	// Client is the paired name of whoever is streaming, which Sunshine puts in
+	// the environment of the prep commands from 2026.906.222525 on. Absent from
+	// a seat on an older build, and absent is why Peer stays: the interface
+	// showed the address next to the paired names and let the reader put the
+	// two together, and for those seats it still has to.
+	Client string `json:"client,omitempty"`
+
 	// Peer is the address the stream's control connection comes from, which is
-	// the machine somebody is sitting at. Not a name: Moonlight gives its name
-	// only while pairing and Sunshine keeps that against a certificate rather
-	// than against an address, so the interface shows the address next to the
-	// paired names and lets the reader put the two together.
+	// the machine somebody is sitting at. A different question from Client:
+	// which machine rather than which pairing, and names are chosen by whoever
+	// set the client up, so two of them can be the same.
 	Peer string `json:"peer,omitempty"`
 
 	Started time.Time `json:"started"`

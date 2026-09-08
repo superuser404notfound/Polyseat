@@ -16,12 +16,18 @@
 # their environment, and the name of the application it asked for. That is most
 # of the answer, so it is written down at the moment it is true.
 #
-# The client's address comes from the connection itself. Sunshine's control
-# channel is a TCP connection that exists for as long as the stream does, so the
-# peer on port 47989 or 48010 is the machine somebody is sitting at. Not a name:
-# Moonlight only gives its name while pairing, and Sunshine keeps that against a
-# certificate rather than against an address. The web interface lists the paired
-# names beside this, which is as close as this can get without Sunshine's help.
+# The name comes from Sunshine, since 2026.906.222525. It puts the paired name
+# of the client it just verified into the environment of these commands as
+# SUNSHINE_CLIENT_NAME, beside the size and the framerate. This file used to
+# carry a comment saying that could not be had and that the address was as close
+# as it got; it is worth saying plainly that it now can.
+#
+# The address is still read, and not only as a fallback for a seat on an older
+# build. It answers a different question - which machine, not which pairing -
+# and a name is chosen by whoever set the client up, so two can be the same.
+# Sunshine's control channel is a TCP connection that exists for as long as the
+# stream does, so the peer on port 47989 or 48010 is the machine somebody is
+# sitting at.
 #
 # Never fails. This runs as a Sunshine prep command, and a prep command that
 # returns non-zero stops the stream it was meant to describe.
@@ -55,6 +61,9 @@ height=${SUNSHINE_CLIENT_HEIGHT:-}
 fps=${SUNSHINE_CLIENT_FPS:-}
 hdr=${SUNSHINE_CLIENT_HDR:-}
 app=${SUNSHINE_APP_NAME:-}
+# Absent on a seat whose Sunshine predates the pin, and empty is handled the
+# same way as every other value here: the field is left out.
+client=${SUNSHINE_CLIENT_NAME:-}
 
 # The established control connection, if it can be seen. One address: a second
 # client cannot stream from the same seat at the same time, so anything else on
@@ -73,6 +82,7 @@ peer=$(ss -Htn state established '( sport = :47989 or sport = :48010 )' 2>/dev/n
     [ -n "$width" ] && [ -n "$height" ] && printf ',"width":%s,"height":%s' "$width" "$height"
     [ -n "$fps" ] && printf ',"fps":%s' "$fps"
     [ -n "$hdr" ] && printf ',"hdr":"%s"' "$(quote "$hdr")"
+    [ -n "$client" ] && printf ',"client":"%s"' "$(quote "$client")"
     [ -n "$peer" ] && printf ',"peer":"%s"' "$(quote "$peer")"
     printf ',"started":"%s"' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '}\n'
@@ -83,6 +93,6 @@ peer=$(ss -Htn state established '( sport = :47989 or sport = :48010 )' 2>/dev/n
 
 mv "$FILE.tmp" "$FILE" 2>/dev/null || rm -f "$FILE.tmp" 2>/dev/null
 
-say "streaming ${app:-something} at ${width:-?}x${height:-?} to ${peer:-an unknown address}"
+say "streaming ${app:-something} at ${width:-?}x${height:-?} to ${client:-${peer:-an unknown address}}"
 
 exit 0

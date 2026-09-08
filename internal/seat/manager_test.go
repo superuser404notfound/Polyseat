@@ -291,6 +291,49 @@ func TestOnlyTheWordIdleMeansNobodyIsStreaming(t *testing.T) {
 	}
 }
 
+// The client's name is read where the seat's Sunshine reports one, and its
+// absence is not a parse failure. Both shapes are in the field at once: the name
+// arrives in SUNSHINE_CLIENT_NAME from 2026.906.222525 on, and a seat built
+// before that pin writes the same marker without it. A seat that answered has to
+// keep answering across that line.
+func TestTheClientNameIsOptionalInTheMarker(t *testing.T) {
+	for _, c := range []struct {
+		what   string
+		out    string
+		client string
+		peer   string
+	}{
+		{
+			what:   "a seat on the pin, which reports both",
+			out:    "streaming\n{\"app\":\"DREDGE\",\"client\":\"Wohnzimmer\",\"peer\":\"192.168.1.44\"}\n",
+			client: "Wohnzimmer",
+			peer:   "192.168.1.44",
+		},
+		{
+			what: "a seat built before it, which reports only the address",
+			out:  "streaming\n{\"app\":\"DREDGE\",\"peer\":\"192.168.1.44\"}\n",
+			peer: "192.168.1.44",
+		},
+	} {
+		session, got := parseStreamCheck(c.out)
+		if got != streamBusy {
+			t.Errorf("%s was read as %v, want %v", c.what, got, streamBusy)
+		}
+
+		if session == nil {
+			t.Fatalf("%s lost its description entirely", c.what)
+		}
+
+		if session.Client != c.client {
+			t.Errorf("%s named the client %q, want %q", c.what, session.Client, c.client)
+		}
+
+		if session.Peer != c.peer {
+			t.Errorf("%s named the address %q, want %q", c.what, session.Peer, c.peer)
+		}
+	}
+}
+
 // And a stream that really ends still has to end, or the resolution is never put
 // back and the card claims somebody is playing long after they closed Moonlight.
 func TestAStreamThatStaysGoneEndsAfterTheGrace(t *testing.T) {
