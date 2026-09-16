@@ -743,9 +743,28 @@ func (p *Provisioner) writeGameEntries(ctx context.Context, games []Game) error 
 		}
 	}
 
+	// The script every entry starts through, placed before the first entry that
+	// names it.
+	//
+	// Provisioning places it too, and that is not enough on its own: this runs
+	// on the minute timer of a daemon that may be newer than the seat, so a
+	// daemon update would otherwise rewrite every game entry to name a file the
+	// seat does not have until somebody provisions it again, and every game in
+	// the launcher would stop starting in between. Only when something is
+	// written, so the steady state stays one directory listing.
+	placed := false
+
 	for path, body := range want {
 		if have[path] {
 			continue
+		}
+
+		if !placed {
+			if err := p.Client.PushFile(p.name(), cappedPath, asset("assets/capped.sh"), 0o755, 0, 0); err != nil {
+				return err
+			}
+
+			placed = true
 		}
 
 		if err := p.Client.PushFile(p.name(), path, body, 0o644, p.uid, p.uid); err != nil {
@@ -826,10 +845,15 @@ func launchTarget(launch string) string {
 // $LIB is expanded by the dynamic linker rather than by a shell, so a 32 bit
 // process picks up the 32 bit build of the same library. Named here because it
 // is set in two places that cannot share one: Sunshine's environment block, for
-// what a client picks, and each game's own launcher entry, for what somebody
-// picks on the desktop. The desktop itself deliberately has neither, because
+// what a client picks, and polyseat-capped, which each game's own launcher entry
+// starts through, for what somebody picks on the desktop. The desktop itself deliberately has neither, because
 // MangoHud's shim kills applications that are not games. See polyseat-launcher.
 const mangoHudPreload = "/usr/$LIB/mangohud/libMangoHud_shim.so"
+
+// cappedPath is where the seat keeps polyseat-capped, which every game entry
+// starts through. The value of mangoHudPreload is written out in that script as
+// well, and a test holds the two to each other.
+const cappedPath = "/usr/local/bin/polyseat-capped"
 
 // desktopEntry renders one game as a launcher entry.
 func desktopEntry(g Game) []byte {
@@ -840,10 +864,10 @@ func desktopEntry(g Game) []byte {
 	b.WriteString("Name=" + oneLine(g.Name) + "\n")
 
 	// The cap travels with the game rather than with the desktop it was started
-	// from. env rather than a shell, so nothing here is interpreted twice, and
-	// the linker still gets its own $LIB unexpanded.
-	b.WriteString("Exec=env MANGOHUD=1 LD_PRELOAD=" + mangoHudPreload + " " +
-		oneLine(g.Launch) + "\n")
+	// from. Through polyseat-capped rather than an env line, because the
+	// preload contains $LIB for the linker and the launcher runs Exec through
+	// `env -S`, which refuses a dollar sign it cannot expand and starts nothing.
+	b.WriteString("Exec=" + cappedPath + " " + oneLine(g.Launch) + "\n")
 
 	// The card drawn for Moonlight, because it is the picture the seat already
 	// has for this game and a launcher entry with no icon is a blank square.

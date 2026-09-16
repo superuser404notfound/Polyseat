@@ -2,6 +2,9 @@ package seat
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -473,8 +476,7 @@ func TestDesktopEntryIsOneKeyPerLine(t *testing.T) {
 	// than in the environment the launcher was started with, because the
 	// desktop deliberately does not carry MangoHud's OpenGL shim: it kills
 	// applications that are not games, Firefox among them.
-	want := "env MANGOHUD=1 LD_PRELOAD=/usr/$LIB/mangohud/libMangoHud_shim.so " +
-		"steam steam://rungameid/3751950"
+	want := "/usr/local/bin/polyseat-capped steam steam://rungameid/3751950"
 
 	if seen["Exec"] != want {
 		t.Errorf("Exec is %q, want %q", seen["Exec"], want)
@@ -486,6 +488,96 @@ func TestDesktopEntryIsOneKeyPerLine(t *testing.T) {
 
 	if seen["Icon"] == "" {
 		t.Error("no icon, so the launcher shows a blank square next to the game")
+	}
+}
+
+// A game entry has to start from the launcher the seat actually has, with the
+// cap intact, and that is tested by starting it the way the launcher does.
+//
+// nwg-drawer strips every quote from Exec, cuts it at the first %, and hands
+// what is left to `/usr/bin/env -S`. GNU env refuses a bare $NAME in that
+// string with exit 125, and the entries used to carry $LIB for the linker, so
+// every game in the grid failed to start while Steam and Firefox beside it were
+// fine. Reading the Exec line for a dollar sign would catch that one cause; this
+// catches anything else about the line env will not take, and checks that the
+// variables arrive as well, since an entry that starts the game uncapped would
+// also pass a test that only looked at the exit code.
+func TestDesktopEntryStartsTheWayTheLauncherRunsIt(t *testing.T) {
+	envPath := "/usr/bin/env"
+	if err := exec.Command(envPath, "-S", "true").Run(); err != nil {
+		t.Skip("SKIPPED: this env has no -S, so the launcher's way of starting an entry cannot be reproduced here")
+	}
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	capped := filepath.Join(bin, "polyseat-capped")
+	if err := os.WriteFile(capped, asset("assets/capped.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stands in for Steam and records what it was started with.
+	dump := filepath.Join(dir, "environment")
+	steam := "#!/bin/sh\nenv > " + dump + "\necho \"$@\" >> " + dump + "\n"
+
+	if err := os.WriteFile(filepath.Join(bin, "steam"), []byte(steam), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var line string
+
+	for _, l := range strings.Split(string(desktopEntry(Game{
+		Name:   "DREDGE",
+		Launch: "steam steam://rungameid/1562430",
+		Image:  "/art/dredge.png",
+	})), "\n") {
+		if v, ok := strings.CutPrefix(l, "Exec="); ok {
+			line = v
+		}
+	}
+
+	if !strings.HasPrefix(line, cappedPath+" ") {
+		t.Fatalf("Exec is %q, which does not start through %s", line, cappedPath)
+	}
+
+	// The seat's path for the script is swapped for the test's copy, and the
+	// rest is done to the line exactly as nwg-drawer 0.7.5 does it in
+	// parseDesktopEntry and launch.
+	command := strings.NewReplacer(`"`, "", "'", "").Replace(capped + strings.TrimPrefix(line, cappedPath))
+
+	if cut := strings.Index(command, "%"); cut > 0 {
+		command = command[:cut-1]
+	}
+
+	cmd := exec.Command(envPath, "-S", command)
+	cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + dir}
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the launcher could not start the entry: %v\n%s", err, out)
+	}
+
+	body, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatal("the game was never started, so this checked nothing")
+	}
+
+	got := string(body)
+
+	if !strings.Contains(got, "LD_PRELOAD="+mangoHudPreload+"\n") {
+		t.Errorf("the game did not get LD_PRELOAD=%s, so an OpenGL game started from "+
+			"the desktop runs uncapped:\n%s", mangoHudPreload, got)
+	}
+
+	if !strings.Contains(got, "MANGOHUD=1\n") {
+		t.Errorf("the game did not get MANGOHUD=1, so a Vulkan game started from the desktop runs uncapped:\n%s", got)
+	}
+
+	if !strings.Contains(got, "steam://rungameid/1562430\n") {
+		t.Errorf("the game was started without its own arguments:\n%s", got)
 	}
 }
 
