@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 38
+const Generation = 39
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -683,36 +683,61 @@ func download(ctx context.Context, url string) ([]byte, error) {
 // installed. Pinning a pre-release is therefore not only a question of whether
 // somebody ran it; it can be withdrawn under the pin. A stable stays.
 //
-// This one also has to move for its contents. 2026.906.222525 is the fix for
-// five advisories, and 2026.904.234309 predates all five: GHSA-36ff-frg7-492f,
-// where a pairing PIN could be applied to a session the operator did not mean
-// to approve, and GHSA-c428-87f8-rrv5, an unauthenticated crash from a short
-// ENet packet, both need nothing but reaching the seat's network. The other
-// three need a paired client. A seat's Sunshine listens on the LAN bridge by
-// design, so these are reachable from where the clients are.
+// This one also has to move for its contents. 2026.914.233613 closes
+// GHSA-fp6g-27w5-489j, high severity and Linux only: the Arch package gives the
+// binary cap_sys_admin and cap_sys_nice as file capabilities, and the Qt tray
+// initialised GUI libraries while honouring the module loader variables it
+// found in the environment, so whoever controls that environment could have
+// native code loaded with those capabilities. Every release from v0.19.0 to the
+// pin before this is affected, and `getcap /usr/bin/sunshine` in a seat here
+// answers cap_sys_admin,cap_sys_nice=p, so it is not theoretical.
 //
-// What could not be checked here is the part the paragraph above asks for: no
-// seat has run this build. What was checked is that nothing Polyseat says to
-// Sunshine has moved, read out of the source at this tag rather than assumed.
-// /api/pin, /api/clients/list, /api/clients/unpair and /api/apps are all still
-// routed; POST /api/pin still takes {pairing_id, pin, name} and GET still
-// answers {pairings:[{id, name, address}]}, which is the shape internal/sunshine
-// already speaks; the CSRF gate lets a request through untokened when it carries
-// neither Origin nor Referer, which is what a Go client sends, and the handlers
-// want Content-Type: application/json, which it sets. Neither config key this
-// release renamed or repurposed - output_name and ds5_inputtino_randomize_mac -
-// appears in assets/sunshine.conf. libvirtualhid is already the input backend
-// the pin before this carried, and the udev rule and the broker were fixed for
-// it then.
+// It is bounded but it is real. The environment in a seat belongs to the player:
+// Sunshine is that user's own systemd unit. So the party this lets over the line
+// is exactly the party the seat is built to keep on this side of it - the player
+// has no sudo by design. What stops it there is that the container is
+// unprivileged, so those capabilities are the container's own and Container root
+// is host uid 1000000. A seat, not this machine. The fix drops the variables
+// before Qt is touched at all, and drops both capabilities from the main thread
+// at startup rather than lazily, keeping cap_sys_nice on the one EGL thread that
+// needs it.
 //
-// The package pulls qt6-base, qt6-svg and gtk3 in now, for a tray a seat has
-// nowhere to draw. stepPackages runs pacman -Syu immediately before this step,
-// so they resolve; they are the reason the seat grows.
+// **The route Polyseat pairs through now waits.** POST /api/pin is the same
+// path with the same body and the same response shape, but nvhttp::pin no
+// longer answers as soon as the certificate has gone back to Moonlight: it
+// blocks on a condition variable until the handshake finishes or
+// min(session expiry, ping_timeout) passes, and status now means "this device
+// is paired" rather than "the PIN was taken". ping_timeout defaults to ten
+// seconds and assets/sunshine.conf does not set it. internal/sunshine gives
+// that one call a limit of its own because of this; callTimeout there says the
+// rest.
 //
-// So what is still owed on hardware is the streaming half: pair a client
-// against a seat built on this, and watch that input still stops at the seat
-// boundary.
-const SunshinePin = "2026.906.222525"
+// Nothing else Polyseat says to Sunshine moved, read out of the source at this
+// tag rather than assumed: /api/clients/list, /api/clients/unpair and /api/apps
+// are routed at the same paths with byte-identical handlers, and the CSRF gate
+// still lets a request through untokened when it carries neither Origin nor
+// Referer. No configuration key was renamed or removed, the prep command
+// environment is unchanged to the line, and the Arch package's dependency list
+// is identical, so a seat does not grow for this one.
+//
+// Two changes underneath are worth knowing about when something looks wrong
+// later. libvirtualhid splits the virtual mouse into a relative and an absolute
+// device, so a streaming seat now has "libvirtualhid Mouse" and "libvirtualhid
+// Mouse (Absolute)" where it had one; the udev rule matches libvirtualhid* by
+// glob and the broker attributes structurally, so both should be taken, but
+// no stream has run on this. And a corrected initialiser turns native_pen_touch
+// on by default, on Linux too, which is another virtual device a client may
+// bring.
+//
+// The capture path moved as well: wlroots buffers are now exported plane by
+// plane and DRM_FORMAT_MOD_INVALID is filtered out of the advertised modifiers,
+// so a headless output that only advertises the implicit modifier takes the
+// plain allocation path instead. That is the part only a stream can answer.
+//
+// So what is still owed on hardware is what was owed before: pair a client
+// against a seat built on this, watch that input stops at the seat boundary,
+// and stream from it.
+const SunshinePin = "2026.914.233613"
 
 // sunshinePackage finds the Arch package belonging to one Sunshine release.
 //

@@ -32,6 +32,32 @@ var errNotFound = errors.New("this Sunshine has no such route")
 // Port is where Sunshine serves its web interface.
 const Port = 47990
 
+// How long a call may take.
+//
+// Per call rather than on the client, because the two numbers are not one
+// number. Everything here is a question a seat on the same bridge answers at
+// once, and ten seconds is already generous for that; pairing is not, since
+// 2026.914.233613, and a single limit would have to be the larger of the two
+// for every call.
+//
+// **The pairing one has to outlast Sunshine's own wait.** That release made
+// POST /api/pin block until Moonlight has finished the cryptographic handshake
+// or `ping_timeout` has passed, and answer with whether the device is now
+// paired rather than whether the PIN was taken. ping_timeout defaults to ten
+// seconds and a seat's sunshine.conf does not set it, so the old ten second
+// limit on this client was the same number: a pairing that took its time raced
+// us, and losing that race reads as "Sunshine could not be reached" to somebody
+// who has just typed a correct PIN and whose device is about to appear in the
+// list. Larger than the wait it has to survive, with room for a seat under load
+// rather than a second of margin.
+//
+// Variables rather than constants so that a test can shrink them. Nothing else
+// writes them, and a test that slept out the real ones would take a minute.
+var (
+	callTimeout = 10 * time.Second
+	pairTimeout = 45 * time.Second
+)
+
 // Client talks to one seat's Sunshine.
 type Client struct {
 	base     string
@@ -53,7 +79,7 @@ func New(address, user, password string) *Client {
 		user:     user,
 		password: password,
 		http: &http.Client{
-			Timeout: 10 * time.Second,
+			// No Timeout here on purpose: callWithin says why.
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
 					// Sunshine serves a self signed certificate it generates
@@ -185,13 +211,16 @@ func (c *Client) Pair(ctx context.Context, pin, name string) error {
 	}
 
 	var out statusResponse
-	if err := c.call(ctx, http.MethodPost, "/api/pin", body, &out); err != nil {
+	if err := c.callWithin(ctx, pairTimeout, http.MethodPost, "/api/pin", body, &out); err != nil {
 		return err
 	}
 
 	if !out.Status {
-		return fmt.Errorf("Sunshine refused the PIN. It has to be entered while " +
-			"Moonlight is showing it, and it belongs to this seat only")
+		return fmt.Errorf("the device was not paired. The PIN has to be entered " +
+			"while Moonlight is showing it and belongs to this seat only, and " +
+			"Moonlight has to still be waiting: Sunshine now answers this once " +
+			"the device is actually paired, so a client that gave up or a PIN " +
+			"that was refused both arrive here")
 	}
 
 	return nil
@@ -238,6 +267,20 @@ func (c *Client) Unpair(ctx context.Context, uuid string) error {
 }
 
 func (c *Client) call(ctx context.Context, method, path string, body, into any) error {
+	return c.callWithin(ctx, callTimeout, method, path, body, into)
+}
+
+// callWithin is call with a limit of its own, for the one route that waits.
+//
+// The limit lives here rather than on the http.Client because a limit there
+// applies to every call and cannot be lengthened for one of them: a context
+// with a later deadline does not lift http.Client.Timeout, it only loses to it.
+// Whatever the caller brought still counts, since WithTimeout keeps the earlier
+// of the two deadlines, so a browser that went away still ends the call.
+func (c *Client) callWithin(ctx context.Context, limit time.Duration, method, path string, body, into any) error {
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+
 	var reader io.Reader
 
 	if body != nil {

@@ -39,6 +39,45 @@ the variables arrive. The daemon places the script before it writes the first
 entry that names it, so a seat that has not been built again yet keeps starting
 its games from fuzzel in the meantime.
 
+**The pinned Sunshine is 2026.914.233613, which closes a high severity hole in
+the one before it.** [GHSA-fp6g-27w5-489j](https://github.com/LizardByte/Sunshine/security/advisories/GHSA-fp6g-27w5-489j)
+is Linux only and every release from v0.19.0 to 2026.906.222525 has it: the
+package gives the binary `cap_sys_admin` and `cap_sys_nice` as file
+capabilities, and the Qt tray initialised GUI libraries while honouring the
+module loader variables in its environment, so whoever controls that environment
+could have native code loaded with those capabilities. `getcap /usr/bin/sunshine`
+in a seat here answers `cap_sys_admin,cap_sys_nice=p`, so this is not
+theoretical. In a seat the environment belongs to the player, since Sunshine is
+that user's own unit, so the party this lets over the line is the party the seat
+exists to keep on this side of it. What bounds it is that the container is
+unprivileged: those capabilities are the seat's own, and container root is host
+uid 1000000. **Seats have to be built again for this**, which the interface
+offers.
+
+**Pairing a device gets its own patience, because that release made it wait.**
+`POST /api/pin` is the same path with the same body, but Sunshine now holds the
+connection until Moonlight has finished the handshake or `ping_timeout` has
+passed, and answers whether the device is paired rather than whether the PIN was
+taken. That default is ten seconds, which was also the limit this daemon put on
+every call to a seat, so a correct PIN could arrive as "reach Sunshine in the
+seat: context deadline exceeded" while the device paired perfectly well. Pairing
+now gets forty-five seconds and everything else keeps its ten, and the message
+for a refusal says what a refusal now covers. Nothing else Polyseat says to
+Sunshine moved: the other three routes are byte-identical handlers at the same
+paths, the CSRF gate still passes a request carrying neither Origin nor Referer,
+no configuration key was renamed, the prep command environment is unchanged and
+the package pulls in nothing new.
+
+**Two things underneath that release are worth knowing about before they
+surprise somebody.** libvirtualhid splits the virtual mouse in two, so a
+streaming seat has `libvirtualhid Mouse` and `libvirtualhid Mouse (Absolute)`
+where it had one, and a corrected initialiser turns `native_pen_touch` on by
+default on Linux as well. The udev rule matches by glob and the broker
+attributes devices structurally, so both should be hidden from the host as
+before - but no stream has run on this. The wlroots capture path also changed:
+buffers are exported plane by plane and `DRM_FORMAT_MOD_INVALID` is filtered out
+of the advertised modifiers, which a headless output is exactly the case for.
+
 **Seen in a seat, not yet through a client.** Seat vince was built on this on
 2026-09-16 and the grid was opened, photographed and driven there: a virtual pad
 feeding `ABS_HAT0Y` moved the focus into the grid icon by icon, the focused icon

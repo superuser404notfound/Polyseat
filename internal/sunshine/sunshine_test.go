@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // seat stands in for a Sunshine inside a container.
@@ -25,6 +26,54 @@ func seat(t *testing.T, handler http.HandlerFunc) *Client {
 	c.http = server.Client()
 
 	return c
+}
+
+// Pairing waits where every other call does not, and that is the whole of this.
+//
+// Since 2026.914.233613 POST /api/pin holds the connection until Moonlight has
+// finished the handshake or Sunshine's own ping_timeout has passed, which
+// defaults to the ten seconds this client used to allow for any call at all.
+// The two numbers being the same meant a correct PIN could arrive as "reach
+// Sunshine in the seat: context deadline exceeded" while the device paired.
+//
+// The limits are shrunk here rather than waited out: what is under test is that
+// pairing gets the longer one, not what the numbers are.
+func TestPairWaitsLongerThanAnOrdinaryCall(t *testing.T) {
+	ordinary, pairing := callTimeout, pairTimeout
+
+	t.Cleanup(func() { callTimeout, pairTimeout = ordinary, pairing })
+
+	callTimeout, pairTimeout = 100*time.Millisecond, 3*time.Second
+
+	// Slower than an ordinary call may take, faster than Sunshine's own wait.
+	const handshake = 600 * time.Millisecond
+
+	c := seat(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/pin" && r.Method == http.MethodPost {
+			time.Sleep(handshake)
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": true})
+	})
+
+	if err := c.Pair(t.Context(), "1234", "a client"); err != nil {
+		t.Fatalf("a device that took %v to pair was reported as a failure: %v", handshake, err)
+	}
+
+	// The other half, against a seat that is slow at everything. Without it
+	// this passes just as well with one generous limit for all calls, and a
+	// seat that has gone away would then hold the interface for three quarters
+	// of a minute on every one of them.
+	slow := seat(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(handshake)
+
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": true})
+	})
+
+	if _, err := slow.Devices(t.Context()); err == nil {
+		t.Error("an ordinary call waited out the pairing limit, so an unreachable " +
+			"seat holds the interface for as long as a pairing does")
+	}
 }
 
 func TestPairRefusesAPinSunshineRefused(t *testing.T) {
