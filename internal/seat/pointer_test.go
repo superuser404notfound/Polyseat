@@ -508,6 +508,111 @@ func TestPointerHelpTextAgreesWithTheButtons(t *testing.T) {
 	}
 }
 
+// The driver for the D-pad. It feeds the helper's own translation a sequence of
+// axis events, keeps the keys down the way the kernel would, and reports what is
+// held after each one. It also names the codes the helper listens to, because
+// the bug this is for was a mapping that listened to the wrong ones.
+const hatDriver = `
+import importlib.util, json, sys
+
+spec = importlib.util.spec_from_file_location("padpointer", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+e = module.ecodes
+axes = {"x": e.ABS_HAT0X, "y": e.ABS_HAT0Y}
+names = {e.KEY_UP: "up", e.KEY_DOWN: "down", e.KEY_LEFT: "left", e.KEY_RIGHT: "right"}
+
+# A helper without the translation is an answer, not a helper that failed to
+# load. Raising here would read as the second and skip the test, which is how
+# this driver first passed against the very version it was written to catch.
+translate = getattr(module, "hat_keys", None)
+if translate is None:
+    print(json.dumps({"after": [], "listens": False}))
+    sys.exit(0)
+
+held, after = set(), []
+for axis, value in json.loads(sys.argv[2]):
+    for key, pressed in translate(axes[axis], value):
+        held.add(names[key]) if pressed else held.discard(names[key])
+    after.append(sorted(held))
+
+print(json.dumps({"after": after, "listens": sorted(module.HATS) == sorted(axes.values())}))
+`
+
+type hatRun struct {
+	After   [][]string `json:"after"`
+	Listens bool       `json:"listens"`
+}
+
+func replayHat(t *testing.T, script string) hatRun {
+	t.Helper()
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("SKIPPED: no python3, so the helper's behaviour is unverified here")
+	}
+
+	path := filepath.Join(t.TempDir(), "pad-pointer.py")
+	if err := os.WriteFile(path, asset("assets/pad-pointer.py"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command(python, "-c", hatDriver, path, script).Output()
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok && len(exit.Stderr) > 0 {
+			t.Skipf("SKIPPED: the helper could not be loaded here: %s", exit.Stderr)
+		}
+
+		t.Fatal(err)
+	}
+
+	var run hatRun
+	if err := json.Unmarshal(out, &run); err != nil {
+		t.Fatalf("the driver printed %q", out)
+	}
+
+	return run
+}
+
+// The D-pad has to reach the desktop as arrow keys from the pads a seat really
+// gets. inputtino writes it as ABS_HAT0X and ABS_HAT0Y for every pad type, and
+// the helper used to listen for BTN_DPAD_* only, so the help text promised
+// arrow keys and pressing the D-pad did nothing. The app grid is driven by
+// exactly those keys.
+func TestPointerDPadArrivesAsArrowKeys(t *testing.T) {
+	// Right, back to the centre, up, straight across to down without passing
+	// the centre, and both axes at once for a diagonal.
+	run := replayHat(t, `[["x",1],["x",0],["y",-1],["y",1],["y",0],["x",-1],["y",-1],["x",0],["y",0]]`)
+
+	if !run.Listens {
+		t.Error("the helper does not listen to ABS_HAT0X and ABS_HAT0Y, which is " +
+			"what every pad Sunshine gives a seat sends for the D-pad")
+	}
+
+	want := [][]string{
+		{"right"},
+		{},
+		{"up"},
+		{"down"},
+		{},
+		{"left"},
+		{"left", "up"},
+		{"up"},
+		{},
+	}
+
+	if len(run.After) != len(want) {
+		t.Fatalf("replayed %d events, want %d", len(run.After), len(want))
+	}
+
+	for i := range want {
+		if strings.Join(run.After[i], ",") != strings.Join(want[i], ",") {
+			t.Errorf("after event %d the keys held are %v, want %v", i, run.After[i], want[i])
+		}
+	}
+}
+
 // The driver for the speed the daemon writes into a seat: it points the helper's
 // configuration path at a file built for the test and asks what it reads.
 const speedDriver = `

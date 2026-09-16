@@ -146,10 +146,33 @@ KEYS = {
     ecodes.BTN_WEST: ecodes.KEY_ENTER,     # Y
     ecodes.BTN_TL: ecodes.KEY_BACKSPACE,   # LB
     ecodes.BTN_TR: ecodes.KEY_TAB,         # RB
+    # For a pad whose driver reports the D-pad as four buttons. None of the
+    # pads a seat is given does; HATS is the one that answers for those.
     ecodes.BTN_DPAD_UP: ecodes.KEY_UP,
     ecodes.BTN_DPAD_DOWN: ecodes.KEY_DOWN,
     ecodes.BTN_DPAD_LEFT: ecodes.KEY_LEFT,
     ecodes.BTN_DPAD_RIGHT: ecodes.KEY_RIGHT,
+}
+
+# The D-pad as the pads a seat really has report it: two axes that go from -1 to
+# 1, not four buttons.
+#
+# **KEYS above had the arrows on BTN_DPAD_* from the start, and they never
+# arrived.** inputtino builds every pad Sunshine hands to a seat, the Xbox, the
+# PlayStation and the Nintendo one alike, and all three write the D-pad as
+# ABS_HAT0X and ABS_HAT0Y, the way the kernel's own xpad driver does. Read in
+# its source rather than assumed. So the help text promised arrow keys and the
+# D-pad did nothing at all, which went unnoticed only because the pointer was
+# the way through everything and nothing on the desktop needed arrows.
+#
+# The app grid does: it moves between icons with the arrow keys and starts one
+# with Enter, which makes the D-pad the way to use it without aiming.
+#
+# Each axis is a pair of keys, negative first. Up is negative on HAT0Y, the same
+# way round as a stick.
+HATS = {
+    ecodes.ABS_HAT0X: (ecodes.KEY_LEFT, ecodes.KEY_RIGHT),
+    ecodes.ABS_HAT0Y: (ecodes.KEY_UP, ecodes.KEY_DOWN),
 }
 
 # The chord that turns the mode on and off: any two of Select, Start and Guide,
@@ -435,6 +458,21 @@ def pads():
             device.close()
 
     return found
+
+
+def hat_keys(code, value):
+    """What one D-pad axis position means for its two arrow keys.
+
+    Both keys, every time, as (key, pressed) pairs. An axis event says where the
+    pad is now and not what changed, so going straight from left to right is one
+    event that has to let go of one key and press the other, and the centre is
+    one event that lets go of whichever was down. Sending a state a key already
+    has costs nothing: the kernel drops a key event that repeats the current
+    state before anything sees it.
+    """
+    low, high = HATS[code]
+
+    return [(low, value < 0), (high, value > 0)]
 
 
 def axis_info(device):
@@ -903,6 +941,11 @@ def main():
                         pointer.key(KEYS[event.code], bool(event.value))
                     elif event.code == ecodes.BTN_THUMBL and event.value:
                         toggle_keyboard()
+
+                elif event.type == ecodes.EV_ABS and event.code in HATS:
+                    if active:
+                        for key, pressed in hat_keys(event.code, event.value):
+                            pointer.key(key, pressed)
 
                 elif event.type == ecodes.EV_ABS and event.code in axes:
                     absinfo = ranges.get(fd, {}).get(event.code)
