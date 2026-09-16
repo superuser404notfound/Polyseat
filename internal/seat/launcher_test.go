@@ -21,9 +21,9 @@ import (
 // shim at the launcher, and it is worth a test because the failure is somebody
 // else's crash in an unrelated program with nothing to connect it back to here.
 //
-// The script itself with a stub in place of fuzzel, rather than a check that the
-// file contains the word unset: what has to hold is the environment the started
-// process really gets.
+// The script itself with a stub in place of the drawer, rather than a check that
+// the file contains the word unset: what has to hold is the environment the
+// started process really gets.
 func TestLauncherStartsTheDesktopWithoutTheOpenGLShim(t *testing.T) {
 	home := t.TempDir()
 	bin := filepath.Join(home, "bin")
@@ -36,10 +36,10 @@ func TestLauncherStartsTheDesktopWithoutTheOpenGLShim(t *testing.T) {
 
 	stubs := map[string]string{
 		// Stands in for the launcher and records what it was started with.
-		"fuzzel": "#!/bin/sh\nenv > " + dump + "\n",
+		"nwg-drawer": "#!/bin/sh\nenv > " + dump + "\n",
 		// So the script does not decide one is already running, which on a
-		// machine that happens to have fuzzel open would make this test pass
-		// without starting anything at all.
+		// machine that happens to have the drawer open would make this test
+		// pass without starting anything at all.
 		"pgrep": "#!/bin/sh\nexit 1\n",
 	}
 
@@ -104,22 +104,50 @@ func TestLauncherStartsTheDesktopWithoutTheOpenGLShim(t *testing.T) {
 }
 
 // The other end of the same problem, and the one that actually killed the
-// browser: the launcher's own configuration used to start everything through
-// the mangohud wrapper, which preloads the shim regardless of what the launcher
-// was started with. Clearing the variable and then wrapping every command in the
-// thing that sets it again would have looked fixed and changed nothing.
+// browser: fuzzel's configuration used to start everything through the mangohud
+// wrapper, which preloads the shim regardless of what the launcher was started
+// with. Clearing the variable and then wrapping every command in the thing that
+// sets it again would have looked fixed and changed nothing.
+//
+// nwg-drawer has no launch prefix, so the way back in for the same mistake is
+// its -wm option or a wrapper put in front of it. -wm sway starts everything
+// through `swaymsg exec`, which is a shell, and the drawer is the one thing in
+// the seat that has to start what it is given exactly as written.
 func TestTheLauncherDoesNotWrapWhatItStarts(t *testing.T) {
-	config := string(asset("assets/fuzzel.ini"))
+	script := string(asset("assets/launcher.sh"))
 
-	for _, line := range strings.Split(config, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "launch-prefix") {
-			t.Errorf("fuzzel has %q, so everything started from the desktop runs "+
-				"with MangoHud's shim preloaded and Firefox crashes on sight", line)
+	// The command that starts it, followed across its continuation lines.
+	var command []string
+
+	for _, line := range strings.Split(script, "\n") {
+		trimmed := strings.TrimSpace(line)
+
+		if len(command) == 0 && !strings.HasPrefix(trimmed, "setsid nwg-drawer") {
+			continue
+		}
+
+		command = append(command, strings.TrimSuffix(trimmed, "\\"))
+
+		if !strings.HasSuffix(trimmed, "\\") {
+			break
+		}
+	}
+
+	if len(command) == 0 {
+		t.Fatal("found no line that starts the drawer in the launcher script, so this checked nothing")
+	}
+
+	joined := strings.Join(command, " ")
+
+	for _, bad := range []string{"mangohud", "-wm", "LD_PRELOAD"} {
+		if strings.Contains(joined, bad) {
+			t.Errorf("the drawer is started as %q, which has %q in it, so what is started "+
+				"from the desktop no longer gets the environment the script prepared", joined, bad)
 		}
 	}
 }
 
-// launcherStubs builds a seat's worth of fakes around the script: a fuzzel that
+// launcherStubs builds a seat's worth of fakes around the script: a drawer that
 // records the environment it was started with, and a pgrep/pkill pair that agree
 // with each other through a file, so that a test can say whether the launcher is
 // open and the script can change that.
@@ -140,7 +168,7 @@ func launcherStubs(t *testing.T) (home, dump, state, script string) {
 	dump = filepath.Join(home, "environment")
 	state = filepath.Join(home, "open")
 
-	// The fake fuzzel says it is running before it says anything else. A test
+	// The fake drawer says it is running before it says anything else. A test
 	// waits on the environment dump and then asks whether the launcher is open,
 	// and with the two writes the other way round there was a moment in between
 	// where the dump was there and the launcher was not: a started process that
@@ -149,9 +177,13 @@ func launcherStubs(t *testing.T) (home, dump, state, script string) {
 	// 0.13.3 and never on the machine this is written on, which is what that
 	// order buys.
 	stubs := map[string]string{
-		"fuzzel": "#!/bin/sh\ntouch " + state + "\nenv > " + dump + "\n",
-		"pgrep":  "#!/bin/sh\n[ -e " + state + " ]\n",
-		"pkill":  "#!/bin/sh\nrm -f " + state + "\n",
+		// The environment dump is written last, because that is the file every
+		// test here waits on: written first, a test could read the arguments
+		// before the stub had got round to writing them.
+		"nwg-drawer": "#!/bin/sh\ntouch " + state + "\n" +
+			"echo \"$@\" > " + dump + ".argv\nenv > " + dump + "\n",
+		"pgrep": "#!/bin/sh\n[ -e " + state + " ]\n",
+		"pkill": "#!/bin/sh\nrm -f " + state + "\n",
 	}
 
 	for name, body := range stubs {
@@ -246,8 +278,8 @@ func TestLauncherFindsFlatpakEntriesWhateverOpenedIt(t *testing.T) {
 	}
 }
 
-// refresh exists because fuzzel reads the entries once, when it starts, and the
-// session leaves one open. Something installed afterwards is missing from a menu
+// refresh exists because the drawer reads the entries once, when it starts, and
+// the session leaves one open. Something installed afterwards is missing from a menu
 // that is already on screen until somebody dismisses it, and show does nothing
 // while one is running, so the daemon needs a way to say "read it again".
 func TestLauncherRefreshRestartsAnOpenLauncher(t *testing.T) {
@@ -292,6 +324,72 @@ func TestLauncherRefreshLeavesAClosedLauncherClosed(t *testing.T) {
 	if _, err := os.Stat(dump); err == nil {
 		t.Error("refresh opened a launcher that was not open, so an install " +
 			"finishing during a game puts a menu over it")
+	}
+}
+
+// The grid follows the size of the screen, because the screen is whatever the
+// client asked for: icons that fill a phone are a strip of stamps on a 4K
+// television across a room.
+//
+// Both halves are checked, and the second is the one that was missed first
+// time round. GDK_SCALE looks like the whole answer and GTK on Wayland ignores
+// it, measured in a seat at 3840x2160, so the size has to arrive as the icon
+// flag and the text as GDK_DPI_SCALE. A test that only counted the icons would
+// pass against a drawer with captions nobody can read.
+func TestLauncherDrawsTheGridForTheScreenItIsOn(t *testing.T) {
+	for name, tc := range map[string]struct {
+		height    string
+		icons     string
+		textScale string
+	}{
+		"a 1080p client":     {height: "1080", icons: "-is 96", textScale: ""},
+		"a 1440p client":     {height: "1440", icons: "-is 96", textScale: ""},
+		"a 4K television":    {height: "2160", icons: "-is 192", textScale: "GDK_DPI_SCALE=2"},
+		"sway cannot answer": {height: "", icons: "-is 96", textScale: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home, dump, _, script := launcherStubs(t)
+
+			// Stands in for sway. An empty height is the compositor answering
+			// nothing at all, which is every call made before the session is
+			// up and any call where the socket has gone.
+			answer := "[]"
+			if tc.height != "" {
+				answer = `[{"name":"HEADLESS-1","rect":{"width":1920,"height":` + tc.height + `}}]`
+			}
+
+			swaymsg := "#!/bin/sh\ncat <<'JSON'\n" + answer + "\nJSON\n"
+			if err := os.WriteFile(filepath.Join(home, "bin", "swaymsg"), []byte(swaymsg), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command("/bin/sh", script, "show")
+			cmd.Env = sunshineEnv(home)
+
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("the launcher script failed: %v", err)
+			}
+
+			environment := string(waitFor(t, dump))
+
+			argv, err := os.ReadFile(dump + ".argv")
+			if err != nil {
+				t.Fatalf("the drawer recorded no arguments: %v", err)
+			}
+
+			if !strings.Contains(string(argv), tc.icons) {
+				t.Errorf("the drawer was started with %q, want %q in it", strings.TrimSpace(string(argv)), tc.icons)
+			}
+
+			scaled := strings.Contains(environment, "GDK_DPI_SCALE=")
+
+			switch {
+			case tc.textScale == "" && scaled:
+				t.Error("the text is scaled on a screen that does not need it, so the labels are too large")
+			case tc.textScale != "" && !strings.Contains(environment, tc.textScale):
+				t.Errorf("the drawer was started without %s, so a 4K client gets large icons with captions it cannot read", tc.textScale)
+			}
+		})
 	}
 }
 

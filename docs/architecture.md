@@ -573,7 +573,10 @@ alone and Polyseat writes nothing, because that launcher lists every entry it
 finds and two files would be two rows. Matched on what the entry starts rather
 than on what it is called: the two are written by different hands and only the
 game underneath is the same. Remove their shortcut and the generated one is back
-within the minute.
+within the minute. Each entry starts its game through `polyseat-capped`, a
+short script that sets the cap and replaces itself with the game, rather
+than through an `env` line, because the launcher's way of starting an entry
+cannot carry the dollar sign in `LD_PRELOAD`.
 
 **Sunshine reads that file once**, when it starts, for the list it serves to
 clients. Its web interface rereads it on every request, and asking that one
@@ -603,6 +606,41 @@ nothing, since nothing in it says who wrote what.
 bar, a file manager and stock sway keybindings, and a first terminal that prints
 the keys and the install commands instead of a prompt on its own. Somebody who
 knows sway has nothing to learn; somebody who does not is told.
+
+**The launcher is a grid, because the person using it is usually holding a
+controller.** It was fuzzel, a list of eighteen narrow rows, which works with a
+mouse and is a poor target for a thumbstick on a phone screen. nwg-drawer draws
+the same desktop entries as large icons over the whole screen, and it can be
+driven without aiming: the D-pad moves keyboard focus from icon to icon, Y or
+Start is Enter, B is Escape. The stylesheet makes the focused icon unmistakable,
+since GTK's own one pixel focus ring does not survive a video encoder. It runs
+as a fresh process each time it is opened rather than resident, so
+`polyseat-launcher` keeps treating "running" as "on screen", and it sits on the
+overlay layer with the bar's height left clear, so it covers a fullscreen
+window but not the buttons that close it or bring up the keyboard.
+
+**The grid follows the size of the screen, and the screen is the client's.** A
+seat's output takes the resolution of whoever connects, so one fixed icon size
+is either right on a phone or right on a television. The launcher asks sway how
+tall the output is and doubles the icons and the text above 1800 pixels.
+GDK_SCALE, which looks like the whole answer, is not: it is set, it is in the
+process environment, and GTK on Wayland ignores it, measured in a seat at
+3840x2160 where the drawer came up drawn exactly as at 1080p. So the size
+travels as the icon flag and the text as `GDK_DPI_SCALE`, which is also why the
+stylesheet sets no font size in pixels: a fixed one would have stayed small
+while everything around it grew. The bar's margin is not doubled, because
+waybar is 30 pixels tall whatever the client asked for.
+
+Two things had to change underneath before the grid was usable, and neither
+showed until it was tried. The D-pad had never produced arrow keys at all: the
+helper listened for `BTN_DPAD_*`, and every pad inputtino builds reports the
+D-pad as `ABS_HAT0X` and `ABS_HAT0Y`. And nwg-drawer starts an entry through
+`env -S`, which refuses the `$LIB` the game entries carried for the dynamic
+linker, so every game in the grid exited with 125 while Steam beside them
+started. Both are described where they were fixed. A third only appeared in a seat: the
+launcher had no `SWAYSOCK`, because the session imports `WAYLAND_DISPLAY`,
+`XDG_SESSION_TYPE` and `DISPLAY` into the user manager and not that one, so
+every caller that matters had to find the socket the way `polyseat-resize` does.
 
 **Software goes in from either end.** `flatpak --user` needs no privileges at
 all, which is what makes it the right mechanism here rather than a convenient
@@ -791,6 +829,16 @@ chord: it cannot act when it goes down, since that is the moment somebody may be
 starting to hold it, so it acts on release and only if nothing joined it. The
 same shape would be needed for anything else put on a chord button.
 
+**The D-pad is an axis, not four buttons.** The helper's arrow keys were bound to
+`BTN_DPAD_UP` and its siblings from the start, and nothing ever arrived on them:
+inputtino writes the D-pad of its Xbox, PlayStation and Nintendo pads alike as
+`ABS_HAT0X` and `ABS_HAT0Y`, from -1 to 1, which is also what the kernel's xpad
+driver does. So the help text promised arrow keys for as long as it existed and
+the D-pad did nothing, unnoticed because the pointer got through everything.
+Each axis now holds a pair of arrow keys and both are set on every event, since
+an axis reports where it is rather than what changed. The button bindings stay
+for any pad whose driver does report four buttons.
+
 **Watch the evdev names while reading that code.** `BTN_NORTH` is the X button
 and `BTN_WEST` is the Y button - they read like positions and are the old
 `BTN_X` and `BTN_Y`. Checked against inputtino, which builds the pad Sunshine
@@ -904,7 +952,8 @@ gets started in a seat. Sunshine's app list carries the two variables in its
 `env` block, which Sunshine applies to what it launches and not to itself: the
 same library loaded into Sunshine would be limiting the encoder, and loaded into
 sway it would be limiting the desktop. Each game's own launcher entry carries
-them again, in its `Exec` line, for the games somebody starts from the desktop.
+them again, by starting through `polyseat-capped`, for the games somebody starts
+from the desktop.
 And flatpaks get a user wide override, because a sandbox sees neither the seat's
 environment nor its home directory, along with the MangoHud layer extension for
 whichever runtime version they use.

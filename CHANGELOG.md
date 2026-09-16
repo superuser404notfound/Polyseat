@@ -10,6 +10,47 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## Unreleased
+
+**The desktop's launcher is a grid of icons now, and it can be used without
+aiming.** fuzzel's list of narrow rows is replaced by nwg-drawer, full screen,
+with large icons and the same entries: the installed games with their covers,
+Steam, Firefox, the flatpaks. On a controller the D-pad steps from icon to icon,
+Y or Start opens one and B closes it; the focused icon is drawn in the bar's
+blue so it can be followed through a stream. Pointing at an icon and pressing X
+pins it to a row at the top. The bar stays visible and usable above it, and the
+grid doubles its icons and its text on a client above 1800 pixels tall, so a 4K
+television is not a strip of stamps across a room. This needs the seats built
+again, because the package is new.
+
+**The D-pad never did anything, and now it is arrow keys.** The pointer helper
+listened for `BTN_DPAD_*`, and every pad Sunshine gives a seat, Xbox,
+PlayStation or Nintendo, reports its D-pad as the axes `ABS_HAT0X` and
+`ABS_HAT0Y`. Read in inputtino's source. The help text in the first terminal
+had promised arrow keys all along.
+
+**Games from the launcher start through `polyseat-capped`.** A game entry used
+to put the framerate cap in its `Exec` line as `env ... LD_PRELOAD=/usr/$LIB/...`.
+nwg-drawer starts entries through `env -S`, which refuses a bare `$LIB` with
+exit 125, so every game in the new grid would have failed to start. The entry
+now names a small script that sets the same two variables and replaces itself
+with the game; a test starts an entry exactly the way the drawer does and checks
+the variables arrive. The daemon places the script before it writes the first
+entry that names it, so a seat that has not been built again yet keeps starting
+its games from fuzzel in the meantime.
+
+**Seen in a seat, not yet through a client.** Seat vince was built on this on
+2026-09-16 and the grid was opened, photographed and driven there: a virtual pad
+feeding `ABS_HAT0Y` moved the focus into the grid icon by icon, the focused icon
+is legible at a glance, and the Y button started the entry under it and closed
+the grid behind it. The sizes were measured at 1920x1080 and at 3840x2160. What
+that run cannot say is how it feels over a real stream, so the open question is
+now Moonlight on a television and on a phone, with a real controller.
+
+Three things were found by doing it, and all three were things the tests could
+not have said: GTK ignores `GDK_SCALE` on Wayland, the launcher had no
+`SWAYSOCK` to ask sway anything with, and a font size in pixels does not scale.
+
 ## 0.17.0
 
 **No new seat could be built, because the pinned Sunshine no longer existed.**

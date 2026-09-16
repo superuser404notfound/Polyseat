@@ -30,7 +30,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 37
+const Generation = 38
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -505,7 +505,12 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		// terminal in it, which meant a stream you could look at but not use:
 		// no way to start a launcher that was not in the Sunshine app list, and
 		// no way to install one either.
-		"waybar", "fuzzel", "thunar", "gvfs", "wl-clipboard",
+		//
+		// nwg-drawer is the application grid, in place of fuzzel's list, because
+		// an icon is something a thumbstick can hit and the D-pad can step
+		// through. polyseat-launcher says the rest. A seat built before keeps
+		// fuzzel installed and unused; it is small and nothing starts it.
+		"waybar", "nwg-drawer", "thunar", "gvfs", "wl-clipboard",
 		// So a seat can be used from a client that has neither keyboard nor
 		// mouse, which is most of them: an Apple TV, a phone, a television.
 		// squeekboard draws the letters and polyseat-pad-pointer turns the
@@ -2139,7 +2144,7 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		home + "/.config",
 		home + "/.config/sway",
 		home + "/.config/waybar",
-		home + "/.config/fuzzel",
+		home + "/.config/nwg-drawer",
 		home + "/.config/sunshine",
 		home + "/.config/systemd",
 		home + "/.config/systemd/user",
@@ -2181,7 +2186,7 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		{home + "/.config/sway/config", sway, 0o644, p.uid},
 		{home + "/.config/waybar/config", bar, 0o644, p.uid},
 		{home + "/.config/waybar/style.css", asset("assets/waybar.css"), 0o644, p.uid},
-		{home + "/.config/fuzzel/fuzzel.ini", asset("assets/fuzzel.ini"), 0o644, p.uid},
+		{home + "/.config/nwg-drawer/drawer.css", asset("assets/drawer.css"), 0o644, p.uid},
 		{home + "/.config/systemd/user/polyseat-sway.service", asset("assets/polyseat-sway.service"), 0o644, p.uid},
 		{home + "/.config/systemd/user/polyseat-sunshine.service", asset("assets/polyseat-sunshine.service"), 0o644, p.uid},
 		{"/usr/local/bin/polyseat-sunshine-run", asset("assets/sunshine-run.sh"), 0o755, 0},
@@ -2191,6 +2196,7 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		{"/usr/local/bin/polyseat-welcome", asset("assets/welcome.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-keyboard", asset("assets/keyboard.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-launcher", asset("assets/launcher.sh"), 0o755, 0},
+		{cappedPath, asset("assets/capped.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-boxart", asset("assets/boxart.py"), 0o755, 0},
 		{"/usr/local/bin/polyseat-bigpicture", asset("assets/bigpicture.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-pad-pointer", asset("assets/pad-pointer.py"), 0o755, 0},

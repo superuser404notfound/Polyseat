@@ -395,7 +395,7 @@ func (m *Manager) RemoveSoftware(name, id string) error {
 
 // refreshLauncher tells the seat's own menu that what is installed has changed.
 //
-// fuzzel reads the desktop entries when it starts and the session leaves one
+// The drawer reads the desktop entries when it starts and the session leaves one
 // open, so without this an application installed from the web interface is
 // missing from the launcher until somebody happens to dismiss it and open it
 // again. Moonlight's list was already rebuilt here; this is the same thing for
