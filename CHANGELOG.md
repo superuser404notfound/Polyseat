@@ -68,15 +68,21 @@ paths, the CSRF gate still passes a request carrying neither Origin nor Referer,
 no configuration key was renamed, the prep command environment is unchanged and
 the package pulls in nothing new.
 
+**Pairing and streaming were both run against a seat on this build** on
+2026-09-16: a client paired through the interface without the timeout this
+release had to be adjusted for, and streamed from seat vince afterwards. That
+covers the changed capture path as well - the one this could not have answered
+from the source, since the seat's output has no monitor behind it and now takes
+the plain allocation path.
+
 **Two things underneath that release are worth knowing about before they
 surprise somebody.** libvirtualhid splits the virtual mouse in two, so a
 streaming seat has `libvirtualhid Mouse` and `libvirtualhid Mouse (Absolute)`
 where it had one, and a corrected initialiser turns `native_pen_touch` on by
-default on Linux as well. The udev rule matches by glob and the broker
-attributes devices structurally, so both should be hidden from the host as
-before - but no stream has run on this. The wlroots capture path also changed:
-buffers are exported plane by plane and `DRM_FORMAT_MOD_INVALID` is filtered out
-of the advertised modifiers, which a headless output is exactly the case for.
+default on Linux as well. The second mouse was checked on the host rather than
+reasoned about: it comes up `0600 root:root` with `LIBINPUT_IGNORE_DEVICE=1` and
+no `uaccess` tag, like the other four, because the udev rule matches
+`libvirtualhid*` by glob. Nothing had to change for it.
 
 **Seen in a seat, not yet through a client.** Seat vince was built on this on
 2026-09-16 and the grid was opened, photographed and driven there: a virtual pad

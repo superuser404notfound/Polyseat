@@ -723,20 +723,20 @@ func download(ctx context.Context, url string) ([]byte, error) {
 // Two changes underneath are worth knowing about when something looks wrong
 // later. libvirtualhid splits the virtual mouse into a relative and an absolute
 // device, so a streaming seat now has "libvirtualhid Mouse" and "libvirtualhid
-// Mouse (Absolute)" where it had one; the udev rule matches libvirtualhid* by
-// glob and the broker attributes structurally, so both should be taken, but
-// no stream has run on this. And a corrected initialiser turns native_pen_touch
-// on by default, on Linux too, which is another virtual device a client may
-// bring.
+// Mouse (Absolute)" where it had one. Checked rather than assumed: the new one
+// comes up 0600 root:root with LIBINPUT_IGNORE_DEVICE=1 and no uaccess tag,
+// like the other four, because the rule matches libvirtualhid* by glob. The
+// other is a corrected initialiser that turns native_pen_touch on by default,
+// on Linux too, which is another virtual device a client may bring.
 //
 // The capture path moved as well: wlroots buffers are now exported plane by
 // plane and DRM_FORMAT_MOD_INVALID is filtered out of the advertised modifiers,
 // so a headless output that only advertises the implicit modifier takes the
-// plain allocation path instead. That is the part only a stream can answer.
+// plain allocation path instead.
 //
-// So what is still owed on hardware is what was owed before: pair a client
-// against a seat built on this, watch that input stops at the seat boundary,
-// and stream from it.
+// Pairing and streaming were both run against a seat on this build on
+// 2026-09-16, which is what that last paragraph needed and what the pin before
+// this one never got.
 const SunshinePin = "2026.914.233613"
 
 // sunshinePackage finds the Arch package belonging to one Sunshine release.
