@@ -39,6 +39,27 @@ the variables arrive. The daemon places the script before it writes the first
 entry that names it, so a seat that has not been built again yet keeps starting
 its games from fuzzel in the meantime.
 
+**A seat can be given GE-Proton as well, and it is off unless asked for.** Every
+seat already carries Proton CachyOS and runs everything under it, which is the
+right default for streaming: that project's releases are about latency, and a
+stream has none to spare. GE is the other kind of build - its release notes are
+named games and named launchers, window modes, logins, controller mappings - so
+it is what to reach for when one game misbehaves rather than something to put
+under all of them. Ticking it on a seat installs it and nothing else: the
+default is untouched, and Steam picks it per game under Properties,
+Compatibility. Unticking removes it and says so, because a game that was set to
+use it falls back to Valve's Proton.
+
+It arrives the way Proton CachyOS does, from the project's own release with its
+published checksum, fetched and unpacked by the seat, and it is updated on the
+same six hourly pass. Adding it was mostly a matter of writing down what the two
+have in common: a name on disk, a label, the compression upstream chose and how
+a tag becomes a menu name. Both keep a fixed identity across updates, so Steam's
+per game settings survive - which matters more for GE, since it publishes
+weekly. The cost is 1.6 GB per seat unpacked, measured in a seat, which is why
+it is a choice rather than a default. Installing it into a running seat takes
+about half a minute and runs as a job, so the save returns at once.
+
 **The pinned Sunshine is 2026.914.233613, which closes a high severity hole in
 the one before it.** [GHSA-fp6g-27w5-489j](https://github.com/LizardByte/Sunshine/security/advisories/GHSA-fp6g-27w5-489j)
 is Linux only and every release from v0.19.0 to 2026.906.222525 has it: the

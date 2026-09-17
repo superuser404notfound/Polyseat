@@ -111,6 +111,7 @@ func Steps() []Step {
 		{"steam", (*Provisioner).stepSteam},
 		{"user", (*Provisioner).stepUser},
 		{"proton", (*Provisioner).stepProton},
+		{"ge-proton", (*Provisioner).stepGEProton},
 		{"flatpak", (*Provisioner).stepFlatpak},
 		{"gpu", (*Provisioner).stepGPU},
 		{"graphics userspace", (*Provisioner).stepGraphicsUserspace},
@@ -868,11 +869,66 @@ const protonDir = "/usr/share/steam/compatibilitytools.d"
 // leaving Steam with a menu of every version this seat has ever seen.
 const protonName = "proton-cachyos"
 
-// protonStamp records which release is unpacked, written by us rather than read
-// out of the archive's own version file. What upstream puts in there is theirs
-// to change; the tag is what this step decided on and therefore what it should
+// geName is the same for GE-Proton, which a seat carries only when it is asked
+// for. Fixed for the same reason, and more sharply: GE publishes weekly, so a
+// directory named after the release would leave Steam listing a year of them.
+const geName = "proton-ge"
+
+// tool is one compatibility tool a seat can be given.
+//
+// Two of them now, and they arrive the same way: a GitHub release with an
+// archive and a published sha512, fetched by the seat, unpacked beside the
+// target and moved into place. What differs is the name on disk, what the menu
+// calls it, and which compression upstream chose - so that is what this holds,
+// and everything else below is written once.
+type tool struct {
+	// name is the directory under protonDir and the identity Steam records.
+	name string
+
+	// label names it in the seat's log, where a tag on its own says little.
+	label string
+
+	// unpack is tar's flag for the compression this project publishes: xz for
+	// Proton CachyOS, gzip for GE. Wrong, and a download of half a gigabyte
+	// ends in "unrecognized archive format" with nothing else to go on.
+	unpack string
+
+	// display turns a release tag into the name Steam shows in its menu.
+	display func(tag string) string
+}
+
+var (
+	cachyOS = tool{
+		name:    protonName,
+		label:   "Proton CachyOS",
+		unpack:  "J",
+		display: protonDisplayName,
+	}
+
+	geProton = tool{
+		name:   geName,
+		label:  "GE-Proton",
+		unpack: "z",
+		// The tag is already the name everybody uses for it, "GE-Proton11-7",
+		// so there is nothing to rearrange the way there is for the other one.
+		display: func(tag string) string {
+			if tag == "" || strings.ContainsAny(tag, `"\`) {
+				return "GE-Proton"
+			}
+
+			return tag
+		},
+	}
+)
+
+// dir is where this tool's build lives.
+func (t tool) dir() string { return protonDir + "/" + t.name }
+
+// stamp records which release is unpacked, written by us rather than read out
+// of the archive's own version file. What upstream puts in there is theirs to
+// change; the tag is what this step decided on and therefore what it should
 // compare against.
-const protonStamp = protonDir + "/" + protonName + "/polyseat-release"
+func (t tool) stamp() string { return t.dir() + "/polyseat-release" }
 
 // stepProton adds Proton CachyOS to the seat.
 //
@@ -889,7 +945,10 @@ const protonStamp = protonDir + "/" + protonName + "/polyseat-release"
 // failed to build. The one case worth being loud about is a download whose
 // checksum does not match, because that is not a hiccup.
 func (p *Provisioner) stepProton(ctx context.Context) error {
-	if err := p.installProton(ctx); err != nil {
+	release, err := protonRelease(ctx, p.isaLevel(ctx))
+	if err != nil {
+		p.Log("! Proton CachyOS could not be looked up, the seat keeps Valve's Proton: %v", err)
+	} else if err := p.installTool(ctx, cachyOS, release); err != nil {
 		return err
 	}
 
@@ -909,23 +968,89 @@ func (p *Provisioner) stepProton(ctx context.Context) error {
 	return p.stepSteamPlay(ctx)
 }
 
-// installProton puts the current release in the seat, or leaves what is already
-// there alone.
-func (p *Provisioner) installProton(ctx context.Context) error {
-	release, err := protonRelease(ctx, p.isaLevel(ctx))
+// stepGEProton adds GE-Proton to the seat, or takes it away again.
+//
+// Off unless the seat asks for it, which is the whole difference between this
+// and the step above. Proton CachyOS is the default every seat gets because it
+// is the one to stream under: its release notes are about latency, and latency
+// is what a seat is short of before a game even starts. GE is the other kind of
+// build - its notes are named games and named launchers, window modes, logins,
+// controller mappings - and that is a thing to reach for when one game
+// misbehaves rather than a thing to put under all of them. So it is offered,
+// never made the default, and the seat's config.vdf is not touched for it:
+// Steam lets a game be given a tool of its own, and that is the interaction
+// this is for.
+//
+// It is also 1.6 GB per seat unpacked, measured in a seat rather than guessed
+// at from the 560 MB archive, which is the other reason not to give it to
+// everybody.
+//
+// Nothing here is fatal, for the same reasons stepProton says.
+func (p *Provisioner) stepGEProton(ctx context.Context) error {
+	if !p.Seat.GEProton {
+		return p.removeTool(ctx, geProton)
+	}
+
+	release, err := geRelease(ctx)
 	if err != nil {
-		p.Log("! Proton CachyOS could not be looked up, the seat keeps Valve's Proton: %v", err)
+		p.Log("! GE-Proton could not be looked up, the seat keeps what it has: %v", err)
 
 		return nil
 	}
 
-	stamp, _, err := p.Client.Try(ctx, p.name(), "cat", protonStamp)
+	return p.installTool(ctx, geProton, release)
+}
+
+// removeTool takes a tool out of the seat, and says so only when there was one.
+//
+// Quiet when there is nothing there, because this runs on every provisioning
+// run of every seat that never asked for GE, and a line saying nothing was
+// removed four times a day is a line people learn to skip past.
+//
+// Waits for Steam, like everything else that changes what Steam has read. A
+// tool that disappears under a running Steam leaves it offering a menu entry
+// that starts nothing.
+func (p *Provisioner) removeTool(ctx context.Context, t tool) error {
+	_, code, err := p.Client.Try(ctx, p.name(), "test", "-d", t.dir())
+	if err != nil || code != 0 {
+		return err
+	}
+
+	running, err := p.steamRunning(ctx)
+	if err != nil {
+		return err
+	}
+
+	if running {
+		p.Log("! %s stays for now: Steam is running, and taking a tool away "+
+			"under it leaves a menu entry that starts nothing", t.label)
+
+		return nil
+	}
+
+	if _, _, err := p.Client.Try(ctx, p.name(), "rm", "-rf", t.dir()); err != nil {
+		return err
+	}
+
+	// Said plainly, because a game somebody had set to run under it now names a
+	// tool that is not there. Steam falls back to its own Proton for those, and
+	// that is a change in behaviour nobody should have to work out from a game
+	// suddenly performing differently.
+	p.Log("removed %s. A game set to use it falls back to Valve's Proton", t.label)
+
+	return nil
+}
+
+// installTool puts the current release of one tool in the seat, or leaves what
+// is already there alone.
+func (p *Provisioner) installTool(ctx context.Context, t tool, release protonAsset) error {
+	stamp, _, err := p.Client.Try(ctx, p.name(), "cat", t.stamp())
 	if err != nil {
 		return err
 	}
 
 	if strings.TrimSpace(stamp) == release.tag {
-		p.Log("Proton CachyOS %s already installed", release.tag)
+		p.Log("%s %s already installed", t.label, release.tag)
 
 		// The manifest is rewritten even so, and it is the one part of an
 		// installation cheap enough to keep rewriting. A seat built before the
@@ -943,8 +1068,8 @@ func (p *Provisioner) installProton(ctx context.Context) error {
 		}
 
 		_, _, err = p.Client.Try(ctx, p.name(), "sh", "-c", fmt.Sprintf(
-			"cat > %s/%s/compatibilitytool.vdf <<'VDF'\n%s\nVDF\n",
-			protonDir, protonName, compatToolManifest(release.tag)))
+			"cat > %s/compatibilitytool.vdf <<'VDF'\n%s\nVDF\n",
+			t.dir(), t.manifest(release.tag)))
 
 		return err
 	}
@@ -954,12 +1079,12 @@ func (p *Provisioner) installProton(ctx context.Context) error {
 	// read is one to walk away from before spending a third of a gigabyte on it.
 	sum, err := protonChecksum(ctx, release.sum)
 	if err != nil {
-		p.Log("! the Proton CachyOS checksum could not be read, nothing was installed: %v", err)
+		p.Log("! the %s checksum could not be read, nothing was installed: %v", t.label, err)
 
 		return nil
 	}
 
-	p.Log("installing Proton CachyOS %s (%d MB)", release.tag, release.size/1024/1024)
+	p.Log("installing %s %s (%d MB)", t.label, release.tag, release.size/1024/1024)
 
 	// Fetched by the seat rather than by the daemon. The archive is a third of
 	// a gigabyte, and the way every other download here works would read the
@@ -970,7 +1095,7 @@ func (p *Provisioner) installProton(ctx context.Context) error {
 	// dies half way through leaves the previous Proton where it was rather than
 	// a half unpacked directory Steam would offer anyway.
 	out, code, err := p.Client.Try(ctx, p.name(), "sh", "-c",
-		protonScript(release.url, sum, release.tag))
+		t.script(release.url, sum, release.tag))
 	if err != nil {
 		return err
 	}
@@ -978,16 +1103,16 @@ func (p *Provisioner) installProton(ctx context.Context) error {
 	if code != 0 {
 		// Tidied up whatever is left, or the next run finds a stale archive and
 		// a half unpacked directory in the way of its own.
-		_, _, _ = p.Client.Try(ctx, p.name(), "sh", "-c",
-			"rm -rf "+protonDir+"/.polyseat-new "+protonDir+"/proton.tar.xz")
+		_, _, _ = p.Client.Try(ctx, p.name(), "sh", "-c", fmt.Sprintf(
+			"rm -rf %s/.polyseat-new-%s %s/%s.tar", protonDir, t.name, protonDir, t.name))
 
-		p.Log("! Proton CachyOS was not installed, the seat keeps Valve's Proton: %s",
-			strings.TrimSpace(lastLine(out)))
+		p.Log("! %s was not installed, the seat keeps what it had: %s",
+			t.label, strings.TrimSpace(lastLine(out)))
 
 		return nil
 	}
 
-	p.Log("Proton CachyOS %s is in the seat", release.tag)
+	p.Log("%s %s is in the seat", t.label, release.tag)
 
 	return nil
 }
@@ -1091,23 +1216,29 @@ func lastLine(out string) string {
 // complete unpacking replaces what was there. A download that dies half way
 // through therefore leaves the seat with the Proton it already had rather than
 // with a partial one that Steam would list and offer anyway.
-func protonScript(url, sum, tag string) string {
+func (t tool) script(url, sum, tag string) string {
+	// The working files carry the tool's name, because two tools can be
+	// installed and a seat that was updating both at once would otherwise have
+	// them writing over each other's half unpacked directory.
+	work := ".polyseat-new-" + t.name
+	archive := t.name + ".tar"
+
 	return fmt.Sprintf(`set -e
 mkdir -p %[1]s
 cd %[1]s
-rm -rf .polyseat-new proton.tar.xz
-curl -fsSL --retry 2 -o proton.tar.xz %[2]q
-echo %[3]q'  proton.tar.xz' | sha512sum -c -
-mkdir .polyseat-new
-tar -xJf proton.tar.xz -C .polyseat-new --strip-components=1
-rm -f proton.tar.xz
-printf '%%s\n' %[4]q > .polyseat-new/polyseat-release
-cat > .polyseat-new/compatibilitytool.vdf <<'VDF'
+rm -rf %[7]q %[8]q
+curl -fsSL --retry 2 -o %[8]q %[2]q
+echo %[3]q'  '%[8]q | sha512sum -c -
+mkdir %[7]q
+tar -x%[9]sf %[8]q -C %[7]q --strip-components=1
+rm -f %[8]q
+printf '%%s\n' %[4]q > %[7]q/polyseat-release
+cat > %[7]q/compatibilitytool.vdf <<'VDF'
 %[6]s
 VDF
 rm -rf %[5]q
-mv .polyseat-new %[5]q
-`, protonDir, url, sum, tag, protonName, compatToolManifest(tag))
+mv %[7]q %[5]q
+`, protonDir, url, sum, tag, t.name, t.manifest(tag), work, archive, t.unpack)
 }
 
 // compatToolManifest is the file Steam identifies the tool by, written here
@@ -1122,15 +1253,15 @@ mv .polyseat-new %[5]q
 //
 // The version is kept where it belongs, in the name shown in the menu, so that
 // the seat still says which build it is running.
-func compatToolManifest(tag string) string {
+func (t tool) manifest(tag string) string {
 	return `"compatibilitytools"
 {
   "compat_tools"
   {
-    "` + protonName + `"
+    "` + t.name + `"
     {
       "install_path" "."
-      "display_name" "` + protonDisplayName(tag) + `"
+      "display_name" "` + t.display(tag) + `"
       "from_oslist"  "windows"
       "to_oslist"    "linux"
     }
@@ -1281,29 +1412,77 @@ func protonRelease(ctx context.Context, isa string) (protonAsset, error) {
 		return protonAsset{}, err
 	}
 
-	return pickProton(release.TagName, isa, release.Assets)
+	return pickTool(release.TagName, isa, ".tar.xz", release.Assets)
 }
 
-// pickProton chooses the archive and finds its published checksum.
+// geRelease asks GitHub for the current GE-Proton.
+//
+// No instruction set to choose between: GE publishes one x86_64 build and one
+// for aarch64, so the level a seat's processor can manage does not come into
+// it and asking for one would only pick the wrong architecture on a machine
+// this has never run on.
+func geRelease(ctx context.Context) (protonAsset, error) {
+	const api = "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, api, nil)
+	if err != nil {
+		return protonAsset{}, err
+	}
+
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return protonAsset{}, fmt.Errorf("ask GitHub for the GE-Proton release: %w", err)
+	}
+
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return protonAsset{}, fmt.Errorf("the GE-Proton release could not be looked up: %s", resp.Status)
+	}
+
+	var release struct {
+		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name string `json:"name"`
+			Size int64  `json:"size"`
+			URL  string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return protonAsset{}, err
+	}
+
+	return pickTool(release.TagName, "x86_64", ".tar.gz", release.Assets)
+}
+
+// pickTool chooses the archive and finds its published checksum.
 //
 // Separate from the request so that the choice can be tested against a real
-// release listing. Every release carries several architectures and two
-// instruction set levels of the same version, and picking by "contains x86_64"
-// would match the v3 build on a processor that cannot run it.
-func pickProton(tag, isa string, assets []struct {
+// release listing. A Proton CachyOS release carries several architectures and
+// two instruction set levels of the same version, and picking by "contains
+// x86_64" would match the v3 build on a processor that cannot run it. A GE
+// release carries two architectures and the same trap in smaller form.
+//
+// The extension is a parameter because the two projects compress differently,
+// and it is the one difference that cannot be noticed until a seat has spent
+// half a gigabyte finding out.
+func pickTool(tag, isa, ext string, assets []struct {
 	Name string `json:"name"`
 	Size int64  `json:"size"`
 	URL  string `json:"browser_download_url"`
 },
 ) (protonAsset, error) {
-	archive := "-" + isa + ".tar.xz"
+	archive := "-" + isa + ext
 
 	for _, asset := range assets {
 		if !strings.HasSuffix(asset.Name, archive) {
 			continue
 		}
 
-		want := strings.TrimSuffix(asset.Name, ".tar.xz") + ".sha512sum"
+		want := strings.TrimSuffix(asset.Name, ext) + ".sha512sum"
 
 		for _, sum := range assets {
 			if sum.Name != want {
@@ -1316,7 +1495,7 @@ func pickProton(tag, isa string, assets []struct {
 		return protonAsset{}, fmt.Errorf("%s carries no checksum, so it is not being installed", asset.Name)
 	}
 
-	return protonAsset{}, fmt.Errorf("release %s carries no %s build", tag, isa)
+	return protonAsset{}, fmt.Errorf("release %s carries no %s%s build", tag, isa, ext)
 }
 
 // ---------------------------------------------------------------------- user

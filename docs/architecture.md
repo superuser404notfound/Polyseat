@@ -763,6 +763,30 @@ no longer exists, which reads as the default silently reverting. Provisioning is
 the reliable moment for both: the session has just been rebuilt and nothing has
 started Steam yet.
 
+**GE-Proton is the other one, and a seat has it only when asked.** The two are
+not competing builds of the same idea: Proton CachyOS publishes work on latency,
+which is the currency a seat is short of before a game has drawn anything, and
+GE publishes a long list of named games and launchers - window modes, logins,
+controller mappings. So one is under everything by default and the other is
+there to be picked for a game that misbehaves, which Steam does per title. The
+seat's `config.vdf` is never touched for GE; it is a directory and a manifest
+and nothing else.
+
+It goes in by the same machinery, which is why adding it was mostly deletion:
+one description of a tool - a name on disk, a label for the log, the compression
+upstream chose and how to turn a tag into a menu name - and one installer that
+takes either. Both keep a fixed identity for the reason described above, both
+write a stamp naming the release they are, both are unpacked beside the target
+and moved into place, and both are updated on the same six hourly pass, each
+waiting for its own directory to be idle rather than for the other's.
+
+The cost is why it is opt in: 1.6 GB per seat unpacked, measured rather than
+guessed. Turning it off removes it, and says in the log that a game set to use
+it falls back to Valve's Proton, which is the one consequence somebody would
+otherwise have to work out from a game suddenly performing differently. Both
+directions wait for Steam to be closed, for the same reason everything else
+here does.
+
 `/dev/ntsync` is passed into the seat for it. That is the kernel interface Wine
 uses for the synchronisation primitives Windows programs expect, Proton CachyOS
 is built around having it, and without it Proton falls back to esync and fsync.

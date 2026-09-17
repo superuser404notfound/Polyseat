@@ -5,7 +5,8 @@ import (
 	"time"
 )
 
-// protonInterval is how often the daemon looks for a newer Proton CachyOS.
+// protonInterval is how often the daemon looks for a newer build of either
+// compatibility tool.
 //
 // That build exists because it moves quickly: fixes land in it long before they
 // reach a Proton release, and a seat pinned to whatever was current on the day
@@ -23,7 +24,14 @@ const protonInterval = 6 * time.Hour
 // not the loud kind of failure, which is exactly what makes it worth avoiding.
 // It would open the next one it needs and find it gone, some minutes into
 // somebody's evening, with nothing in any log to connect the two.
-var protonIdle = idleProbeFor(protonDir + "/" + protonName)
+var protonIdle = idleProbeFor(cachyOS.dir())
+
+// geIdle is the same question about the other tool. Separate, because a seat
+// playing a game under GE should not stop its Proton CachyOS being updated,
+// and a game under Proton CachyOS should not stop GE being updated: the two
+// directories are replaced independently and only the one being replaced has
+// to be quiet.
+var geIdle = idleProbeFor(geProton.dir())
 
 // updateProton brings every running seat's Proton CachyOS up to the current
 // release.
@@ -57,10 +65,6 @@ func (m *Manager) updateProton(ctx context.Context) {
 			continue
 		}
 
-		if !m.nothingUsing(s.Name, protonIdle) {
-			continue
-		}
-
 		p := &Provisioner{
 			Client: m.client,
 			Seat:   s,
@@ -69,11 +73,24 @@ func (m *Manager) updateProton(ctx context.Context) {
 			uid:    s.PlayerUID,
 		}
 
-		// stepProton never returns an error for anything that is merely the
+		// Neither step returns an error for anything that is merely the
 		// internet being unreliable, so what comes back here is the seat being
 		// unreachable, and the next pass will find that out again.
-		if err := p.stepProton(ctx); err != nil {
-			m.log.Warn("the Proton update could not run", "seat", s.Name, "err", err)
+		if m.nothingUsing(s.Name, protonIdle) {
+			if err := p.stepProton(ctx); err != nil {
+				m.log.Warn("the Proton update could not run", "seat", s.Name, "err", err)
+			}
+		}
+
+		// Only for a seat that asked for it. stepGEProton takes the tool away
+		// when the seat has not, and that decision belongs to the moment the
+		// setting changes rather than to a timer: a seat whose GE was removed
+		// here six hours after somebody unticked the box would have spent those
+		// hours looking like the setting did nothing.
+		if s.GEProton && m.nothingUsing(s.Name, geIdle) {
+			if err := p.stepGEProton(ctx); err != nil {
+				m.log.Warn("the GE-Proton update could not run", "seat", s.Name, "err", err)
+			}
 		}
 	}
 }

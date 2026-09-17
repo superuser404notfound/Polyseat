@@ -71,6 +71,19 @@ type Seat struct {
 	// rather than showing a control that does nothing.
 	Isolated bool `json:"isolated,omitempty"`
 
+	// GEProton gives the seat GE-Proton alongside the Proton CachyOS every seat
+	// carries, without making it the default.
+	//
+	// Opt in, and it stays opt in even though it is only a directory. It is
+	// 1.6 GB per seat unpacked, measured in a seat rather than taken from the
+	// 560 MB the download weighs, and the two builds are for different problems:
+	// Proton CachyOS is the one to stream under, since its work is on latency,
+	// and GE is the one to reach for when a particular game or launcher
+	// misbehaves, since its work is named games. Everything still runs under
+	// the default until somebody picks this for a game in Steam, which is the
+	// interaction it exists for.
+	GEProton bool `json:"ge_proton,omitempty"`
+
 	// PointerSpeed is how much of the screen the gamepad pointer crosses in a
 	// second at full deflection. Zero means the built-in default.
 	//

@@ -824,6 +824,10 @@ type seatRequest struct {
 	Gateway    *string `json:"gateway"`
 	Library    *bool   `json:"library"`
 
+	// GEProton gives the seat GE-Proton beside the Proton CachyOS every seat
+	// has. Never the default for anything; Steam picks it per game.
+	GEProton *bool `json:"ge_proton"`
+
 	// HostAccess is the positive form of Seat.Isolated: ticked means the seat
 	// and this machine can reach each other on the LAN. Inverted here rather
 	// than in the page, so that the one place where the two polarities meet is
@@ -888,6 +892,11 @@ func (s *Server) createSeat(w http.ResponseWriter, r *http.Request) {
 		// is isolated regardless and the interface says so.
 		Isolated: !value(req.HostAccess, true),
 
+		// Off unless asked for, unlike the library above. It is 1.6 GB per seat
+		// and the seat plays everything without it; somebody who wants it wants
+		// it for a particular game.
+		GEProton: value(req.GEProton, false),
+
 		// Zero rather than the default written out, so that a change to the
 		// default reaches every seat that never chose a number of its own.
 		PointerSpeed: value(req.PointerSpeed, 0),
@@ -935,6 +944,10 @@ func (s *Server) updateSeat(w http.ResponseWriter, r *http.Request) {
 
 		if req.Library != nil {
 			current.Library = *req.Library
+		}
+
+		if req.GEProton != nil {
+			current.GEProton = *req.GEProton
 		}
 
 		if req.HostAccess != nil {

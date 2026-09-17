@@ -2384,6 +2384,11 @@ function facts(seat) {
 
   row("Shared library", seat.library ? "yes" : "no");
 
+  // Only when it is there. Every seat has Proton CachyOS, so a row saying so
+  // on every card says nothing; this one is a choice somebody made, and it is
+  // worth being able to see which seats carry it without opening Edit.
+  if (seat.ge_proton) row("Compatibility tools", "Proton CachyOS and GE-Proton");
+
   // Only worth a row where it is a choice. On a plain uplink every seat is
   // isolated and saying so on every card would be repeating one fact about the
   // machine once per seat.
@@ -2824,6 +2829,10 @@ function openEditor(seat) {
   form.autostart.checked = seat ? seat.autostart : true;
   form.library.checked = seat ? seat.library : true;
 
+  // Off for a new seat and for one that never asked. Written as a coercion
+  // because the field is left out of the seat entirely when it is false.
+  form.ge_proton.checked = seat ? !!seat.ge_proton : false;
+
   // Stored the other way round: a seat records that it is isolated, the page
   // asks whether it may talk to this machine. The default for a new seat is
   // yes, which is the only reason anybody bridges the uplink.
@@ -2942,6 +2951,7 @@ async function saveSeat() {
     gateway: form.gateway.value.trim(),
     autostart: form.autostart.checked,
     library: form.library.checked,
+    ge_proton: form.ge_proton.checked,
     host_access: form.host_access.checked,
     pointer_speed: Number(form.pointer_speed.value),
   };

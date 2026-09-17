@@ -2285,6 +2285,52 @@ func (m *Manager) applyPointerSpeed(ctx context.Context, seat Seat) {
 	m.logf(seat.Name, "pointer speed set to %.2f screens per second", seat.PointerSpeed)
 }
 
+// applyGEProton fetches or removes the second compatibility tool after the
+// setting changed.
+//
+// As a job rather than inline, because fetching and unpacking it is 560 MB and
+// half a minute, and the save it belongs to should not wait for that. Removing is quick, but it goes
+// the same way so that both directions report in the same place and neither can
+// run while the seat is busy with something else.
+//
+// A seat that is not running keeps the setting and gets the tool at its next
+// provisioning run, which is the only thing available: there is no container to
+// fetch into. Said in the log rather than silently, since somebody who just
+// ticked the box is watching for something to happen.
+func (m *Manager) applyGEProton(seat Seat) {
+	if status, err := m.client.Status(seat.Name); err != nil || status != "Running" {
+		m.logf(seat.Name, "GE-Proton will be %s when this seat is next started",
+			map[bool]string{true: "installed", false: "removed"}[seat.GEProton])
+
+		return
+	}
+
+	label := "removing GE-Proton"
+	if seat.GEProton {
+		label = "installing GE-Proton"
+	}
+
+	err := m.operate(seat.Name, label, func(ctx context.Context) error {
+		p := &Provisioner{
+			GPU:    m.gpu,
+			Client: m.client,
+			Seat:   seat,
+			Image:  m.cfg.Image,
+			Log:    func(f string, a ...any) { m.logf(seat.Name, f, a...) },
+			uid:    m.runtimeOf(seat.Name).uid,
+		}
+
+		return p.stepGEProton(ctx)
+	})
+	if err != nil {
+		// ErrBusy included: the setting is stored either way, and the next
+		// provisioning run or the six hourly pass applies it.
+		m.logf(seat.Name, "! GE-Proton could not be %s now, the setting stands "+
+			"and the next provisioning run applies it: %v",
+			map[bool]string{true: "installed", false: "removed"}[seat.GEProton], err)
+	}
+}
+
 func (m *Manager) Update(name string, change func(*Seat)) error {
 	seat, err := m.store.Get(name)
 	if err != nil {
@@ -2337,6 +2383,18 @@ func (m *Manager) Update(name string, change func(*Seat)) error {
 	// provisioning run would make it look like it does nothing at all.
 	if seat.PointerSpeed != before.PointerSpeed {
 		m.applyPointerSpeed(context.Background(), seat)
+	}
+
+	// And the same again for the second compatibility tool, which is the
+	// slowest of these by far: half a gigabyte to fetch. It runs as a job on
+	// the seat rather than inline, so the save returns at once and the progress
+	// appears in the seat's log where the other long operations appear.
+	//
+	// A seat that is not running is left to its next provisioning run, which is
+	// not a special case so much as the only thing possible: there is nothing
+	// to fetch into.
+	if seat.GEProton != before.GEProton {
+		m.applyGEProton(seat)
 	}
 
 	m.notify()

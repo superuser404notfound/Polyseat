@@ -1,0 +1,25 @@
+{
+  "tag_name": "GE-Proton11-7",
+  "assets": [
+    {
+      "name": "GE-Proton11-7-aarch64.sha512sum",
+      "size": 159,
+      "browser_download_url": "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton11-7/GE-Proton11-7-aarch64.sha512sum"
+    },
+    {
+      "name": "GE-Proton11-7-aarch64.tar.gz",
+      "size": 645786140,
+      "browser_download_url": "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton11-7/GE-Proton11-7-aarch64.tar.gz"
+    },
+    {
+      "name": "GE-Proton11-7-x86_64.sha512sum",
+      "size": 158,
+      "browser_download_url": "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton11-7/GE-Proton11-7-x86_64.sha512sum"
+    },
+    {
+      "name": "GE-Proton11-7-x86_64.tar.gz",
+      "size": 563784602,
+      "browser_download_url": "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton11-7/GE-Proton11-7-x86_64.tar.gz"
+    }
+  ]
+}
