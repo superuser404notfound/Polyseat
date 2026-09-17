@@ -763,7 +763,7 @@ no longer exists, which reads as the default silently reverting. Provisioning is
 the reliable moment for both: the session has just been rebuilt and nothing has
 started Steam yet.
 
-**GE-Proton is the other one, and a seat has it only when asked.** The two are
+**GE-Proton is the other one, and every seat carries it too.** The two are
 not competing builds of the same idea: Proton CachyOS publishes work on latency,
 which is the currency a seat is short of before a game has drawn anything, and
 GE publishes a long list of named games and launchers - window modes, logins,
@@ -780,12 +780,20 @@ write a stamp naming the release they are, both are unpacked beside the target
 and moved into place, and both are updated on the same six hourly pass, each
 waiting for its own directory to be idle rather than for the other's.
 
-The cost is why it is opt in: 1.6 GB per seat unpacked, measured rather than
-guessed. Turning it off removes it, and says in the log that a game set to use
-it falls back to Valve's Proton, which is the one consequence somebody would
-otherwise have to work out from a game suddenly performing differently. Both
-directions wait for Steam to be closed, for the same reason everything else
-here does.
+**It is there by default because the alternative is finding out mid-evening.**
+A game that wants GE says so by misbehaving, and that is a poor moment to start
+a download. The first version of this was opt in and had the shape wrong. The
+cost is 1.6 GB per seat unpacked, measured rather than guessed, so a seat short
+of disk can still say no: the setting is stored as the refusal rather than as
+the wish, the way isolation is, so that the zero value describes a seat nobody
+has configured and seats that predate the whole thing pick it up by themselves.
+Saying no removes it and says in the log that a game set to use it falls back to
+Valve's Proton, which is the one consequence somebody would otherwise have to
+work out from a game suddenly performing differently. Both directions wait for
+Steam to be closed, for the same reason everything else here does.
+
+A seat that predates it does not have to be provisioned for it either: the six
+hourly pass installs it the same way it updates the other one.
 
 `/dev/ntsync` is passed into the seat for it. That is the kernel interface Wine
 uses for the synchronisation primitives Windows programs expect, Proton CachyOS

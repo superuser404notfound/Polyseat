@@ -82,12 +82,15 @@ func (m *Manager) updateProton(ctx context.Context) {
 			}
 		}
 
-		// Only for a seat that asked for it. stepGEProton takes the tool away
-		// when the seat has not, and that decision belongs to the moment the
-		// setting changes rather than to a timer: a seat whose GE was removed
-		// here six hours after somebody unticked the box would have spent those
-		// hours looking like the setting did nothing.
-		if s.GEProton && m.nothingUsing(s.Name, geIdle) {
+		// Unless the seat said no. stepGEProton takes the tool away for a seat
+		// that has, and that decision belongs to the moment the setting changes
+		// rather than to a timer: a seat whose GE was removed here six hours
+		// after somebody unticked the box would have spent those hours looking
+		// like the setting did nothing.
+		//
+		// This pass is also how a seat that predates the tool gets it, without
+		// waiting to be provisioned for a directory.
+		if !s.NoGEProton && m.nothingUsing(s.Name, geIdle) {
 			if err := p.stepGEProton(ctx); err != nil {
 				m.log.Warn("the GE-Proton update could not run", "seat", s.Name, "err", err)
 			}

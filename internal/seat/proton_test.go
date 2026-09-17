@@ -368,3 +368,55 @@ func TestGEProtonIsProvisionedAfterProton(t *testing.T) {
 		t.Errorf("GE-Proton is installed before Proton CachyOS: %v", names)
 	}
 }
+
+// Both tools are what a seat gets without anybody choosing, and the seats that
+// matter most here are the ones stored before the setting existed: their file
+// has no such key at all, and the zero value has to mean "keep GE" or every
+// seat on this machine would quietly be the exception.
+//
+// The other direction is the same fact from the daemon's side: a seat that
+// keeps both writes nothing, so its stored form is byte for byte what an older
+// daemon wrote and a downgrade reads it back unchanged.
+func TestASeatKeepsBothToolsWithoutBeingTold(t *testing.T) {
+	var stored Seat
+
+	// A seat as it was written before any of this, trimmed to the fields that
+	// are always there.
+	older := `{"name":"vince","label":"vince","autostart":true,"resolution":"1920x1080@60Hz","library":true}`
+
+	if err := json.Unmarshal([]byte(older), &stored); err != nil {
+		t.Fatal(err)
+	}
+
+	if stored.NoGEProton {
+		t.Error("a seat stored before the setting existed reads as one that refused " +
+			"GE-Proton, so no existing seat would ever be given it")
+	}
+
+	written, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(written), "ge_proton") {
+		t.Errorf("a seat that keeps both tools writes the setting out anyway: %s", written)
+	}
+
+	// And saying no has to survive being stored, which is the whole point of
+	// keeping it the negative way round rather than inverting it on the way in.
+	stored.NoGEProton = true
+
+	written, err = json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var again Seat
+	if err := json.Unmarshal(written, &again); err != nil {
+		t.Fatal(err)
+	}
+
+	if !again.NoGEProton {
+		t.Errorf("a seat that refused GE-Proton forgets it when stored: %s", written)
+	}
+}

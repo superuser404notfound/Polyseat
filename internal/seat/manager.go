@@ -2300,14 +2300,14 @@ func (m *Manager) applyPointerSpeed(ctx context.Context, seat Seat) {
 func (m *Manager) applyGEProton(seat Seat) {
 	if status, err := m.client.Status(seat.Name); err != nil || status != "Running" {
 		m.logf(seat.Name, "GE-Proton will be %s when this seat is next started",
-			map[bool]string{true: "installed", false: "removed"}[seat.GEProton])
+			map[bool]string{false: "installed", true: "removed"}[seat.NoGEProton])
 
 		return
 	}
 
-	label := "removing GE-Proton"
-	if seat.GEProton {
-		label = "installing GE-Proton"
+	label := "installing GE-Proton"
+	if seat.NoGEProton {
+		label = "removing GE-Proton"
 	}
 
 	err := m.operate(seat.Name, label, func(ctx context.Context) error {
@@ -2327,7 +2327,7 @@ func (m *Manager) applyGEProton(seat Seat) {
 		// provisioning run or the six hourly pass applies it.
 		m.logf(seat.Name, "! GE-Proton could not be %s now, the setting stands "+
 			"and the next provisioning run applies it: %v",
-			map[bool]string{true: "installed", false: "removed"}[seat.GEProton], err)
+			map[bool]string{false: "installed", true: "removed"}[seat.NoGEProton], err)
 	}
 }
 
@@ -2393,7 +2393,7 @@ func (m *Manager) Update(name string, change func(*Seat)) error {
 	// A seat that is not running is left to its next provisioning run, which is
 	// not a special case so much as the only thing possible: there is nothing
 	// to fetch into.
-	if seat.GEProton != before.GEProton {
+	if seat.NoGEProton != before.NoGEProton {
 		m.applyGEProton(seat)
 	}
 

@@ -2384,10 +2384,10 @@ function facts(seat) {
 
   row("Shared library", seat.library ? "yes" : "no");
 
-  // Only when it is there. Every seat has Proton CachyOS, so a row saying so
-  // on every card says nothing; this one is a choice somebody made, and it is
-  // worth being able to see which seats carry it without opening Edit.
-  if (seat.ge_proton) row("Compatibility tools", "Proton CachyOS and GE-Proton");
+  // Only when a seat is missing one, because both is the ordinary state and a
+  // row repeating that on every card says nothing. This way the odd seat out is
+  // the one that shows, which is the one somebody wants to spot.
+  if (seat.no_ge_proton) row("Compatibility tools", "Proton CachyOS only, no GE-Proton");
 
   // Only worth a row where it is a choice. On a plain uplink every seat is
   // isolated and saying so on every card would be repeating one fact about the
@@ -2829,9 +2829,10 @@ function openEditor(seat) {
   form.autostart.checked = seat ? seat.autostart : true;
   form.library.checked = seat ? seat.library : true;
 
-  // Off for a new seat and for one that never asked. Written as a coercion
-  // because the field is left out of the seat entirely when it is false.
-  form.ge_proton.checked = seat ? !!seat.ge_proton : false;
+  // Stored the other way round: a seat records that it does without GE, the
+  // page asks whether it keeps it. Both tools is what a seat gets without
+  // anybody choosing, so a new one starts ticked.
+  form.ge_proton.checked = seat ? !seat.no_ge_proton : true;
 
   // Stored the other way round: a seat records that it is isolated, the page
   // asks whether it may talk to this machine. The default for a new seat is

@@ -970,24 +970,24 @@ func (p *Provisioner) stepProton(ctx context.Context) error {
 
 // stepGEProton adds GE-Proton to the seat, or takes it away again.
 //
-// Off unless the seat asks for it, which is the whole difference between this
-// and the step above. Proton CachyOS is the default every seat gets because it
-// is the one to stream under: its release notes are about latency, and latency
-// is what a seat is short of before a game even starts. GE is the other kind of
-// build - its notes are named games and named launchers, window modes, logins,
-// controller mappings - and that is a thing to reach for when one game
-// misbehaves rather than a thing to put under all of them. So it is offered,
-// never made the default, and the seat's config.vdf is not touched for it:
-// Steam lets a game be given a tool of its own, and that is the interaction
-// this is for.
+// Installed like the step above, and unlike it in one way that matters: it is
+// not made the default and the seat's config.vdf is not touched for it. Proton
+// CachyOS stays what everything runs under, because its releases are about
+// latency and a stream has none to spare. GE's releases are named games and
+// named launchers - window modes, logins, controller mappings - so it is what
+// somebody reaches for when one game misbehaves, and Steam lets a game be given
+// a tool of its own. Having it there changes nothing until somebody does.
 //
-// It is also 1.6 GB per seat unpacked, measured in a seat rather than guessed
-// at from the 560 MB archive, which is the other reason not to give it to
-// everybody.
+// **Present by default, because the alternative is finding out mid-evening.**
+// The first version of this was opt in, and opt in is the wrong shape for it: a
+// game that needs GE says so by behaving badly, at which point wanting it is
+// immediate and installing it is a download. A seat that already has it costs
+// 1.6 GB of disk, measured unpacked in a seat rather than guessed at from the
+// 560 MB archive, and a seat short of disk can still say no.
 //
 // Nothing here is fatal, for the same reasons stepProton says.
 func (p *Provisioner) stepGEProton(ctx context.Context) error {
-	if !p.Seat.GEProton {
+	if p.Seat.NoGEProton {
 		return p.removeTool(ctx, geProton)
 	}
 

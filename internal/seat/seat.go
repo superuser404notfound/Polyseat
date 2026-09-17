@@ -71,18 +71,28 @@ type Seat struct {
 	// rather than showing a control that does nothing.
 	Isolated bool `json:"isolated,omitempty"`
 
-	// GEProton gives the seat GE-Proton alongside the Proton CachyOS every seat
-	// carries, without making it the default.
+	// NoGEProton takes GE-Proton back out of the seat, which otherwise carries
+	// it alongside the Proton CachyOS everything runs under.
 	//
-	// Opt in, and it stays opt in even though it is only a directory. It is
-	// 1.6 GB per seat unpacked, measured in a seat rather than taken from the
-	// 560 MB the download weighs, and the two builds are for different problems:
-	// Proton CachyOS is the one to stream under, since its work is on latency,
-	// and GE is the one to reach for when a particular game or launcher
-	// misbehaves, since its work is named games. Everything still runs under
-	// the default until somebody picks this for a game in Steam, which is the
-	// interaction it exists for.
-	GEProton bool `json:"ge_proton,omitempty"`
+	// **Both builds are there because they answer different questions.** Proton
+	// CachyOS is what a seat streams under and stays the default: its releases
+	// are about latency, and a stream has none to spare before a game has drawn
+	// anything. GE's releases are named games and named launchers - window
+	// modes, logins, controller mappings - so it is what somebody reaches for
+	// when one game misbehaves. Having it installed changes nothing by itself;
+	// Steam picks it per game, which is the interaction it exists for. Having
+	// it missing means finding that out mid-evening and installing half a
+	// gigabyte before playing.
+	//
+	// Stored the negative way round, like Isolated above and for the same
+	// reason: the zero value has to describe what a seat gets without anybody
+	// choosing, and that is both tools. Seats that already exist therefore pick
+	// it up rather than needing to be told to.
+	//
+	// The cost, and the reason there is a way to say no at all: 1.6 GB per seat
+	// unpacked, measured in a seat rather than taken from the 560 MB the
+	// download weighs.
+	NoGEProton bool `json:"no_ge_proton,omitempty"`
 
 	// PointerSpeed is how much of the screen the gamepad pointer crosses in a
 	// second at full deflection. Zero means the built-in default.

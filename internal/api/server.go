@@ -824,8 +824,10 @@ type seatRequest struct {
 	Gateway    *string `json:"gateway"`
 	Library    *bool   `json:"library"`
 
-	// GEProton gives the seat GE-Proton beside the Proton CachyOS every seat
-	// has. Never the default for anything; Steam picks it per game.
+	// GEProton is the positive form of Seat.NoGEProton: ticked means the seat
+	// carries GE-Proton beside the Proton CachyOS everything runs under.
+	// Inverted here rather than in the page, for the reason HostAccess gives.
+	// Never the default for anything; Steam picks it per game.
 	GEProton *bool `json:"ge_proton"`
 
 	// HostAccess is the positive form of Seat.Isolated: ticked means the seat
@@ -892,10 +894,10 @@ func (s *Server) createSeat(w http.ResponseWriter, r *http.Request) {
 		// is isolated regardless and the interface says so.
 		Isolated: !value(req.HostAccess, true),
 
-		// Off unless asked for, unlike the library above. It is 1.6 GB per seat
-		// and the seat plays everything without it; somebody who wants it wants
-		// it for a particular game.
-		GEProton: value(req.GEProton, false),
+		// On unless somebody says otherwise. A game that needs GE says so by
+		// misbehaving, and that is a poor moment to start a download; the cost
+		// is 1.6 GB of disk in a seat that is already several gigabytes.
+		NoGEProton: !value(req.GEProton, true),
 
 		// Zero rather than the default written out, so that a change to the
 		// default reaches every seat that never chose a number of its own.
@@ -947,7 +949,7 @@ func (s *Server) updateSeat(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if req.GEProton != nil {
-			current.GEProton = *req.GEProton
+			current.NoGEProton = !*req.GEProton
 		}
 
 		if req.HostAccess != nil {

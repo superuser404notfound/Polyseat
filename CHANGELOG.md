@@ -39,16 +39,21 @@ the variables arrive. The daemon places the script before it writes the first
 entry that names it, so a seat that has not been built again yet keeps starting
 its games from fuzzel in the meantime.
 
-**A seat can be given GE-Proton as well, and it is off unless asked for.** Every
-seat already carries Proton CachyOS and runs everything under it, which is the
-right default for streaming: that project's releases are about latency, and a
-stream has none to spare. GE is the other kind of build - its release notes are
-named games and named launchers, window modes, logins, controller mappings - so
-it is what to reach for when one game misbehaves rather than something to put
-under all of them. Ticking it on a seat installs it and nothing else: the
-default is untouched, and Steam picks it per game under Properties,
-Compatibility. Unticking removes it and says so, because a game that was set to
-use it falls back to Valve's Proton.
+**Every seat carries GE-Proton now as well, and still runs everything under
+Proton CachyOS.** The default is unchanged and deliberate: Proton CachyOS is
+what a seat streams under, because its releases are about latency and a stream
+has none to spare. GE is the other kind of build - its release notes are named
+games and named launchers, window modes, logins, controller mappings - so it is
+what somebody reaches for when one game misbehaves. Having it there changes
+nothing by itself; Steam picks it per game under Properties, Compatibility.
+Having it missing means finding out on the evening a game needs it and then
+waiting for a download, which is why it is installed rather than offered.
+
+Seats that already exist pick it up without being provisioned, on the same six
+hourly pass that updates the other tool, because the setting is stored as a
+refusal rather than as a wish. A seat short of disk can still say no on its card
+under Edit, which removes it and says so, since a game that was set to use it
+falls back to Valve's Proton.
 
 It arrives the way Proton CachyOS does, from the project's own release with its
 published checksum, fetched and unpacked by the seat, and it is updated on the
