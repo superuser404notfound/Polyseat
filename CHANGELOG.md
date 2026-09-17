@@ -10,7 +10,7 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
-## Unreleased
+## 0.18.0
 
 **The desktop's launcher is a grid of icons now, and it can be used without
 aiming.** fuzzel's list of narrow rows is replaced by nwg-drawer, full screen,
