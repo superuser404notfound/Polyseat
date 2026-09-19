@@ -1948,6 +1948,13 @@ func (m *Manager) Start(name string) error {
 				m.logf(name, "! the management interface could not be arranged: %v", err)
 			}
 
+			// And which card it may see, which is the same kind of repair: a
+			// seat built while this machine had a different set of cards keeps
+			// the device it was built with until something writes another one.
+			if err := ensureCard(ctx, m.client, name, m.gpu, func(f string, a ...any) { m.logf(name, f, a...) }); err != nil {
+				m.logf(name, "! %v", err)
+			}
+
 			if err := startContainer(ctx, m.client, name, func(f string, a ...any) { m.logf(name, f, a...) }); err != nil {
 				return err
 			}

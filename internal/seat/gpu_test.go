@@ -380,3 +380,67 @@ func TestGPUDropInIsAUnitFile(t *testing.T) {
 		}
 	}
 }
+
+// One card is the machine everything here was built on, and naming it would be
+// a promise this code cannot keep: the address is written into the container
+// and Incus refuses to start one whose address matches nothing.
+func TestGPUDeviceNamesNothingOnAMachineWithOneCard(t *testing.T) {
+	root := fakeSysfs(t, []fakeCard{nvidiaCard("0000:01:00.0", "card1", "renderD128")})
+
+	gpu, err := DetectGPU(root)
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+
+	device := gpuDevice(root, gpu)
+
+	if _, named := device["pci"]; named {
+		t.Errorf("a machine with one card pinned it anyway: %v", device)
+	}
+
+	if device["type"] != "gpu" || device["mode"] != "0666" {
+		t.Errorf("the device lost what it always had: %v", device)
+	}
+}
+
+// Two cards is issue #3. The seat gets the one the daemon chose and not the
+// other one, so that the game inside it cannot render on a card the seat does
+// not composite or encode on.
+func TestGPUDeviceNamesTheChosenCardOnAMachineWithTwo(t *testing.T) {
+	root := fakeSysfs(t, []fakeCard{
+		amdCard("0000:03:00.0", "card0", "renderD128"),
+		amdCard("0000:0b:00.0", "card1", "renderD129"),
+	})
+
+	gpu, err := GPUAt(root, "/dev/dri/renderD129")
+	if err != nil {
+		t.Fatalf("the override could not read the second card: %v", err)
+	}
+
+	device := gpuDevice(root, gpu)
+
+	if device["pci"] != "0000:0b:00.0" {
+		t.Errorf("the seat was given %q, want the card gpu_render_node names", device["pci"])
+	}
+}
+
+// The card that was chosen is gone, which is a card moved to another slot or
+// taken out. Writing the address anyway produces a seat that cannot be started
+// at all, measured against Incus 7.4:
+//
+//	Failed to start device "gpu": Invalid PCI address (no device found)
+func TestGPUDeviceNamesNothingWhenThatCardIsGone(t *testing.T) {
+	root := fakeSysfs(t, []fakeCard{
+		amdCard("0000:03:00.0", "card0", "renderD128"),
+		amdCard("0000:0b:00.0", "card1", "renderD129"),
+	})
+
+	device := gpuDevice(root, GPU{
+		Vendor: VendorAMD, Driver: "amdgpu",
+		PCI: "0000:09:00.0", RenderNode: "/dev/dri/renderD130",
+	})
+
+	if _, named := device["pci"]; named {
+		t.Errorf("a card this machine does not have was written into the seat: %v", device)
+	}
+}

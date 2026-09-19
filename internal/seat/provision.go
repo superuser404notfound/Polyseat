@@ -1826,9 +1826,8 @@ func (p *Provisioner) stepGPU(ctx context.Context) error {
 	}
 
 	devices := map[string]map[string]string{
-		// mode=0666 so the player can open the render node. Without it the
-		// nodes arrive as root:root 0660.
-		"gpu": {"type": "gpu", "mode": "0666"},
+		// Which card, where the machine has more than one. See gpuDevice.
+		"gpu": gpuDevice("/sys", p.GPU),
 
 		// required=false throughout: these are host devices, and a seat that
 		// refuses to start because the host has no /dev/uhid is worse than a

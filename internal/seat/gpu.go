@@ -1,11 +1,14 @@
 package seat
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/superuser404notfound/Polyseat/internal/incusx"
 )
 
 // Vendor is the graphics stack a seat is built against.
@@ -84,9 +87,36 @@ func (g GPU) String() string {
 // that has been run in anger; the message says the other one was seen, and
 // config's gpu_render_node overrides the choice.
 func DetectGPU(root string) (GPU, error) {
-	nodes, err := filepath.Glob(filepath.Join(root, "class/drm/renderD*"))
+	found, err := supportedCards(root)
 	if err != nil {
 		return GPU{}, err
+	}
+
+	switch len(found) {
+	case 0:
+		return GPU{}, fmt.Errorf("no NVIDIA or AMD render node under %s/class/drm", root)
+	case 1:
+		return found[0], nil
+	}
+
+	for _, gpu := range found {
+		if gpu.Vendor == VendorNVIDIA {
+			return gpu, nil
+		}
+	}
+
+	return found[0], nil
+}
+
+// supportedCards is every card in the machine a seat could be built on.
+//
+// The same walk DetectGPU picks its answer out of, kept separate because how
+// many there are is a question of its own: with one card nothing in a seat can
+// choose wrongly, and with two everything in it can.
+func supportedCards(root string) ([]GPU, error) {
+	nodes, err := filepath.Glob(filepath.Join(root, "class/drm/renderD*"))
+	if err != nil {
+		return nil, err
 	}
 
 	// Sorted, because a glob's order is the directory's order and two boots
@@ -105,20 +135,7 @@ func DetectGPU(root string) (GPU, error) {
 		found = append(found, gpu)
 	}
 
-	switch len(found) {
-	case 0:
-		return GPU{}, fmt.Errorf("no NVIDIA or AMD render node under %s/class/drm", root)
-	case 1:
-		return found[0], nil
-	}
-
-	for _, gpu := range found {
-		if gpu.Vendor == VendorNVIDIA {
-			return gpu, nil
-		}
-	}
-
-	return found[0], nil
+	return found, nil
 }
 
 // GPUAt describes one render node by path, for the config override.
@@ -293,4 +310,90 @@ func (s stack) dropIn() []byte {
 	}
 
 	return []byte(b.String())
+}
+
+// gpuDevice is the Incus device that puts a card inside a seat.
+//
+// Left to itself the device passes every card in the host through, and on a
+// machine with one card that is the same thing. On a machine with two it is
+// not, and the difference is the whole of issue #3. Three things inside a seat
+// have to agree about which card, and only two of them are told: the compositor
+// through WLR_RENDER_DRM_DEVICE and Sunshine through adapter_name. The third is
+// the game, which takes whatever its loader offers first, so a seat can end up
+// rendering on one card and compositing and encoding on the other, with every
+// frame crossing the bus twice on its way to the client.
+//
+// Naming the card is the answer rather than pointing the game at it with an
+// environment variable, because a seat with one render node in it has nothing
+// left to get wrong: wlroots, Sunshine, Vulkan and anything else all see the
+// one device.
+//
+// The address is only written where it can matter, and only when the machine
+// still has that card. A PCI address that matches nothing is not ignored by
+// Incus, it refuses to start the container:
+//
+//	Failed to start device "gpu": Invalid PCI address (no device found): 0000:09:00.0
+//
+// which is measured, and which would turn a card moved to another slot into a
+// seat that cannot be started at all. So the guard is not belt and braces: it
+// is the difference between this being safe and this being a trap.
+func gpuDevice(root string, gpu GPU) map[string]string {
+	device := map[string]string{
+		// mode=0666 so the player can open the render node. Without it the
+		// nodes arrive as root:root 0660.
+		"type": "gpu", "mode": "0666",
+	}
+
+	if gpu.PCI == "" {
+		return device
+	}
+
+	cards, err := supportedCards(root)
+	if err != nil || len(cards) < 2 {
+		return device
+	}
+
+	for _, card := range cards {
+		if card.PCI == gpu.PCI {
+			device["pci"] = gpu.PCI
+
+			break
+		}
+	}
+
+	return device
+}
+
+// ensureCard makes a seat's gpu device name the card this machine picked.
+//
+// Before a start and not only while provisioning, for the reason
+// ensureManagement is called there too: a seat built when this machine had one
+// card, or had two of them the other way round, is then repaired by a restart
+// rather than by being built again. It is also what takes the address back off
+// when a card is removed, which Incus answers by refusing to start the
+// container at all.
+//
+// Idempotent and quiet. On a machine with one card in it this reads one
+// instance and writes nothing.
+func ensureCard(ctx context.Context, client *incusx.Client, name string, gpu GPU, log Logger) error {
+	device := gpuDevice("/sys", gpu)
+
+	changed, err := client.Configure(ctx, name, nil, map[string]map[string]string{
+		"gpu": device,
+	})
+	if err != nil {
+		return fmt.Errorf("name the card this seat uses: %w", err)
+	}
+
+	if !changed || log == nil {
+		return nil
+	}
+
+	if pci := device["pci"]; pci != "" {
+		log("this machine has more than one card, so this seat is given %s alone", pci)
+	} else {
+		log("this seat is given every card this machine has")
+	}
+
+	return nil
 }

@@ -204,12 +204,35 @@ What it does not settle:
   wifi, and neither has been separated from the network yet.
 
 And it turned up one thing this document did not have a line for. **On a
-machine with two cards, three things have to agree about which one, and only
-two of them are set here:** the compositor through `WLR_RENDER_DRM_DEVICE` and
-Sunshine through `adapter_name`. The third is the game, and nothing points it
-anywhere: the Incus `gpu` device passes every card in the host through, so both
-render nodes are inside the seat, and a Vulkan game takes the first one the
-loader offers. Where that is not the node the seat composites and encodes on,
-every frame crosses the bus twice on its way to the client. Nobody has measured
-what that costs, and no seat pins it, because until this report no machine with
-two AMD cards in it had run a seat at all.
+machine with two cards, three things have to agree about which one, and until
+0.20.0 only two of them were set:** the compositor through
+`WLR_RENDER_DRM_DEVICE` and Sunshine through `adapter_name`. The third is the
+game, and nothing pointed it anywhere: the Incus `gpu` device passes every card
+in the host through, so both render nodes were inside the seat, and a Vulkan
+game takes the first one the loader offers. Where that is not the node the seat
+composites and encodes on, every frame crosses the bus twice on its way to the
+client, and on the machine in that issue one of the two slots runs at x4.
+
+**A seat gets one card now, where the machine has more than one.** The device
+carries the chosen card's PCI address, so there is one render node in the seat
+and nothing left inside it to choose wrongly. That is the answer rather than an
+environment variable pointing the game at a node, because `DRI_PRIME` and
+`MESA_VK_DEVICE_SELECT` are read by a Mesa layer that a seat does not install,
+and because a seat with one node in it needs nobody to read anything.
+
+The address is written only where it can matter and only while the machine
+still has that card. Incus refuses to start a container whose GPU address
+matches nothing, measured against 7.4:
+
+```
+Failed to start device "gpu": Invalid PCI address (no device found): 0000:09:00.0
+```
+
+so a card moved to another slot would otherwise be a seat that cannot start at
+all. The device is written again before every start, which is what takes the
+address back off. A machine with one card is not touched: the device it gets is
+the device it already had, checked against the two seats here, which Incus
+reports as `type: gpu, mode: 0666` and nothing else.
+
+What nobody has measured is what the split actually cost, because the machine
+that has two cards has not yet said which one its games were running on.
