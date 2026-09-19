@@ -138,3 +138,35 @@ func TestWirelessAsksBothPaths(t *testing.T) {
 		t.Errorf("%s was called wireless", wired)
 	}
 }
+
+// A configuration written before this setting existed has to keep meaning what
+// it meant, and the one thing gpu_all_cards must be able to do is be true.
+func TestLoadReadsGPUAllCards(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "polyseatd.json")
+
+	if err := os.WriteFile(path, []byte(`{"gpu_render_node":"/dev/dri/renderD129"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.GPUAllCards {
+		t.Error("a file that says nothing about it handed the seat every card")
+	}
+
+	if err := os.WriteFile(path, []byte(`{"gpu_all_cards":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.GPUAllCards {
+		t.Error("the setting exists in name only: the file asked for every card and was ignored")
+	}
+}

@@ -337,14 +337,17 @@ func (s stack) dropIn() []byte {
 // which is measured, and which would turn a card moved to another slot into a
 // seat that cannot be started at all. So the guard is not belt and braces: it
 // is the difference between this being safe and this being a trap.
-func gpuDevice(root string, gpu GPU) map[string]string {
+func gpuDevice(root string, gpu GPU, all bool) map[string]string {
 	device := map[string]string{
 		// mode=0666 so the player can open the render node. Without it the
 		// nodes arrive as root:root 0660.
 		"type": "gpu", "mode": "0666",
 	}
 
-	if gpu.PCI == "" {
+	// The machine that wants both cards in the seat, which is config's
+	// GPUAllCards and which says there what it costs. Asked first, so that
+	// switching it on takes the address off a seat that already has one.
+	if all || gpu.PCI == "" {
 		return device
 	}
 
@@ -375,8 +378,8 @@ func gpuDevice(root string, gpu GPU) map[string]string {
 //
 // Idempotent and quiet. On a machine with one card in it this reads one
 // instance and writes nothing.
-func ensureCard(ctx context.Context, client *incusx.Client, name string, gpu GPU, log Logger) error {
-	device := gpuDevice("/sys", gpu)
+func ensureCard(ctx context.Context, client *incusx.Client, name string, gpu GPU, all bool, log Logger) error {
+	device := gpuDevice("/sys", gpu, all)
 
 	changed, err := client.Configure(ctx, name, nil, map[string]map[string]string{
 		"gpu": device,

@@ -392,7 +392,7 @@ func TestGPUDeviceNamesNothingOnAMachineWithOneCard(t *testing.T) {
 		t.Fatalf("detect: %v", err)
 	}
 
-	device := gpuDevice(root, gpu)
+	device := gpuDevice(root, gpu, false)
 
 	if _, named := device["pci"]; named {
 		t.Errorf("a machine with one card pinned it anyway: %v", device)
@@ -417,7 +417,7 @@ func TestGPUDeviceNamesTheChosenCardOnAMachineWithTwo(t *testing.T) {
 		t.Fatalf("the override could not read the second card: %v", err)
 	}
 
-	device := gpuDevice(root, gpu)
+	device := gpuDevice(root, gpu, false)
 
 	if device["pci"] != "0000:0b:00.0" {
 		t.Errorf("the seat was given %q, want the card gpu_render_node names", device["pci"])
@@ -438,9 +438,35 @@ func TestGPUDeviceNamesNothingWhenThatCardIsGone(t *testing.T) {
 	device := gpuDevice(root, GPU{
 		Vendor: VendorAMD, Driver: "amdgpu",
 		PCI: "0000:09:00.0", RenderNode: "/dev/dri/renderD130",
-	})
+	}, false)
 
 	if _, named := device["pci"]; named {
 		t.Errorf("a card this machine does not have was written into the seat: %v", device)
+	}
+}
+
+// The machine that wants both cards in the seat: somebody encoding on one card
+// to leave the other free for the game. Nothing here can arrange that split
+// properly, so the setting hands the choice back to the loader rather than
+// pretending to make it, and what it must not do is leave the address behind.
+func TestGPUDeviceGivesEveryCardWhenTheConfigurationAsks(t *testing.T) {
+	root := fakeSysfs(t, []fakeCard{
+		amdCard("0000:03:00.0", "card0", "renderD128"),
+		amdCard("0000:0b:00.0", "card1", "renderD129"),
+	})
+
+	gpu, err := GPUAt(root, "/dev/dri/renderD129")
+	if err != nil {
+		t.Fatalf("the override could not read the second card: %v", err)
+	}
+
+	device := gpuDevice(root, gpu, true)
+
+	if _, named := device["pci"]; named {
+		t.Errorf("gpu_all_cards still handed the seat one card: %v", device)
+	}
+
+	if device["type"] != "gpu" || device["mode"] != "0666" {
+		t.Errorf("the device lost what it always had: %v", device)
 	}
 }

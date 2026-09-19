@@ -61,6 +61,11 @@ type Provisioner struct {
 	// rather than something new and untested.
 	GPU GPU
 
+	// AllCards is config's GPUAllCards: every card in the machine goes into
+	// the seat rather than the one above. A machine with one card cannot tell
+	// the difference, and the one that can is described where the setting is.
+	AllCards bool
+
 	// Secrets are the credentials to apply inside the seat. Prepared by the
 	// caller, because they have to survive a rebuild: a seat whose container
 	// is recreated has to come back with the same Sunshine password, or every
@@ -1827,7 +1832,7 @@ func (p *Provisioner) stepGPU(ctx context.Context) error {
 
 	devices := map[string]map[string]string{
 		// Which card, where the machine has more than one. See gpuDevice.
-		"gpu": gpuDevice("/sys", p.GPU),
+		"gpu": gpuDevice("/sys", p.GPU, p.AllCards),
 
 		// required=false throughout: these are host devices, and a seat that
 		// refuses to start because the host has no /dev/uhid is worse than a

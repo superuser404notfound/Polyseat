@@ -150,6 +150,29 @@ type Config struct {
 	// wrong guess produces a seat that streams in software, which is the one
 	// failure this project keeps having to explain.
 	GPURenderNode string `json:"gpu_render_node"`
+
+	// GPUAllCards hands every card in the machine to every seat, which is what
+	// happened everywhere before 0.20.0 and what a machine with one card gets
+	// regardless.
+	//
+	// A seat is given one card now, the one GPURenderNode names or the one the
+	// daemon found, because three things inside a seat have to agree about
+	// which card and only two of them can be told: the compositor and
+	// Sunshine. The third is the game, and a game with two render nodes in
+	// front of it takes whichever its loader offers first, which is how a seat
+	// ends up rendering on one card and encoding on the other with every frame
+	// crossing the bus twice.
+	//
+	// This is for the machine that wants exactly that. Somebody encoding on an
+	// integrated card to leave a discrete one free for the game needs both
+	// inside the seat, and nothing here can arrange that split properly: which
+	// card the game takes goes back to being the loader's decision rather than
+	// anybody's setting, because pointing a game at a node needs the Mesa
+	// device select layer, which is in a package no seat installs. So this is
+	// honestly a switch that hands the choice back to luck, and it is here
+	// because luck that somebody has measured beats a rule they cannot turn
+	// off.
+	GPUAllCards bool `json:"gpu_all_cards"`
 }
 
 // Default returns the configuration used when no file exists.
@@ -176,6 +199,11 @@ func Default() Config {
 
 		// Empty on purpose: the daemon looks at the machine. See GPURenderNode.
 		GPURenderNode: "",
+
+		// False, so a seat gets the one card this machine chose. See
+		// GPUAllCards, and note that a machine with one card cannot tell the
+		// difference either way.
+		GPUAllCards: false,
 	}
 }
 

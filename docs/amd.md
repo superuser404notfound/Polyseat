@@ -234,5 +234,11 @@ address back off. A machine with one card is not touched: the device it gets is
 the device it already had, checked against the two seats here, which Incus
 reports as `type: gpu, mode: 0666` and nothing else.
 
+`gpu_all_cards` in `/etc/polyseat/polyseatd.json` puts every card back in the
+seat, for the machine that wants the split on purpose: encoding on one card to
+leave the other free for the game. It is an honest escape hatch rather than a
+feature, because which card the game then takes is its loader's decision again
+and nothing here can make it. Nobody has reported that setup.
+
 What nobody has measured is what the split actually cost, because the machine
 that has two cards has not yet said which one its games were running on.

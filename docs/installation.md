@@ -196,6 +196,23 @@ is exactly the machine this script exists to help. With cards from both vendors
 present NVIDIA wins, the same rule the daemon follows. The daemon's choice can
 be overridden with `gpu_render_node` in `/etc/polyseat/polyseatd.json`.
 
+**A machine with two cards gives each seat one of them**, the one named there
+or the one the daemon found, because a seat with two render nodes in it has a
+game that picks for itself: it can end up rendering on the card the seat
+neither composites nor encodes on, and every frame then crosses the bus twice.
+A machine with one card is unaffected and always was. To hand a seat every card
+anyway, which is what somebody encoding on an integrated card to leave a
+discrete one free for the game needs:
+
+```json
+{ "gpu_all_cards": true }
+```
+
+That split cannot be arranged properly from here, so be clear about what the
+switch does: which card the game takes goes back to being its loader's
+decision. Nobody has reported that setup, and a report of it is worth more than
+this paragraph.
+
 The two detections are checked against machines this one is not, in
 `host/test-gpu-detect.sh` and `go test ./internal/seat -run GPU`.
 

@@ -621,11 +621,12 @@ func (m *Manager) UpdateSoftware(name string) error {
 		m.stopBroker(name)
 
 		p := &Provisioner{
-			GPU:    m.gpu,
-			Client: m.client,
-			Seat:   seat,
-			Image:  m.cfg.Image,
-			Log:    func(f string, a ...any) { m.logf(name, f, a...) },
+			GPU:      m.gpu,
+			AllCards: m.cfg.GPUAllCards,
+			Client:   m.client,
+			Seat:     seat,
+			Image:    m.cfg.Image,
+			Log:      func(f string, a ...any) { m.logf(name, f, a...) },
 		}
 
 		if err := p.stepPackages(ctx); err != nil {

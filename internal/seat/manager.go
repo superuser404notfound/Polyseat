@@ -934,12 +934,13 @@ func (m *Manager) checkOrigins(ctx context.Context, name string, addresses map[s
 		}
 
 		p := &Provisioner{
-			GPU:    m.gpu,
-			Client: m.client,
-			Seat:   seat,
-			Image:  m.cfg.Image,
-			Log:    func(f string, a ...any) { m.logf(name, f, a...) },
-			uid:    rt.uid,
+			GPU:      m.gpu,
+			AllCards: m.cfg.GPUAllCards,
+			Client:   m.client,
+			Seat:     seat,
+			Image:    m.cfg.Image,
+			Log:      func(f string, a ...any) { m.logf(name, f, a...) },
+			uid:      rt.uid,
 		}
 
 		m.logf(name, "the address changed, rewriting the Sunshine configuration")
@@ -1876,14 +1877,15 @@ func (m *Manager) build(ctx context.Context, name string) error {
 	m.stopBroker(name)
 
 	p := &Provisioner{
-		GPU:     m.gpu,
-		Client:  m.client,
-		Seat:    seat,
-		Uplink:  uplink,
-		Image:   m.cfg.Image,
-		Secrets: secrets,
-		Library: m.pool,
-		Log:     func(f string, a ...any) { m.logf(name, f, a...) },
+		GPU:      m.gpu,
+		AllCards: m.cfg.GPUAllCards,
+		Client:   m.client,
+		Seat:     seat,
+		Uplink:   uplink,
+		Image:    m.cfg.Image,
+		Secrets:  secrets,
+		Library:  m.pool,
+		Log:      func(f string, a ...any) { m.logf(name, f, a...) },
 	}
 
 	if err := p.Run(ctx); err != nil {
@@ -1951,7 +1953,7 @@ func (m *Manager) Start(name string) error {
 			// And which card it may see, which is the same kind of repair: a
 			// seat built while this machine had a different set of cards keeps
 			// the device it was built with until something writes another one.
-			if err := ensureCard(ctx, m.client, name, m.gpu, func(f string, a ...any) { m.logf(name, f, a...) }); err != nil {
+			if err := ensureCard(ctx, m.client, name, m.gpu, m.cfg.GPUAllCards, func(f string, a ...any) { m.logf(name, f, a...) }); err != nil {
 				m.logf(name, "! %v", err)
 			}
 
@@ -1991,12 +1993,13 @@ func (m *Manager) startSession(ctx context.Context, name string) error {
 	}
 
 	p := &Provisioner{
-		GPU:    m.gpu,
-		Client: m.client,
-		Seat:   seat,
-		Image:  m.cfg.Image,
-		Log:    func(f string, a ...any) { m.logf(name, f, a...) },
-		lutris: m.runtimeOf(name).lutris,
+		GPU:      m.gpu,
+		AllCards: m.cfg.GPUAllCards,
+		Client:   m.client,
+		Seat:     seat,
+		Image:    m.cfg.Image,
+		Log:      func(f string, a ...any) { m.logf(name, f, a...) },
+		lutris:   m.runtimeOf(name).lutris,
 	}
 
 	if err := p.waitSystemd(ctx); err != nil {
@@ -2222,12 +2225,13 @@ func (m *Manager) applyPointerSpeed(ctx context.Context, seat Seat) {
 	}
 
 	p := &Provisioner{
-		GPU:    m.gpu,
-		Client: m.client,
-		Seat:   seat,
-		Image:  m.cfg.Image,
-		Log:    func(f string, a ...any) { m.logf(seat.Name, f, a...) },
-		uid:    m.runtimeOf(seat.Name).uid,
+		GPU:      m.gpu,
+		AllCards: m.cfg.GPUAllCards,
+		Client:   m.client,
+		Seat:     seat,
+		Image:    m.cfg.Image,
+		Log:      func(f string, a ...any) { m.logf(seat.Name, f, a...) },
+		uid:      m.runtimeOf(seat.Name).uid,
 	}
 
 	if err := p.WritePointerConfig(ctx); err != nil {
@@ -2266,12 +2270,13 @@ func (m *Manager) applyGEProton(seat Seat) {
 
 	err := m.operate(seat.Name, label, func(ctx context.Context) error {
 		p := &Provisioner{
-			GPU:    m.gpu,
-			Client: m.client,
-			Seat:   seat,
-			Image:  m.cfg.Image,
-			Log:    func(f string, a ...any) { m.logf(seat.Name, f, a...) },
-			uid:    m.runtimeOf(seat.Name).uid,
+			GPU:      m.gpu,
+			AllCards: m.cfg.GPUAllCards,
+			Client:   m.client,
+			Seat:     seat,
+			Image:    m.cfg.Image,
+			Log:      func(f string, a ...any) { m.logf(seat.Name, f, a...) },
+			uid:      m.runtimeOf(seat.Name).uid,
 		}
 
 		return p.stepGEProton(ctx)
