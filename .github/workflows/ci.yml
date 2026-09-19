@@ -175,6 +175,16 @@ jobs:
       - name: The package manager table
         run: ./host/test-distro.sh
 
+      # The seat handling in lan-bridge.sh, against a stub incus. That script
+      # rebuilds the machine's network and cannot run here, but the functions
+      # that stop the seats and name them again can, and they are where the one
+      # bug reported against it lived: `${#STOPPED[@]:-0}`, which bash calls a
+      # bad substitution when the line is reached. The two steps above this one
+      # both pass on that line, which was measured on the broken version rather
+      # than assumed, so nothing here would have caught it.
+      - name: The seat handling in lan-bridge.sh
+        run: ./host/test-lan-bridge.sh
+
   # The one decision in this project that can be wrong without anybody noticing.
   #
   # A device that fails to reach a seat is a complaint within the minute. A

@@ -421,12 +421,22 @@ stop_seats() {
 start_seats() {
     local name
 
-    ((${#STOPPED[@]:-0})) || return 0
+    # ${#ARRAY[@]} is the length operator and takes no :- default. It was
+    # written with one, which is a bad substitution rather than a fallback, and
+    # bash only says so when the line is reached. That is the whole of the bug
+    # reported in issue #4: a run that had built the bridge, moved the address
+    # and repointed both seats died here, on its last step, and the two seats it
+    # had stopped were left stopped with nothing said about them. Neither
+    # `bash -n` nor shellcheck at any severity reports it, which is why
+    # host/test-lan-bridge.sh exists.
+    #
+    # The array is initialised at the top of this section, so there was never
+    # anything for a default to do.
+    ((${#STOPPED[@]})) || return 0
 
     step "Start these seats from the Polyseat interface"
 
-    for name in "${STOPPED[@]:-}"; do
-        [[ -n $name ]] || continue
+    for name in "${STOPPED[@]}"; do
         echo "    $name"
     done
 
@@ -436,6 +446,16 @@ start_seats() {
 
     STOPPED=()
 }
+
+# Whatever happens from here on, the seats that were stopped are named.
+#
+# The list is printed by the calls further down, and issue #4 is what it looks
+# like when the run does not reach one: a machine whose seats are down, a shell
+# that returned 1, and no sentence anywhere saying which seats or what to do.
+# The exit path costs nothing on a run that got there by itself, because
+# start_seats clears the list once it has shown it, and the rollback paths call
+# it before they exit for the same reason.
+trap start_seats EXIT
 
 # repoint moves a seat's LAN interface between the two arrangements. Left alone,
 # a seat built for one would come up with a NIC pointing at something that is no
