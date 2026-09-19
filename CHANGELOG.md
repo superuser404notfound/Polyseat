@@ -10,6 +10,67 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.20.0
+
+**A seat on a machine with two cards is given one of them.** Three things
+inside a seat have to agree about which card, and until now only two of them
+were told: the compositor through `WLR_RENDER_DRM_DEVICE` and Sunshine through
+`adapter_name`, both pointed at the card `gpu_render_node` names or the one the
+daemon found. The third is the game. The Incus `gpu` device passes every card
+in the host through, so both render nodes were inside every seat, and a Vulkan
+game takes whichever device its loader offers first. On the machine in issue #3,
+an RX 9070 XT and a Radeon AI PRO R9700 with the second one named because it has
+no display attached, that very likely means the game rendered on the card the
+seat neither composites nor encodes on: every frame rendered on one card, copied
+to the other to be composited and encoded, and one of that machine's two slots
+runs at x4.
+
+So the device names the card, and a seat with one render node in it has nothing
+left inside it to get wrong. That is the answer rather than pointing the game at
+a node with `DRI_PRIME` or `MESA_VK_DEVICE_SELECT`, because both of those are
+read by the Mesa device select layer, which lives in a package no seat installs,
+and neither of them says anything to a program that enumerates devices itself.
+
+**Only where it can matter, and only while the machine still has that card.** A
+machine with one card is left exactly as it was, and so is a seat whose chosen
+card has been moved or removed. Incus does not ignore a PCI address that matches
+nothing, it refuses to start the container:
+
+```
+Failed to start device "gpu": Invalid PCI address (no device found): 0000:09:00.0
+```
+
+measured against Incus 7.4, which is what would otherwise turn a card moved to
+another slot into a seat that cannot be started at all. The device is written
+again before every start, the way the management interface is, so a seat built
+when this machine had a different set of cards is repaired by a restart rather
+than by being built again, and that is also what takes the address back off.
+
+**`gpu_all_cards` puts every card back in the seat.** For the machine that wants
+that split on purpose: encoding on an integrated card to leave a discrete one
+free for the game. It is an escape hatch rather than a feature, and the setting
+says so: what it restores is the loader deciding which card the game takes,
+because nothing here can decide it for them. Nobody has reported that setup, and
+a report of it is worth more than the paragraph
+[docs/installation.md](docs/installation.md) now carries about it.
+
+```json
+{ "gpu_all_cards": true }
+```
+
+**Seats are not touched by this.** The provisioning recipe is still generation
+39, so an existing machine updates with a restart and no seat has to be
+provisioned again. On a machine with two cards that restart is also what applies
+the change.
+
+**Unproven where it matters.** Both halves of this were measured here, on a
+machine with one card: Incus accepts the address and hands the container
+`card1` and `renderD128`, the host's own names, which is what keeps
+`adapter_name` correct, and it refuses an address that matches nothing. The rest
+is tested against sysfs trees built by hand, each check broken once to confirm
+it fails. What nobody has run is a seat on a machine that really has two cards,
+and that machine has not yet said which one its games were on.
+
 ## 0.19.0
 
 **A seat this daemon cannot reach looks exactly like a seat that is not
