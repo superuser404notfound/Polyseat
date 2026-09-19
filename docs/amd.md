@@ -1,9 +1,10 @@
 # AMD
 
-**Nobody has run this on an AMD card.** It was written on a machine with a
-single NVIDIA card in it and cannot be finished there. What follows is what was
-built, what was actually verified, and what is still open. Read the last
-section before trusting any of it.
+**One AMD machine has now run this, and one is not many.** This was written on
+a machine with a single NVIDIA card in it and cannot be finished there. What
+follows is what was built, what was actually verified, and what is still open,
+and then what the one machine reported. Read both of the last two sections
+before trusting any of it.
 
 Since 0.9.0 there is a second untested axis, and the two are independent: the
 host may be Debian or Fedora rather than Arch, and neither of those has been run
@@ -173,3 +174,42 @@ sudo incus exec <seat> -- sudo -u player env XDG_RUNTIME_DIR=/run/user/1000 egli
 
 Then a stream, and whether a game runs. Please report what happens either way,
 including that it simply worked: this document exists because nobody knows.
+
+## What one AMD machine has reported
+
+[Issue #3](https://github.com/superuser404notfound/Polyseat/issues/3), against
+0.18.0 on a CachyOS host with two AMD cards in it: an RX 9070 XT at
+`0000:03:00.0` and a Radeon AI PRO R9700 at `0000:0b:00.0`, with
+`gpu_render_node` naming the second one's node because it has no display
+attached. A seat was built on it, came up and streamed to a Moonlight client.
+
+What that settles, in the order of the list above:
+
+- **The detection and the override are right on a real AMD machine.** The
+  daemon logged `amd (amdgpu, 0000:0b:00.0, /dev/dri/renderD129)` and built the
+  seat against the node it was told to, not the one it found first.
+- **wlroots does render headless on `amdgpu` inside a container**, which was
+  item 2 and could only ever be answered by a card. The seat has a session, a
+  desktop and a stream on it.
+- **The package set installs on a real AMD machine**, not only in the container
+  the resolution was measured in.
+
+What it does not settle:
+
+- **Whether it encodes in hardware**, which is item 1 and still the one that
+  matters. The report does not carry the encoder line, which is why the report
+  now prints it for a running seat rather than asking for it in prose.
+- **What the picture and the sound are worth.** The same machine reports a
+  large performance drop and audio that is cut harshly, with the client on
+  wifi, and neither has been separated from the network yet.
+
+And it turned up one thing this document did not have a line for. **On a
+machine with two cards, three things have to agree about which one, and only
+two of them are set here:** the compositor through `WLR_RENDER_DRM_DEVICE` and
+Sunshine through `adapter_name`. The third is the game, and nothing points it
+anywhere: the Incus `gpu` device passes every card in the host through, so both
+render nodes are inside the seat, and a Vulkan game takes the first one the
+loader offers. Where that is not the node the seat composites and encodes on,
+every frame crosses the bus twice on its way to the client. Nobody has measured
+what that costs, and no seat pins it, because until this report no machine with
+two AMD cards in it had run a seat at all.

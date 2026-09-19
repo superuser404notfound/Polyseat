@@ -46,8 +46,8 @@ Incus rather than Podman or systemd-nspawn, for three concrete reasons:
    libnvidia-container by hand. On AMD the key is set to `false` and the `gpu`
    device alone is the whole arrangement: Mesa is a package inside the seat,
    nothing crosses the boundary but the render node, and there is no version to
-   keep in step. See [amd.md](amd.md), which is honest about not having been
-   run on a real AMD card.
+   keep in step. See [amd.md](amd.md), which is honest about
+   what one AMD machine has reported and what that still leaves open.
 3. **System containers** bring their own systemd, their own users, their own
    PipeWire. A seat *is* a small machine instead of simulating one. On top of
    that, `limits.cpu` / `limits.memory` per seat and a btrfs storage pool.
