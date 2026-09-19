@@ -491,6 +491,40 @@ func TestDesktopEntryIsOneKeyPerLine(t *testing.T) {
 	}
 }
 
+// The grid inside the seat draws square icons, so a game entry wears the game's
+// icon and falls back to its card only when there is no icon to be had.
+//
+// Getting this the wrong way round is what it looked like before: every game
+// Polyseat wrote an entry for wore its portrait cover, drawn as a tall sliver
+// between the square icons beside it, while a game somebody had asked Steam for
+// a shortcut for wore a proper icon, because that entry is Steam's and not ours.
+func TestDesktopEntryPrefersTheIconOverTheCard(t *testing.T) {
+	game := Game{
+		Name:   "DREDGE",
+		Launch: "steam steam://rungameid/1562430",
+		Image:  "/home/player/.local/share/polyseat/art/26df6f40.png",
+		Icon:   "/home/player/.local/share/polyseat/icons/steam-1562430-581c0734.png",
+	}
+
+	got := string(desktopEntry(game))
+
+	if !strings.Contains(got, "Icon="+game.Icon+"\n") {
+		t.Errorf("the entry does not wear the game's icon:\n%s", got)
+	}
+
+	if strings.Contains(got, game.Image) {
+		t.Errorf("the card reached the entry as well:\n%s", got)
+	}
+
+	// And with no icon found, the card is still better than the blank square a
+	// launcher draws for an entry that names nothing.
+	game.Icon = ""
+
+	if !strings.Contains(string(desktopEntry(game)), "Icon="+game.Image+"\n") {
+		t.Errorf("a game with no icon lost its picture entirely:\n%s", desktopEntry(game))
+	}
+}
+
 // A game entry has to start from the launcher the seat actually has, with the
 // cap intact, and that is tested by starting it the way the launcher does.
 //

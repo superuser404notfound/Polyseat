@@ -31,7 +31,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 39
+const Generation = 40
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -2429,6 +2429,7 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		{"/usr/local/bin/polyseat-launcher", asset("assets/launcher.sh"), 0o755, 0},
 		{cappedPath, asset("assets/capped.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-boxart", asset("assets/boxart.py"), 0o755, 0},
+		{"/usr/local/bin/polyseat-icons", asset("assets/icons.py"), 0o755, 0},
 		{"/usr/local/bin/polyseat-bigpicture", asset("assets/bigpicture.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-pad-pointer", asset("assets/pad-pointer.py"), 0o755, 0},
 		{"/usr/local/bin/polyseat-bigpicture-watch", asset("assets/bigpicture-watch.py"), 0o755, 0},
@@ -2454,8 +2455,11 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 	// recorded a miss would keep the blank card for another six days after the
 	// fix arrived. Measured, not imagined: both seats here had the miss on file
 	// for the one title this was fixed for.
+	// The same for the icons beside them, which polyseat-icons remembers the
+	// same way and for the same reason.
 	if _, _, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "sh", "-c",
-		"rm -f /home/"+Player+"/.local/share/polyseat/art/*.none"); err != nil {
+		"rm -f /home/"+Player+"/.local/share/polyseat/art/*.none"+
+			" /home/"+Player+"/.local/share/polyseat/icons/*.none"); err != nil {
 		return err
 	}
 

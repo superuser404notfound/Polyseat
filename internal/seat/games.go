@@ -29,6 +29,12 @@ type Game struct {
 	Launch string
 	Image  string
 
+	// Icon is the square icon for the seat's own launcher, when one could be
+	// found. Image is the portrait card a client draws and is wrong in a grid
+	// of icons; the two menus want different pictures of the same game, which
+	// is why there are two fields rather than one.
+	Icon string
+
 	// Steam is the application id, when this came from Steam. Carried so that
 	// a cover can be fetched for a game whose artwork Steam never downloaded
 	// into this seat, which is every game delivered by the shared library and
@@ -38,6 +44,11 @@ type Game struct {
 	// Source names the launcher this came from, so that a title with no
 	// artwork anywhere can at least wear its launcher's icon.
 	Source string
+
+	// Slug is what Lutris calls a game, which is also what it names the game's
+	// icon after in the icon theme. Empty for anything that did not come from
+	// Lutris.
+	Slug string
 }
 
 // maxGames bounds the app list.
@@ -416,6 +427,7 @@ func (p *Provisioner) lutrisGames(ctx context.Context) ([]Game, error) {
 	var found []struct {
 		ID        int    `json:"id"`
 		Name      string `json:"name"`
+		Slug      string `json:"slug"`
 		CoverPath string `json:"coverPath"`
 	}
 
@@ -435,6 +447,7 @@ func (p *Provisioner) lutrisGames(ctx context.Context) ([]Game, error) {
 			Launch: fmt.Sprintf("lutris lutris:rungameid/%d", f.ID),
 			Image:  f.CoverPath,
 			Source: "lutris",
+			Slug:   f.Slug,
 		})
 	}
 

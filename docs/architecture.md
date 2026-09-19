@@ -564,8 +564,8 @@ picture left the app list looking unchanged: nothing told Sunshine to reload, so
 the client kept the picture it had cached, and the file on disk was right while
 the screen was wrong.
 
-**The desktop's own launcher gets the same games**, from the same scan and with
-the same cards as icons. That is a second menu, for whoever is already streaming
+**The desktop's own launcher gets the same games**, from the same scan but not
+with the same pictures. That is a second menu, for whoever is already streaming
 the desktop, and it was showing Steam, Firefox and a file manager while the
 installed games were nowhere: a desktop entry for a game exists only when
 somebody asks Steam or Lutris for a shortcut. Where somebody has, theirs is left
@@ -577,6 +577,28 @@ within the minute. Each entry starts its game through `polyseat-capped`, a
 short script that sets the cap and replaces itself with the game, rather
 than through an `env` line, because the launcher's way of starting an entry
 cannot carry the dollar sign in `LD_PRELOAD`.
+
+**The pictures differ because the menus draw differently.** A client draws every
+entry as a portrait card, which is what the covers are for; that launcher draws
+a grid of square icons at a fixed size, and a cover put through it comes out as
+a tall sliver between the square icons of Firefox and Steam. It was inconsistent
+with itself as well: a game somebody had made a Steam shortcut for wore a proper
+icon in that grid, since that entry is Steam's and not ours, so half the games
+wore icons and half wore covers.
+
+So a game entry wears the icon Steam's own shortcut would have used, and falls
+back to its card only when there is no icon to be had. Steam keeps the address
+of that icon in `appinfo.vdf` and nowhere else: a hash under which the icon is
+published as a Windows `.ico` of up to 256 pixels, or as a zip of PNGs for the
+minority of titles that publish `linuxclienticon` instead. That is Valve's
+binary key-value format with an index in front of it, which `polyseat-icons`
+reads far enough to find the two fields it wants; a record says how long it is
+before it says anything else, so the six hundred apps nobody asked about are
+stepped over rather than parsed. Where Steam has already written a shortcut's
+icon into the seat's icon theme, that file is used and nothing is fetched at
+all, and where the icon cannot be had the small one Steam cached for its own
+library list is better than a cover. Lutris names its icons after the slug it
+knows a game by, and those are already in the theme.
 
 **Sunshine reads that file once**, when it starts, for the list it serves to
 clients. Its web interface rereads it on every request, and asking that one

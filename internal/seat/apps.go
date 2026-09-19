@@ -150,6 +150,15 @@ func (p *Provisioner) WriteApps(ctx context.Context) ([]string, bool, error) {
 		games[i].Image = art[games[i].Name]
 	}
 
+	// And the icons for the other menu. The seat's own launcher draws a grid
+	// of square icons, where a portrait card is a sliver between them, so the
+	// same game is asked for twice: a cover for the client and an icon here.
+	gameArt := p.gameIcons(ctx, games)
+
+	for i := range games {
+		games[i].Icon = gameArt[games[i].Name]
+	}
+
 	// The same games in the seat's own launcher. Not part of the app list and
 	// not worth failing it over, so a problem here is said out loud and the
 	// list is written anyway.
@@ -869,10 +878,25 @@ func desktopEntry(g Game) []byte {
 	// `env -S`, which refuses a dollar sign it cannot expand and starts nothing.
 	b.WriteString("Exec=" + cappedPath + " " + oneLine(g.Launch) + "\n")
 
-	// The card drawn for Moonlight, because it is the picture the seat already
-	// has for this game and a launcher entry with no icon is a blank square.
-	if g.Image != "" {
-		b.WriteString("Icon=" + oneLine(g.Image) + "\n")
+	// The game's own icon, and the card drawn for Moonlight only when there is
+	// no icon to be had.
+	//
+	// They are different pictures for different menus. This launcher draws a
+	// grid of square icons at a fixed size, and a portrait card put through
+	// that comes out as a tall sliver between the square icons of Firefox and
+	// Steam. It was inconsistent with itself, too: a game somebody had asked
+	// Steam for a shortcut for wore a proper icon there, because that entry is
+	// Steam's rather than one of ours.
+	//
+	// A card is still better than nothing, which is what a launcher entry with
+	// no icon at all is drawn as.
+	icon := g.Icon
+	if icon == "" {
+		icon = g.Image
+	}
+
+	if icon != "" {
+		b.WriteString("Icon=" + oneLine(icon) + "\n")
 	}
 
 	b.WriteString("Categories=Game;\n")
@@ -897,6 +921,70 @@ func oneLine(s string) string {
 
 		return r
 	}, strings.TrimSpace(s))
+}
+
+// iconItem is one icon to find: what to call the answer, and everything known
+// about the game that might lead to one.
+type iconItem struct {
+	Key   string `json:"key"`
+	Steam string `json:"steam,omitempty"`
+
+	// Lutris is the slug it knows a game by, which is what it names that
+	// game's icon after in the icon theme.
+	Lutris string `json:"lutris,omitempty"`
+
+	// Icon is a file already known to be an icon rather than a cover, which is
+	// what an AppImage arrives with: the scan pulls the real icon out of the
+	// file itself, so there is nothing left to look up.
+	Icon string `json:"icon,omitempty"`
+}
+
+// gameIcons finds the icon each game wears in the seat's own launcher.
+//
+// Best effort, like the artwork: a game with no icon keeps its card, which is
+// how it was before and is not worth failing a seat's start over. A seat older
+// than this daemon has no polyseat-icons in it at all and answers nothing,
+// which is the same case.
+func (p *Provisioner) gameIcons(ctx context.Context, games []Game) map[string]string {
+	var items []iconItem
+
+	for _, g := range games {
+		item := iconItem{Key: g.Name, Steam: g.Steam, Lutris: g.Slug}
+
+		// An AppImage carries its own icon and the scan has already extracted
+		// it, so Image is the icon rather than a cover for that one source.
+		if g.Source == "appimage" {
+			item.Icon = g.Image
+		}
+
+		if item.Steam == "" && item.Lutris == "" && item.Icon == "" {
+			continue
+		}
+
+		items = append(items, item)
+	}
+
+	if len(items) == 0 {
+		return nil
+	}
+
+	query, err := json.Marshal(items)
+	if err != nil {
+		return nil
+	}
+
+	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
+		"HOME=/home/"+Player, "/usr/local/bin/polyseat-icons", string(query))
+	if err != nil || code != 0 {
+		return nil
+	}
+
+	icons := map[string]string{}
+	if json.Unmarshal([]byte(strings.TrimSpace(out)), &icons) != nil {
+		return nil
+	}
+
+	return icons
 }
 
 func (p *Provisioner) boxart(ctx context.Context, items []artItem) map[string]string {
