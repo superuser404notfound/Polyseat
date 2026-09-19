@@ -10,6 +10,38 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.18.1
+
+**A seat with the CUDA toolkit in it could not be provisioned any more.** The
+run ended in the package step with `error: failed to commit transaction
+(conflicting files)` and `opencl-nvidia: /usr/lib/libnvidia-opencl.so.1 exists
+in filesystem`. On NVIDIA the driver is injected by `nvidia.runtime` rather than
+installed, which is why every pacman call in such a seat carries
+`--assume-installed` for the virtual driver packages. `opencl-nvidia` is not one
+of them: `cuda` names it as a hard dependency, so assuming `opencl-driver` does
+nothing for it, and the package ships the same `libnvidia-opencl.so` the
+injection has already written. It is the fifth flag now, and it sits in
+`driverFlags` where the other four are, rather than on one step.
+
+**The seats this bites are the ones the HDR spike touched.** That spike built
+Sunshine from source and left `cuda` explicitly installed, 4.7 GiB of it, in
+whichever seat it ran in. Installing kept working, because `cuda` was already
+satisfied and never entered a transaction; the next plain `-Syu` that had an
+upgrade for it did not. The spike's own script passed the flag and called it
+specific to its step, which is exactly what it is not: once the toolkit is in a
+seat, every later pacman call in that seat needs it. A seat that never saw the
+spike, or an AMD seat, was never affected.
+
+**Nothing needs the toolkit, so it can also just go.** Sunshine comes from the
+pinned upstream release and links no CUDA at all; `pacman -Rs cuda` takes `cccl`
+with it and gives back the 4.7 GiB. The flag stays regardless, because the next
+seat that acquires `cuda` for some other reason should not repeat this.
+
+**Proven on hardware on 2026-09-19**, on the seat that hit it: the provisioning
+run went through with the flag in place, `cuda` upgraded from 13.3.1 to 13.4.1,
+and `opencl-nvidia` stayed uninstalled. No seat needs building again for this
+release.
+
 ## 0.18.0
 
 **The desktop's launcher is a grid of icons now, and it can be used without
