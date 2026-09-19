@@ -229,14 +229,15 @@ git push
    namcap /path/to/polyseat-X.Y.Z-1-x86_64.pkg.tar.zst
    ```
 
-   Six warnings are expected and all six are the tool being wrong or being
+   Seven warnings are expected and all seven are the tool being wrong or being
    pedantic. It finds dependencies by reading ELF links and shebangs, so it
    calls `incus` and `bpftrace` unnecessary when they are a socket and a program
    the observer runs. It calls `broker.py`'s imports of `uhid_observer` and
    `device_owner` uninstalled dependencies when they are two files beside it in
-   the same package. And it notes that `bash` and `glibc` are satisfied through
-   something else, which they are, by `base`. Anything beyond those six is
-   worth reading.
+   the same package. It reads the Python shebangs as a dependency on `python3`
+   and does not see that `python`, which is in `depends`, is what provides it.
+   And it notes that `bash` and `glibc` are satisfied through something else,
+   which they are, by `base`. Anything beyond those seven is worth reading.
 
 7. Push to the AUR, on the day there is an account to push from:
 
