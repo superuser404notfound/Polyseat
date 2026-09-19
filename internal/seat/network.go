@@ -11,6 +11,7 @@ import (
 	"github.com/lxc/incus/v7/shared/api"
 
 	"github.com/superuser404notfound/Polyseat/internal/config"
+	"github.com/superuser404notfound/Polyseat/internal/incusx"
 )
 
 // uplink is the host interface the seats reach the LAN through: what the
@@ -342,6 +343,206 @@ func (m *Manager) applyNetwork(ctx context.Context, s Seat) error {
 			"the host can no longer reach it")
 	} else {
 		m.logf(s.Name, "this seat and the host can now reach each other over the LAN")
+	}
+
+	return nil
+}
+
+// ---------------------------------------------------------- management path
+
+// mgmtDeviceName is the interface the daemon itself reaches a seat over: the
+// one it asks Sunshine for paired devices and hands a pairing PIN to. eth1 is
+// the seat's own address on the LAN and is deliberately not this, because a
+// macvlan cannot talk to its own host. See sunshineClient.
+const mgmtDeviceName = "eth0"
+
+const (
+	// defaultBridge is the managed bridge `incus admin init --minimal` makes,
+	// and the one the default profile hands every instance on a host Polyseat
+	// initialised itself.
+	defaultBridge = "incusbr0"
+
+	// PolyseatBridge is the one this daemon makes when the host has none it can
+	// use. Named after this program because it is this program's: deleting it
+	// costs nothing that anybody else put there.
+	PolyseatBridge = "polyseatbr0"
+)
+
+// bridgeDescription is written into the network so that somebody reading
+// `incus network list` on their own machine can tell where it came from.
+const bridgeDescription = "Polyseat: the path the daemon reaches its seats over"
+
+// managementDevice describes that interface on a given managed bridge.
+func managementDevice(bridge string) map[string]string {
+	return map[string]string{
+		"type":    "nic",
+		"name":    mgmtDeviceName,
+		"network": bridge,
+	}
+}
+
+// findNIC looks for the device that gives the seat an interface of this name
+// inside the container, and gives back the key it is filed under.
+//
+// By interface name rather than by key, because the two are only the same by
+// convention. A default profile somebody else wrote can file the NIC under
+// `net0` and still call it eth0 inside, and a daemon that only looked for the
+// key `eth0` would add a second device with the same interface name, which is a
+// container that then refuses to start.
+func findNIC(devices map[string]map[string]string, ifname string) (string, map[string]string) {
+	for key, device := range devices {
+		if device["type"] != "nic" {
+			continue
+		}
+
+		name := device["name"]
+		if name == "" {
+			name = key
+		}
+
+		if name == ifname {
+			return key, device
+		}
+	}
+
+	return "", nil
+}
+
+// managementUsable says whether a device would let the host reach the seat, and
+// when it would not, why not in a sentence a log line can carry.
+//
+// networkType is how a managed network is looked up, passed in so that the
+// judgement can be tested without an Incus on the other end.
+func managementUsable(device map[string]string, networkType func(string) (string, bool, error)) (bool, string, error) {
+	if device == nil {
+		return false, "this host's default profile gives a seat no " + mgmtDeviceName, nil
+	}
+
+	if network := device["network"]; network != "" {
+		kind, managed, err := networkType(network)
+		if err != nil {
+			return false, "", err
+		}
+
+		if kind == "bridge" && managed {
+			return true, "", nil
+		}
+
+		return false, fmt.Sprintf("%s hangs off the network %q, which is not a managed bridge",
+			mgmtDeviceName, network), nil
+	}
+
+	// A bridge is a bridge whoever made it: the host has a port on it and the
+	// seat has one, so the two are on one segment. Anything else here is a
+	// macvlan, an ipvlan or a physical card handed to the container, and all
+	// three share the property this daemon cannot work around, which is that
+	// the host is not reachable from the container over them.
+	if device["nictype"] == "bridged" {
+		return true, "", nil
+	}
+
+	nictype := device["nictype"]
+	if nictype == "" {
+		nictype = "unconfigured"
+	}
+
+	return false, fmt.Sprintf("%s is a %s interface, and a seat cannot reach its own host over one",
+		mgmtDeviceName, nictype), nil
+}
+
+// managementBridge picks the bridge the management interface should hang off,
+// making one when the host has none to offer.
+//
+// incusbr0 first, because on a host this daemon prepared from scratch that is
+// the bridge every seat is already on and moving them would change their
+// addresses for no reason. Then this program's own, which is only ever there
+// because a previous call made it.
+func managementBridge(client *incusx.Client) (string, error) {
+	for _, candidate := range []string{defaultBridge, PolyseatBridge} {
+		network, err := client.Network(candidate)
+		if err != nil {
+			return "", err
+		}
+
+		if network == nil || network.Type != "bridge" || !network.Managed {
+			continue
+		}
+
+		// A managed bridge with no address of its own hands out no leases, so a
+		// seat on it would come up without one. That is the failure this whole
+		// function exists to prevent, so it does not count as an answer.
+		if addr := network.Config["ipv4.address"]; addr == "" || addr == "none" {
+			continue
+		}
+
+		return candidate, nil
+	}
+
+	if err := client.CreateBridge(PolyseatBridge, bridgeDescription); err != nil {
+		return "", fmt.Errorf("make the %s bridge: %w", PolyseatBridge, err)
+	}
+
+	return PolyseatBridge, nil
+}
+
+// ensureManagement gives a seat an interface the daemon can reach it over,
+// whatever the host's default profile does or does not provide.
+//
+// A seat gets its devices from the default profile, and Polyseat only owns that
+// profile on a machine it initialised itself: `incus admin init --minimal` is
+// skipped when a storage pool already exists, which is the right thing to do to
+// somebody else's Incus and leaves the profile theirs. Theirs can mean no NIC
+// at all, or one on a macvlan, and both produce the same seat: up, streaming,
+// reachable from Moonlight, and unreachable from the daemon that built it. The
+// symptom is a card that says running beside a pairing panel that says this
+// seat is not running, reported from two different machines.
+//
+// Idempotent and quiet. On a host where the profile is fine this reads one
+// instance and writes nothing.
+func ensureManagement(ctx context.Context, client *incusx.Client, name string, log Logger) error {
+	instance, _, err := client.Instance(name)
+	if err != nil {
+		return err
+	}
+
+	networkType := func(network string) (string, bool, error) {
+		net, err := client.Network(network)
+		if err != nil || net == nil {
+			return "", false, err
+		}
+
+		return net.Type, net.Managed, nil
+	}
+
+	key, device := findNIC(instance.ExpandedDevices, mgmtDeviceName)
+
+	usable, why, err := managementUsable(device, networkType)
+	if err != nil {
+		return err
+	}
+
+	if usable {
+		return nil
+	}
+
+	bridge, err := managementBridge(client)
+	if err != nil {
+		return err
+	}
+
+	if key == "" {
+		key = mgmtDeviceName
+	}
+
+	changed, err := client.Configure(ctx, name, nil, map[string]map[string]string{
+		key: managementDevice(bridge),
+	})
+	if err != nil {
+		return fmt.Errorf("attach %s to %s: %w", mgmtDeviceName, bridge, err)
+	}
+
+	if changed && log != nil {
+		log("%s, so this seat gets %s on %s instead", why, mgmtDeviceName, bridge)
 	}
 
 	return nil

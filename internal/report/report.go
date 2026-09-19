@@ -417,14 +417,36 @@ func (o *out) seats(cfg config.Config) {
 		o.printf("\n")
 		o.line("seat", s.Name)
 
+		status := ""
+
 		if client != nil {
-			if state, err := client.Status(s.Name); err != nil {
+			state, err := client.Status(s.Name)
+
+			switch {
+			case err != nil:
 				o.unreadable("  container", err)
-			} else {
+			default:
+				status = state
+
 				o.line("  container", state)
 			}
 		} else {
 			o.line("  container", "unknown, Incus did not answer")
+		}
+
+		// What a running seat actually holds, per interface. eth1 is the
+		// address Moonlight uses and eth0 is the one this daemon pairs over,
+		// and a seat without the second looks, from the web interface, exactly
+		// like a seat that is not running. Two people wrote that up as a bug,
+		// so the report now answers it without another round trip.
+		if status == "Running" {
+			if addresses, err := client.Addresses(s.Name); err != nil {
+				o.unreadable("  interfaces", err)
+			} else if named := seat.NamedAddresses(addresses); named != "" {
+				o.line("  interfaces", named)
+			} else {
+				o.line("  interfaces", "none of them has an address")
+			}
 		}
 
 		built := fmt.Sprintf("generation %d", s.Provisioned)

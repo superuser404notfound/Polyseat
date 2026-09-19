@@ -358,7 +358,14 @@ the interface says so rather than offering a control that does nothing.
 ### Seats reach the host on the management bridge
 
 `incusbr0` exists precisely so the host can talk to the seats, so the reverse
-holds too. What is actually reachable there was measured:
+holds too. On a machine where Incus was already set up before Polyseat arrived,
+the bridge may be `polyseatbr0` instead: `incus admin init --minimal` is skipped
+on such a host, its default profile belongs to whoever made it, and a seat that
+profile gives no interface or a macvlan is one the daemon cannot reach at all.
+The daemon then attaches `eth0` to a managed bridge of its own when it builds or
+starts the seat. Same arrangement, same exposure, different name.
+
+What is actually reachable there was measured:
 
 ```
 port 22   closed        port 53    open  (Incus dnsmasq)

@@ -309,3 +309,189 @@ func TestUplinkSaysWhenThereIsNothing(t *testing.T) {
 		t.Errorf("the reason does not say why: %s", why)
 	}
 }
+
+// findNIC has to match on the interface name inside the container rather than
+// on the key the device is filed under, because a default profile somebody else
+// wrote is free to disagree about the key and a second device called eth0 is a
+// container that will not start.
+func TestFindNIC(t *testing.T) {
+	cases := []struct {
+		name    string
+		devices map[string]map[string]string
+		want    string
+	}{
+		{
+			name: "the usual key",
+			devices: map[string]map[string]string{
+				"eth0": {"type": "nic", "network": "incusbr0"},
+			},
+			want: "eth0",
+		},
+		{
+			name: "filed under another name",
+			devices: map[string]map[string]string{
+				"net0": {"type": "nic", "name": "eth0", "nictype": "bridged", "parent": "br0"},
+			},
+			want: "net0",
+		},
+		{
+			name: "a key called eth0 that is something else entirely",
+			devices: map[string]map[string]string{
+				"eth0": {"type": "disk", "path": "/srv"},
+			},
+			want: "",
+		},
+		{
+			name: "only the LAN interface",
+			devices: map[string]map[string]string{
+				"eth1": {"type": "nic", "nictype": "macvlan", "parent": "enp7s0", "name": "eth1"},
+			},
+			want: "",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			key, device := findNIC(c.devices, mgmtDeviceName)
+
+			if key != c.want {
+				t.Fatalf("key %q, want %q", key, c.want)
+			}
+
+			if (device == nil) != (c.want == "") {
+				t.Fatalf("device %v for key %q", device, key)
+			}
+		})
+	}
+}
+
+// managementUsable is the judgement the two reported bugs turn on: a seat whose
+// eth0 the host cannot reach is a seat that streams to Moonlight and cannot be
+// paired from the page, and the interface says it is not running instead.
+func TestManagementUsable(t *testing.T) {
+	networks := map[string]struct {
+		kind    string
+		managed bool
+	}{
+		"incusbr0":   {"bridge", true},
+		"lanmacvlan": {"macvlan", true},
+		"somebodys":  {"bridge", false},
+	}
+
+	networkType := func(name string) (string, bool, error) {
+		net, ok := networks[name]
+		if !ok {
+			return "", false, nil
+		}
+
+		return net.kind, net.managed, nil
+	}
+
+	cases := []struct {
+		name   string
+		device map[string]string
+		want   bool
+	}{
+		{
+			name:   "a managed bridge",
+			device: map[string]string{"type": "nic", "network": "incusbr0"},
+			want:   true,
+		},
+		{
+			name:   "a port on a bridge the host made",
+			device: map[string]string{"type": "nic", "nictype": "bridged", "parent": "br0"},
+			want:   true,
+		},
+		{
+			name:   "a macvlan, which cannot reach its own host",
+			device: map[string]string{"type": "nic", "nictype": "macvlan", "parent": "enp7s0"},
+			want:   false,
+		},
+		{
+			name:   "a managed network that is a macvlan",
+			device: map[string]string{"type": "nic", "network": "lanmacvlan"},
+			want:   false,
+		},
+		{
+			name:   "an unmanaged network, which a device may not name",
+			device: map[string]string{"type": "nic", "network": "somebodys"},
+			want:   false,
+		},
+		{
+			name:   "a network that is not there at all",
+			device: map[string]string{"type": "nic", "network": "gone"},
+			want:   false,
+		},
+		{
+			name:   "no device: the profile hands out no eth0",
+			device: nil,
+			want:   false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			usable, why, err := managementUsable(c.device, networkType)
+			if err != nil {
+				t.Fatalf("managementUsable: %v", err)
+			}
+
+			if usable != c.want {
+				t.Fatalf("usable = %v, want %v (%s)", usable, c.want, why)
+			}
+
+			// The reason is what a log line carries, so an unusable device
+			// without one is a line that says nothing.
+			if !usable && strings.TrimSpace(why) == "" {
+				t.Error("unusable and no reason given")
+			}
+		})
+	}
+}
+
+// The two interfaces a seat waits for carry different things, and a log line
+// that names one without saying what it costs sends nobody anywhere.
+func TestConsequences(t *testing.T) {
+	for _, iface := range []string{lanDeviceName, mgmtDeviceName} {
+		lines := consequences([]string{iface})
+
+		if len(lines) != 1 {
+			t.Fatalf("%s: %d lines, want 1", iface, len(lines))
+		}
+
+		if !strings.Contains(lines[0], iface) {
+			t.Errorf("%s: the line does not name the interface: %s", iface, lines[0])
+		}
+	}
+
+	both := consequences([]string{lanDeviceName, mgmtDeviceName})
+	if len(both) != 2 {
+		t.Fatalf("both missing gave %d lines, want 2", len(both))
+	}
+
+	if len(consequences(nil)) != 1 {
+		t.Error("an empty list should still say something")
+	}
+}
+
+// NamedAddresses is read by a person looking at a report, so the same seat has
+// to read the same way twice.
+func TestNamedAddresses(t *testing.T) {
+	addresses := map[string][]string{
+		"eth1": {"10.20.30.94"},
+		"eth0": {"10.233.136.54"},
+		"eth2": nil,
+	}
+
+	const want = "eth0 10.233.136.54, eth1 10.20.30.94"
+
+	for i := 0; i < 3; i++ {
+		if got := NamedAddresses(addresses); got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	}
+
+	if got := NamedAddresses(nil); got != "" {
+		t.Errorf("no addresses gave %q", got)
+	}
+}

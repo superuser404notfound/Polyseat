@@ -5,6 +5,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -330,6 +331,19 @@ func (p *Provisioner) waitSystemd(ctx context.Context) error {
 // ------------------------------------------------------------------- network
 
 func (p *Provisioner) stepNetwork(ctx context.Context) error {
+	// eth0 first, and it is the one interface this function does not write
+	// itself: it comes from the host's default profile, which belongs to
+	// whoever set Incus up. See ensureManagement for what that costs and what
+	// is done about it.
+	//
+	// Reported rather than fatal. A managed bridge needs dnsmasq, and a host
+	// without one would get a build that fails outright instead of a seat that
+	// streams and cannot be paired from the page, which is worse and harder to
+	// read. The pairing panel names what is missing when it is missing.
+	if err := ensureManagement(ctx, p.Client, p.name(), p.Log); err != nil {
+		p.Log("! the management interface could not be arranged: %v", err)
+	}
+
 	// eth0 stays on the Incus bridge and is the management path the daemon
 	// talks over. eth1 sits directly in the LAN, so Moonlight sees the seat as a
 	// host of its own and every seat can use the standard Sunshine ports
@@ -2617,15 +2631,32 @@ func (p *Provisioner) stepCredentials(ctx context.Context) error {
 	return nil
 }
 
-// waitAddresses waits until the LAN interface has an address, because
-// Sunshine's allowed origins are derived from it.
+// waitAddresses waits until the seat's two interfaces have addresses.
+//
+// Both, because they carry different things and only one of them used to be
+// waited for. eth1 is the seat's own address on the LAN: Sunshine's allowed
+// origins are derived from it and Moonlight finds the seat by it. eth0 is the
+// path this daemon reaches that same Sunshine over, so pairing from the web
+// interface needs it and nothing else in the interface says when it is missing.
 func (p *Provisioner) waitAddresses(ctx context.Context) error {
 	deadline := time.Now().Add(30 * time.Second)
 
+	var missing []string
+
 	for time.Now().Before(deadline) {
 		addresses, err := p.Client.Addresses(p.name())
-		if err == nil && len(addresses["eth1"]) > 0 {
-			return nil
+		if err == nil {
+			missing = nil
+
+			for _, iface := range []string{lanDeviceName, mgmtDeviceName} {
+				if len(addresses[iface]) == 0 {
+					missing = append(missing, iface)
+				}
+			}
+
+			if len(missing) == 0 {
+				return nil
+			}
 		}
 
 		select {
@@ -2635,7 +2666,32 @@ func (p *Provisioner) waitAddresses(ctx context.Context) error {
 		}
 	}
 
-	return fmt.Errorf("the seat's LAN interface got no address")
+	return errors.New(strings.Join(consequences(missing), "; "))
+}
+
+// consequences turns the interfaces a seat did not get an address on into what
+// that costs, because the names alone say nothing to the person reading the log.
+func consequences(missing []string) []string {
+	if len(missing) == 0 {
+		return []string{"the seat's interfaces got no address"}
+	}
+
+	out := make([]string, 0, len(missing))
+
+	for _, iface := range missing {
+		switch iface {
+		case lanDeviceName:
+			out = append(out, "the seat's LAN interface "+lanDeviceName+" got no address, "+
+				"so Moonlight cannot reach it and the web interface may refuse saves")
+		case mgmtDeviceName:
+			out = append(out, "the seat got no address on "+mgmtDeviceName+", the interface "+
+				"this daemon reaches its Sunshine over, so no device can be paired from the page")
+		default:
+			out = append(out, iface+" got no address")
+		}
+	}
+
+	return out
 }
 
 // WriteSunshineConfig generates Sunshine's configuration from the seat's

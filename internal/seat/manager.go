@@ -672,7 +672,13 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 	m.mu.Unlock()
 
 	addresses, err := m.client.Addresses(name)
-	if err == nil {
+	if err != nil {
+		// Logged rather than swallowed. Every answer that depends on an address
+		// is drawn from what this sweep last managed to read, so a read that
+		// keeps failing shows up as a seat that is running and cannot be paired
+		// with, and used to show up nowhere else at all.
+		m.log.Error("read the seat's addresses", "seat", name, "error", err)
+	} else {
 		m.mu.Lock()
 		rt.addresses = addresses
 		m.mu.Unlock()
@@ -2001,6 +2007,14 @@ func (m *Manager) Start(name string) error {
 		}
 
 		if status != "Running" {
+			// While it is stopped, so that a seat built on a host whose default
+			// profile gives it no way back to the daemon is repaired by a
+			// restart rather than by being built again. Reported rather than
+			// fatal for the reason stepNetwork gives.
+			if err := ensureManagement(ctx, m.client, name, func(f string, a ...any) { m.logf(name, f, a...) }); err != nil {
+				m.logf(name, "! the management interface could not be arranged: %v", err)
+			}
+
 			if err := startContainer(ctx, m.client, name, func(f string, a ...any) { m.logf(name, f, a...) }); err != nil {
 				return err
 			}
@@ -2058,7 +2072,7 @@ func (m *Manager) startSession(ctx context.Context, name string) error {
 	m.mu.Unlock()
 
 	if err := p.waitAddresses(ctx); err != nil {
-		m.logf(name, "! %v, the web interface may refuse saves", err)
+		m.logf(name, "! %v", err)
 	}
 
 	// Written on every start as well as while provisioning, so that a seat that
@@ -2548,12 +2562,74 @@ func (m *Manager) sunshineClient(name string) (*sunshine.Client, error) {
 	// eth0, the Incus bridge, never eth1. The seats reach the LAN through
 	// macvlan, and a macvlan interface cannot talk to its own host, so the
 	// address Moonlight uses is precisely the one that does not work here.
-	address := m.addressOn(name, "eth0")
+	address := m.addressOn(name, mgmtDeviceName)
 	if address == "" {
-		return nil, fmt.Errorf("this seat is not running")
+		return nil, m.noManagementPath(name)
 	}
 
 	return sunshine.New(address, secrets.SunshineUser, secrets.SunshinePassword), nil
+}
+
+// noManagementPath says why the daemon cannot talk to a seat's Sunshine.
+//
+// Two different situations used to share one sentence, and the wrong one of
+// them was printed on two machines whose owners then wrote issues saying the
+// seat was running. It was: it had no address on the management interface,
+// because the host's default profile had never given it one. Saying so, with
+// the addresses the seat does have, turns an argument with the interface into
+// something somebody can act on.
+func (m *Manager) noManagementPath(name string) error {
+	m.mu.Lock()
+
+	var (
+		state     State
+		addresses map[string][]string
+	)
+
+	if rt, ok := m.rt[name]; ok {
+		state = rt.state
+		addresses = rt.addresses
+	}
+
+	m.mu.Unlock()
+
+	if state != StateRunning {
+		return fmt.Errorf("this seat is not running")
+	}
+
+	have := "it has no address on any interface"
+
+	if named := NamedAddresses(addresses); named != "" {
+		have = "it has " + named
+	}
+
+	return fmt.Errorf("this seat is running but has no address on %s, the interface "+
+		"the daemon reaches its Sunshine over: %s. Restarting the seat attaches one",
+		mgmtDeviceName, have)
+}
+
+// NamedAddresses renders what a seat's interfaces are holding, in a fixed order
+// so that two readings of the same seat read the same. Shared with the report,
+// where it answers the question this whole path turns on: whether the seat has
+// an address on the interface the daemon uses.
+func NamedAddresses(addresses map[string][]string) string {
+	names := make([]string, 0, len(addresses))
+
+	for iface, addrs := range addresses {
+		if len(addrs) > 0 {
+			names = append(names, iface)
+		}
+	}
+
+	sort.Strings(names)
+
+	parts := make([]string, 0, len(names))
+
+	for _, iface := range names {
+		parts = append(parts, iface+" "+strings.Join(addresses[iface], " "))
+	}
+
+	return strings.Join(parts, ", ")
 }
 
 // PairedDevices lists the clients paired with a seat.

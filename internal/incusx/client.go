@@ -562,6 +562,55 @@ func (c *Client) Addresses(name string) (map[string][]string, error) {
 	return out, nil
 }
 
+// ------------------------------------------------------------------ networks
+
+// Network returns a network Incus knows about, or nil when it has none by that
+// name.
+//
+// Absent is an answer rather than an error, the same way Status returns an
+// empty string for an instance that is not there: the caller's next move is to
+// make the thing, and an error would have to be unwrapped to find that out.
+func (c *Client) Network(name string) (*api.Network, error) {
+	net, _, err := c.server().GetNetwork(name)
+	if err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return net, nil
+}
+
+// CreateBridge makes a managed bridge with an address range of its own and NAT
+// onto whatever the host uses to reach the world.
+//
+// The same thing `incus admin init --minimal` makes, because that is what this
+// is standing in for: on a host where Incus was already initialised before
+// Polyseat arrived, that command is skipped and the default profile is whatever
+// somebody else decided it should be. A seat needs a path the host itself can
+// reach, and this is where that path comes from when the host does not provide
+// one.
+//
+// IPv6 is off. This carries the daemon's own traffic to a seat's Sunshine and
+// nothing else, the dial is IPv4, and a second address family on it would only
+// be one more thing to be wrong.
+func (c *Client) CreateBridge(name, description string) error {
+	return c.server().CreateNetwork(api.NetworksPost{
+		Name: name,
+		Type: "bridge",
+		NetworkPut: api.NetworkPut{
+			Description: description,
+			Config: map[string]string{
+				"ipv4.address": "auto",
+				"ipv4.nat":     "true",
+				"ipv6.address": "none",
+			},
+		},
+	})
+}
+
 // -------------------------------------------------------------------- exec
 
 // ErrExec reports a command that ran but failed.

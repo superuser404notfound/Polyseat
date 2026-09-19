@@ -522,6 +522,64 @@ else
     ok "initialised with the defaults"
 fi
 
+# What a seat will get as its management interface, which is a different
+# question from whether Incus is initialised and was never asked before.
+#
+# A seat takes its devices from the default profile, and that profile is only
+# this program's on a machine this script initialised. Where Incus was already
+# set up, the profile is whatever its owner made it: it can hand out a macvlan,
+# or no interface at all, and either way the daemon ends up with a seat it
+# cannot reach. That looked, from the web interface, exactly like a seat that
+# was not running, and two people reported it as such.
+#
+# Said here rather than fixed here. The daemon attaches a bridge of its own when
+# it finds no usable one, at the moment it builds or starts a seat, which is
+# the moment it knows which seat it is talking about.
+mgmt=$(incus query /1.0/profiles/default 2>/dev/null | python -c '
+import json, sys
+
+try:
+    devices = json.load(sys.stdin).get("devices", {})
+except Exception:
+    print("unknown")
+    raise SystemExit
+
+for key, device in devices.items():
+    if device.get("type") != "nic":
+        continue
+
+    if (device.get("name") or key) != "eth0":
+        continue
+
+    if device.get("network"):
+        print("network " + device["network"])
+    else:
+        print((device.get("nictype") or "unconfigured") + " on " + (device.get("parent") or "nothing"))
+
+    break
+else:
+    print("none")
+' 2>/dev/null || echo unknown)
+
+case $mgmt in
+    "network "*|"bridged on "*)
+        ok "the default profile gives a seat eth0 as $mgmt"
+        ;;
+    unknown)
+        warn "the default profile could not be read, so what a seat gets as eth0 is unknown"
+        ;;
+    none)
+        warn "the default profile gives a seat no eth0 at all"
+        echo "    The daemon attaches a bridge of its own, polyseatbr0, when it"
+        echo "    builds or starts a seat. Nothing to do here."
+        ;;
+    *)
+        warn "the default profile gives a seat eth0 as $mgmt, and a seat cannot reach its own host over that"
+        echo "    The daemon attaches a bridge of its own, polyseatbr0, when it"
+        echo "    builds or starts a seat. Nothing to do here."
+        ;;
+esac
+
 step "Shared game library"
 # Reported rather than fixed, and reported here rather than only in the web
 # interface after the first seat has been built.
