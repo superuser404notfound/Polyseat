@@ -444,11 +444,20 @@ func (p *Provisioner) waitNetwork(ctx context.Context) error {
 // once it is installed, even a plain system upgrade tries to satisfy them. That
 // is why the first attempt to provision an already built seat failed where
 // building a new one had worked.
+//
+// opencl-nvidia is the fifth and is not a virtual package at all: cuda depends
+// on it by name, so assuming opencl-driver would do nothing. It ships
+// libnvidia-opencl.so, which the injection has already put in the filesystem,
+// and a seat that has cuda installed for any reason therefore cannot be
+// upgraded without it. That is not hypothetical: the HDR spike built Sunshine
+// from source and left the toolkit behind, and the next plain -Syu in that seat
+// died on "opencl-nvidia: /usr/lib/libnvidia-opencl.so.1 exists in filesystem".
 var driverFlags = []string{
 	"--assume-installed", "opengl-driver",
 	"--assume-installed", "vulkan-driver",
 	"--assume-installed", "lib32-opengl-driver",
 	"--assume-installed", "lib32-vulkan-driver",
+	"--assume-installed", "opencl-nvidia",
 }
 
 // stack is the whole vendor specific answer for this seat's host. See gpu.go.

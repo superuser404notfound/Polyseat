@@ -253,6 +253,25 @@ func TestNVIDIAStackIsWhatItAlwaysWas(t *testing.T) {
 	}
 }
 
+// opencl-nvidia is the one flag that is not about a virtual package. cuda names
+// it as a hard dependency, so a seat that has the toolkit in it for any reason
+// pulls the real package on the next upgrade, and its libnvidia-opencl.so is a
+// file the injection already owns. A seat built for HDR is exactly such a seat,
+// which is how this was found: the upgrade died, not the install.
+func TestNVIDIAAssumesTheOpenCLDriverToo(t *testing.T) {
+	flags := strings.Join(stackFor(GPU{Vendor: VendorNVIDIA}).driverFlags, " ")
+
+	if !strings.Contains(flags, "--assume-installed opencl-nvidia") {
+		t.Errorf("NVIDIA passes %q, so cuda drags in the package the injection already wrote", flags)
+	}
+
+	// And not on AMD, where every one of these would be wrong for the same
+	// reason the others are: there the driver is a package.
+	if len(stackFor(GPU{Vendor: VendorAMD, RenderNode: "/dev/dri/renderD129"}).driverFlags) != 0 {
+		t.Error("AMD picked up driver flags, which leaves that seat with no driver at all")
+	}
+}
+
 // Split frame encoding is an NVENC setting and nothing else. Left to the driver
 // it only comes on at 4K, which leaves a card's second encoder idle for every
 // client below that; written into an AMD seat it is a line Sunshine does not
