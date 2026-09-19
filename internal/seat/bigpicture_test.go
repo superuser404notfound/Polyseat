@@ -40,6 +40,18 @@ if question == "watch":
     print(json.dumps(answers))
 elif question == "mine":
     print(json.dumps(module.is_big_picture(payload)))
+elif question == "picture":
+    painted = payload["painted"]
+
+    def sample(x, y):
+        if painted is None:
+            return 0
+
+        left, top, wide, high = painted
+
+        return 40 if left <= x < left + wide and top <= y < top + high else 0
+
+    print(json.dumps(module.unpainted(payload["node"], sample)))
 else:
     node = module.window(payload["tree"], payload["id"])
     print(json.dumps(None if node is None else node.get("id")))
@@ -105,7 +117,7 @@ func restored(t *testing.T, steps string) []float64 {
 // which is the whole reason this rule reads ids and not names.
 func TestTheGameGivesFullscreenBackWhenItEnds(t *testing.T) {
 	steps := `[
-		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":11,"fullscreen_mode":0,"name":"Big-Picture-Modus"}}},
+		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":11,"pid":15442,"fullscreen_mode":0,"name":"Big-Picture-Modus","window_properties":{"class":"steam"}}}},
 		{"now":100.0,"event":{"change":"focus","container":{"id":13,"fullscreen_mode":1,"name":"DREDGE"}}},
 		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":13,"fullscreen_mode":1,"name":"DREDGE"}}},
 		{"now":116.0,"event":{"change":"close","container":{"id":13,"fullscreen_mode":1,"name":"DREDGE"}}}]`
@@ -114,6 +126,56 @@ func TestTheGameGivesFullscreenBackWhenItEnds(t *testing.T) {
 
 	if len(got) != 1 || got[0] != 11 {
 		t.Errorf("quitting the game put back %v, want the window it took fullscreen from, id 11", got)
+	}
+}
+
+// A game is often two windows, and the one that closes first is not the end of
+// the game. Forza Horizon 6 goes fullscreen, starts the game proper, which
+// takes fullscreen from it, and then closes: reported as Big Picture coming
+// back windowed, and visible in the seat's journal as the watcher putting a
+// window of the game back on screen while somebody was playing it.
+//
+// So every window that takes the screen is remembered, and Big Picture is put
+// back when the last of them is gone.
+func TestALauncherClosingMidGameIsNotTheEndOfTheGame(t *testing.T) {
+	const game = `"pid":63505,"window_properties":{"class":"steam_app_2483190"}`
+
+	steps := `[
+		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":11,"pid":15442,"fullscreen_mode":0,"name":"Big-Picture-Modus","window_properties":{"class":"steam"}}}},
+		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":21,` + game + `,"fullscreen_mode":1,"name":"Forza Horizon 6"}}},
+		{"now":140.0,"event":{"change":"fullscreen_mode","container":{"id":21,` + game + `,"fullscreen_mode":0,"name":"Forza Horizon 6"}}},
+		{"now":140.0,"event":{"change":"fullscreen_mode","container":{"id":26,` + game + `,"fullscreen_mode":1,"name":null}}},
+		{"now":141.0,"event":{"change":"close","container":{"id":21,` + game + `,"fullscreen_mode":0,"name":"Forza Horizon 6"}}}]`
+
+	if got := restored(t, steps); len(got) != 0 {
+		t.Errorf("the game lost the screen to %v while it was being played", got)
+	}
+
+	ended := steps[:len(steps)-1] + `,
+		{"now":900.0,"event":{"change":"close","container":{"id":26,` + game + `,"fullscreen_mode":1,"name":null}}}]`
+
+	got := restored(t, ended)
+
+	if len(got) != 1 || got[0] != 11 {
+		t.Errorf("quitting the game put back %v, want Big Picture, id 11", got)
+	}
+}
+
+// And a game passing fullscreen between its own windows is not a dethroning at
+// all. This is the line the seat's journal carried while the bug was open,
+// `put window 21 back to fullscreen`, where 21 was a window of the game and
+// Big Picture sat tiled behind it: the memory had been spent on windows that
+// were never Big Picture.
+func TestOnlyBigPictureIsRememberedAsTheWindowThatLostTheScreen(t *testing.T) {
+	const game = `"pid":63505,"window_properties":{"class":"steam_app_2483190"}`
+
+	steps := `[
+		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":21,` + game + `,"fullscreen_mode":0,"name":"Forza Horizon 6"}}},
+		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":26,` + game + `,"fullscreen_mode":1,"name":null}}},
+		{"now":200.0,"event":{"change":"close","container":{"id":26,` + game + `,"fullscreen_mode":1,"name":null}}}]`
+
+	if got := restored(t, steps); len(got) != 0 {
+		t.Errorf("a window of the game was put back as if it were Big Picture: %v", got)
 	}
 }
 
@@ -200,7 +262,7 @@ func TestLeavingFullscreenByHandIsNotUndone(t *testing.T) {
 // next game that ends. Nothing took fullscreen from it, and the gap says so.
 func TestAWindowLeftAloneLongAgoIsNotDraggedBack(t *testing.T) {
 	steps := `[
-		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":11,"fullscreen_mode":0,"name":"Big-Picture-Modus"}}},
+		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":11,"pid":15442,"fullscreen_mode":0,"name":"Big-Picture-Modus","window_properties":{"class":"steam"}}}},
 		{"now":3700.0,"event":{"change":"fullscreen_mode","container":{"id":13,"fullscreen_mode":1,"name":"DREDGE"}}},
 		{"now":3900.0,"event":{"change":"close","container":{"id":13,"fullscreen_mode":1,"name":"DREDGE"}}}]`
 
@@ -213,7 +275,7 @@ func TestAWindowLeftAloneLongAgoIsNotDraggedBack(t *testing.T) {
 // same, and leaves the same tiled Big Picture behind.
 func TestAGameThatLeavesFullscreenBeforeQuittingStillGivesItBack(t *testing.T) {
 	steps := `[
-		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":11,"fullscreen_mode":0,"name":"Big-Picture-Modus"}}},
+		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":11,"pid":15442,"fullscreen_mode":0,"name":"Big-Picture-Modus","window_properties":{"class":"steam"}}}},
 		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":13,"fullscreen_mode":1,"name":"DREDGE"}}},
 		{"now":300.0,"event":{"change":"fullscreen_mode","container":{"id":13,"fullscreen_mode":0,"name":"DREDGE"}}},
 		{"now":310.0,"event":{"change":"close","container":{"id":13,"fullscreen_mode":0,"name":"DREDGE"}}}]`
@@ -230,7 +292,7 @@ func TestAGameThatLeavesFullscreenBeforeQuittingStillGivesItBack(t *testing.T) {
 // gone to the tree for every game whether or not one had ever been dethroned.
 func TestAFullscreenWindowClosingOnItsOwnRestoresNothing(t *testing.T) {
 	steps := `[
-		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":11,"fullscreen_mode":0,"name":"Big-Picture-Modus"}}},
+		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":11,"pid":15442,"fullscreen_mode":0,"name":"Big-Picture-Modus","window_properties":{"class":"steam"}}}},
 		{"now":140.0,"event":{"change":"close","container":{"id":13,"fullscreen_mode":1,"name":"DREDGE"}}}]`
 
 	if got := restored(t, steps); len(got) != 0 {
@@ -242,9 +304,9 @@ func TestAFullscreenWindowClosingOnItsOwnRestoresNothing(t *testing.T) {
 // id would be somebody else's window by the time the game ends.
 func TestAVictimThatClosedFirstIsForgotten(t *testing.T) {
 	steps := `[
-		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":11,"fullscreen_mode":0,"name":"Big-Picture-Modus"}}},
+		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":11,"pid":15442,"fullscreen_mode":0,"name":"Big-Picture-Modus","window_properties":{"class":"steam"}}}},
 		{"now":100.0,"event":{"change":"fullscreen_mode","container":{"id":13,"fullscreen_mode":1,"name":"DREDGE"}}},
-		{"now":200.0,"event":{"change":"close","container":{"id":11,"fullscreen_mode":0,"name":"Big-Picture-Modus"}}},
+		{"now":200.0,"event":{"change":"close","container":{"id":11,"pid":15442,"fullscreen_mode":0,"name":"Big-Picture-Modus","window_properties":{"class":"steam"}}}},
 		{"now":300.0,"event":{"change":"close","container":{"id":13,"fullscreen_mode":1,"name":"DREDGE"}}}]`
 
 	if got := restored(t, steps); len(got) != 0 {
@@ -345,6 +407,65 @@ func TestTheWatcherOnlyPutsBackAWindowThatIsStillThere(t *testing.T) {
 	// container ids and window ids come from the same counter.
 	if got := target(t, tree, 2); got != nil {
 		t.Errorf("a workspace was taken for a window: %v", got)
+	}
+}
+
+func verdict(t *testing.T, node, painted string) any {
+	t.Helper()
+
+	payload := fmt.Sprintf(`{"node":%s,"painted":%s}`, node, painted)
+
+	var answer any
+	if err := json.Unmarshal(askWatcher(t, "picture", payload), &answer); err != nil {
+		t.Fatalf("the driver printed something unreadable")
+	}
+
+	return answer
+}
+
+// The second reported case, in the numbers a seat produced: a fullscreen
+// window of 3840x2160 that was mapped at 1280x800, with everything outside
+// that corner exactly black. Nothing in sway's tree says a client painted only
+// part of its window, so this is read off the screen.
+func TestAPictureInTheCornerIsSeenForWhatItIs(t *testing.T) {
+	const window = `{"id":6,"pid":2965,"name":"Big-Picture-Modus","window_properties":{"class":"steam"},
+		"fullscreen_mode":1,"rect":{"x":0,"y":0,"width":3840,"height":2160},
+		"geometry":{"x":0,"y":0,"width":1280,"height":800}}`
+
+	if got := verdict(t, window, `[0,0,1280,800]`); got != true {
+		t.Errorf("a picture drawn in the top left corner was answered with %v, want it recognised", got)
+	}
+
+	if got := verdict(t, window, `[0,0,3840,2160]`); got != false {
+		t.Errorf("a picture that fills the screen was answered with %v, want it left alone", got)
+	}
+
+	// The half minute a cold Steam spends unpacking its UI. There is nothing
+	// on the screen to judge, and answering "it fills the screen" there would
+	// mean the picture is never looked at again, which is the whole bug.
+	if got := verdict(t, window, `null`); got != nil {
+		t.Errorf("a screen with nothing painted on it yet was answered with %v, want no answer", got)
+	}
+}
+
+// What it must not touch. A window that is not fullscreen is somebody's tiled
+// window, and a window mapped at the size of the screen has no smaller picture
+// it could be stuck at, so neither is worth a screenshot.
+func TestAWindowWithNothingToRepairIsNotLookedAt(t *testing.T) {
+	windowed := `{"id":6,"pid":2965,"name":"Big-Picture-Modus","window_properties":{"class":"steam"},
+		"fullscreen_mode":0,"rect":{"x":0,"y":0,"width":1920,"height":2130},
+		"geometry":{"x":0,"y":0,"width":1280,"height":800}}`
+
+	if got := verdict(t, windowed, `[0,0,1280,800]`); got != false {
+		t.Errorf("a tiled window was answered with %v, want it left alone", got)
+	}
+
+	whole := `{"id":6,"pid":2965,"name":"Big-Picture-Modus","window_properties":{"class":"steam"},
+		"fullscreen_mode":1,"rect":{"x":0,"y":0,"width":1920,"height":1080},
+		"geometry":{"x":0,"y":0,"width":1920,"height":1080}}`
+
+	if got := verdict(t, whole, `null`); got != false {
+		t.Errorf("a window mapped at the size of the screen was answered with %v, want it left alone", got)
 	}
 }
 

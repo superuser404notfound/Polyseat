@@ -31,7 +31,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 40
+const Generation = 41
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -540,6 +540,12 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		// through. polyseat-launcher says the rest. A seat built before keeps
 		// fuzzel installed and unused; it is small and nothing starts it.
 		"waybar", "nwg-drawer", "thunar", "gvfs", "wl-clipboard",
+		// Named rather than left to arrive as the desktop portal's
+		// dependency, because polyseat-bigpicture-watch reads the screen with
+		// it: whether Steam painted the whole of its window or a corner of it
+		// is in no window manager property, and a dozen pixels of screenshot
+		// is the only place it is written down.
+		"grim",
 		// So a seat can be used from a client that has neither keyboard nor
 		// mouse, which is most of them: an Apple TV, a phone, a television.
 		// squeekboard draws the letters and polyseat-pad-pointer turns the
