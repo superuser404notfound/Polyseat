@@ -192,3 +192,35 @@ func TestFirstField(t *testing.T) {
 		t.Errorf("a missing file answered %q", got)
 	}
 }
+
+// The line the hardware template asks for in prose and nobody fills in. Three
+// answers, and the one that matters is the one that has to be unmissable.
+func TestDescribeEncoderNamesTheSoftwareFallback(t *testing.T) {
+	got := describeEncoder("libx264", []string{"H.264"})
+
+	if !strings.Contains(got, "libx264") || !strings.Contains(got, "broken") {
+		t.Errorf("a seat encoding on the CPU was reported as %q", got)
+	}
+
+	if got := describeEncoder("vaapi", []string{"H.264", "HEVC", "AV1"}); strings.Contains(got, "broken") {
+		t.Errorf("a working card was reported as %q", got)
+	}
+
+	// A seat that is up with no Sunshine in it yet. Saying nothing would read
+	// as a missing card rather than as a question nobody has asked yet.
+	if got := describeEncoder("", nil); !strings.Contains(got, "not known") {
+		t.Errorf("a seat Sunshine has not probed was reported as %q", got)
+	}
+}
+
+// Every codec belongs in the line. Reporting only H.264 reads as though H.264
+// were all the card could do.
+func TestDescribeEncoderKeepsTheCodecs(t *testing.T) {
+	got := describeEncoder("vaapi", []string{"H.264", "HEVC", "AV1"})
+
+	for _, want := range []string{"vaapi", "H.264", "HEVC", "AV1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q says nothing about %s", got, want)
+		}
+	}
+}

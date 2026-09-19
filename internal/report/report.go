@@ -22,6 +22,7 @@ package report
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -447,6 +448,8 @@ func (o *out) seats(cfg config.Config) {
 			} else {
 				o.line("  interfaces", "none of them has an address")
 			}
+
+			o.line("  encoder", encoderOf(client, s))
 		}
 
 		built := fmt.Sprintf("generation %d", s.Provisioned)
@@ -470,6 +473,55 @@ func (o *out) seats(cfg config.Config) {
 			o.line("  address", "DHCP")
 		}
 	}
+}
+
+// encoderOf asks a running seat what Sunshine is encoding with, in the words
+// the web interface uses for it.
+//
+// The hardware template asks whoever opens an issue for this line, because a
+// seat that fell back to the CPU starts, streams and looks entirely healthy
+// until somebody plays on it, and "vaapi" or "libx264" is the whole difference
+// between a card that works and one that does not. It was asked for in prose
+// and answered in prose, or not at all. A report that already carries the
+// answer costs nobody a round trip.
+//
+// The same read the daemon makes, so a report cannot describe a machine
+// differently from the way it is being run.
+func encoderOf(client *incusx.Client, s seat.Seat) string {
+	// Not guessed at 1000. A seat provisioned before the uid was written down
+	// has none recorded, and the interface already marks it as stale; inventing
+	// one here would run the read as somebody who may not be the player and
+	// report the silence as "no encoder".
+	if s.PlayerUID == 0 {
+		return "not known: this seat has no recorded uid yet, provision it once"
+	}
+
+	// A bound on the one thing in this section that runs a command inside a
+	// container. Everything else here is a read, and a seat whose journal is
+	// slow to grep should cost the report a line rather than the whole of it.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	return describeEncoder(seat.ReadEncoders(ctx, client, s.Name, s.PlayerUID))
+}
+
+// describeEncoder puts the answer into words. Separate from reading it so that
+// the words can be checked on a machine with no container to read.
+func describeEncoder(encoder string, codecs []string) string {
+	if encoder == "" {
+		return "not known, Sunshine has not probed in this seat yet"
+	}
+
+	line := encoder + " (" + strings.Join(codecs, ", ") + ")"
+
+	// Said outright rather than left to the reader. Anybody who can tell
+	// libx264 from vaapi at a glance did not need the report, and the people
+	// this line is written for are the ones who cannot.
+	if seat.Software(encoder) {
+		line += ", the software encoder: the GPU path is broken"
+	}
+
+	return line
 }
 
 func (o *out) journal() {

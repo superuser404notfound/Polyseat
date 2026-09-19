@@ -1112,85 +1112,15 @@ func (m *Manager) active(ctx context.Context, name, unit string) bool {
 	return state == "active"
 }
 
-// readEncoders reports which hardware path Sunshine settled on and which
-// codecs it can offer with it.
+// readEncoders reports which hardware path Sunshine settled on in one seat.
 //
-// The single most useful line in the whole interface is still whether the GPU
-// path works: a seat that quietly fell back to software looks entirely healthy
-// until somebody tries to play. But reporting only the H.264 encoder, which is
-// what this did, reads as though H.264 were all a seat could do. Sunshine
-// probes for three and offers whichever the client asks for, so the answer is
-// a list.
-//
-// Expensive for what it is: it reads the seat's whole journal, which only grows,
-// and greps it. Measured at 35 ms of the seat's own CPU against a 57 MB journal,
-// which used to be spent every ten seconds forever. Sunshine probes once at
-// startup and the answer cannot change while it runs, so encodersOnRecord keeps
-// this to once per Sunshine.
+// A thin wrapper around ReadEncoders, which the report calls too: the daemon
+// has a per seat uid and a deadline to add, and nothing else.
 func (m *Manager) readEncoders(ctx context.Context, name string) (string, []string) {
 	ctx, cancel := quick(ctx)
 	defer cancel()
 
-	argv := m.asPlayer(name, "sh", "-c",
-		"journalctl --user -u polyseat-sunshine.service --no-pager 2>/dev/null | "+
-			"grep -oE 'Found (H\\.264|HEVC|AV1) encoder: [a-z0-9_]+'")
-
-	out, _, err := m.client.Try(ctx, name, argv...)
-	if err != nil {
-		return "", nil
-	}
-
-	return parseEncoders(out)
-}
-
-// parseEncoders reads the lines Sunshine writes while probing.
-//
-// Separate from fetching them because a seat's journal holds every start it
-// has ever had, and only the most recent probe describes what is running now:
-// getting that backwards would report a card that has since been swapped, or a
-// software fallback long after it was fixed.
-func parseEncoders(out string) (string, []string) {
-	seen := map[string]string{}
-	order := []string{"H.264", "HEVC", "AV1"}
-
-	for _, line := range strings.Split(out, "\n") {
-		rest, found := strings.CutPrefix(strings.TrimSpace(line), "Found ")
-		if !found {
-			continue
-		}
-
-		codec, encoder, found := strings.Cut(rest, " encoder: ")
-		if !found || encoder == "" {
-			continue
-		}
-
-		// Later lines overwrite earlier ones, so what remains is the last run.
-		seen[codec] = encoder
-	}
-
-	var codecs []string
-
-	backend := ""
-
-	for _, codec := range order {
-		encoder, ok := seen[codec]
-		if !ok {
-			continue
-		}
-
-		codecs = append(codecs, codec)
-
-		// Every codec of one run shares a backend, so the first says it.
-		if backend == "" {
-			if _, suffix, cut := strings.Cut(encoder, "_"); cut {
-				backend = suffix
-			} else {
-				backend = encoder
-			}
-		}
-	}
-
-	return backend, codecs
+	return ReadEncoders(ctx, m.client, name, m.runtimeOf(name).uid)
 }
 
 // sessionEnded puts a seat back the way an idle seat should be, and does the
@@ -1536,14 +1466,17 @@ func (m *Manager) readOutput(ctx context.Context, name string) string {
 // directory and the user bus named explicitly, because there is no login
 // context to inherit them from.
 func (m *Manager) asPlayer(name string, argv ...string) []string {
-	uid := m.runtimeOf(name).uid
-	prefix := []string{
+	return append(playerPrefix(m.runtimeOf(name).uid), argv...)
+}
+
+// playerPrefix is the same command prefix for a caller that has the uid but no
+// Manager to look it up in, which is what the report is.
+func playerPrefix(uid int64) []string {
+	return []string{
 		"sudo", "-u", Player, "env",
 		fmt.Sprintf("XDG_RUNTIME_DIR=/run/user/%d", uid),
 		fmt.Sprintf("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%d/bus", uid),
 	}
-
-	return append(prefix, argv...)
 }
 
 func (m *Manager) attachedDevices(name string) ([]InputDevice, error) {
@@ -2143,7 +2076,7 @@ func (m *Manager) startSession(ctx context.Context, name string) error {
 
 		// libx264 and libx265 are ffmpeg's own, which means the card is not
 		// being used at all.
-		if strings.HasPrefix(encoder, "lib") {
+		if Software(encoder) {
 			m.logf(name, "! that is the software encoder, the GPU path is broken")
 		}
 	}
