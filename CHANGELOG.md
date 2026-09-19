@@ -10,6 +10,55 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.21.0
+
+**The games in the seat's own launcher wear icons rather than box art.** That
+grid draws every entry as a square icon of a fixed size, and every game entry
+Polyseat wrote named the card drawn for Moonlight, six hundred by nine hundred:
+a tall sliver standing between the square icons of Firefox and Steam. It was
+inconsistent with itself as well. A game somebody had asked Steam for a shortcut
+for wore a proper icon in that grid, because that entry is Steam's rather than
+one of ours, so half the games wore icons and half wore covers.
+
+They are two menus drawn to two rules, so they are now given two pictures. A
+client draws every entry as a portrait card and keeps the covers; the grid gets
+the icon Steam's own shortcut would have used.
+
+**The address of that icon is in one file and nothing else in a seat has it.**
+Steam keeps it in `appinfo.vdf` as `clienticon`, or as `linuxclienticon` for the
+minority of titles that publish a Linux one: a hash under which the icon is
+published as a Windows `.ico` of up to 256 pixels, or as a zip of PNGs. Nothing
+in a manifest or on a store page carries it, and neither does the store service
+that hands over a cover hidden behind a hash — what that answers with is a 32
+pixel community icon and nothing larger.
+
+So `polyseat-icons` reads that file. It is Valve's binary key-value format with
+a table of key names in front of it, and the helper parses it far enough to find
+two fields: a record says how long it is before it says anything else, so the
+six hundred apps nobody asked about are stepped over rather than parsed. Before
+any of that it looks in the seat's icon theme, where Steam leaves the icon of
+every shortcut it has made. Same picture, no request, and it is what makes a
+generated entry look like Steam's own.
+
+**Nothing is worse off than it was.** With no network, or with this pass's
+download budget spent, the 32 pixel icon Steam cached for its own library list
+is used instead: a poor thing to draw at ninety six pixels, and still the game's
+own icon rather than a picture of something else. A game with nothing anywhere
+keeps its card, because an entry naming no icon at all is drawn as a blank
+square. Lutris names its icons after the slug it knows a game by and those are
+in the theme already; an AppImage arrives with its own, extracted from the file
+by the scan that found it.
+
+**Measured in a seat rather than reasoned about.** Against a real library all
+ten titles resolved, eight of them at 256 pixels, one took the icon Steam had
+already written into the theme, and a second pass made no request at all and
+took 56 milliseconds. What nobody has done yet is look at the grid on a screen.
+
+**Seats need provisioning again**, which the interface offers once the daemon is
+updated: the helper is new inside a seat and nothing there has it until then.
+Until that happens a seat goes on showing covers in its launcher, which is what
+it showed before.
+
 ## 0.20.0
 
 **A seat on a machine with two cards is given one of them.** Three things
