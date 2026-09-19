@@ -10,6 +10,62 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.22.0
+
+**Big Picture came up as a small picture in the corner of a black screen, and
+came back as a window after a game.** Both reported from the couch with a
+photograph, both in the helper that was written for the second of them, and
+neither of them a Steam problem.
+
+**Seats have to be built again.** The recipe is at generation 41, so every seat
+is marked stale and wants provisioning. That is what puts the new watcher in it
+and adds the one package it needs. A few minutes per seat.
+
+- **A picture in the corner is not a window that failed to go fullscreen**, and
+  everything here had been written as though it were. The numbers from the seat
+  say it plainly: a container of 3840x2160, a window mapped at 1280x800, every
+  pixel outside that corner exactly black, and `fullscreen_mode` set to 1. So
+  the rule in the sway configuration had done its work, the launcher saw
+  fullscreen and stopped insisting, and the watcher had nothing to react to,
+  while the player looked at a ninth of a screen.
+
+- **Steam paints the size the window had when it was mapped.** On a cold start
+  the window is mapped at Steam's own 1280x800 and the rule fullscreens it
+  before the Steam UI process is running; what finally paints keeps the old
+  size. Asking sway for fullscreen a second time, once that process is alive,
+  is a configure Steam does react to: one off-and-on and the picture fills the
+  screen. It is what a player does by hand when they restart Big Picture and it
+  "fixes itself", which is what made this look like Steam's bug.
+
+- **Nothing in sway says what a client painted, so the screen is asked.** Four
+  points of it, through grim: one inside the corner Steam would have drawn in
+  and three outside, and only the exact black of a surface nobody painted
+  counts as outside. A screen with nothing on it yet is not an answer either
+  way, because that is the first half minute of a cold Steam and answering "it
+  fills the screen" there would mean never looking again. `grim` is named in
+  the package list now rather than left to arrive as the desktop portal's
+  dependency.
+
+- **Only Big Picture is remembered as the window that lost the screen.** A game
+  hands fullscreen between its own windows, and the version that remembered
+  whichever window it saw lose it spent that memory on the game. The seat's
+  journal says so in one line, `put window 21 back to fullscreen`, where 21 was
+  a window of Forza Horizon 6 and Big Picture sat tiled behind it the whole
+  time.
+
+- **Every window that takes the screen afterwards is remembered, not only the
+  first.** A game is often two: a launcher that goes fullscreen and the game
+  that takes it from the launcher. The launcher closing used to count as the
+  game ending, which pulled the player out of a game they were playing and left
+  nothing for when the game really ended, so Big Picture stayed a window next to
+  the welcome terminal. It is put back when the last of them is gone.
+
+- **And the tree is read before the screen is taken from anybody**: still
+  there, still Big Picture, still windowed, and nothing else holding fullscreen.
+  The bookkeeping can only be as right as the events it saw, and taking the
+  screen away from a game somebody is playing is worse than the bug it is here
+  to fix.
+
 ## 0.21.0
 
 **The games in the seat's own launcher wear icons rather than box art.** That
