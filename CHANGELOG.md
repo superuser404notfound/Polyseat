@@ -10,6 +10,102 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.19.0
+
+**A seat this daemon cannot reach looks exactly like a seat that is not
+running, and two machines reported it as one.** The pairing panel said "this
+seat is not running" while the card beside it said Running. The cause is the
+same on both: a seat takes its devices from the Incus default profile, and
+Polyseat only owns that profile on a machine it initialised itself, because
+`prepare.sh` skips `incus admin init --minimal` where a storage pool already
+exists, which is the right thing to do to somebody else's Incus. Their profile
+can hand a seat a macvlan or no interface at all, and both produce the same
+seat: up, encoding, reachable from Moonlight and unreachable from the daemon
+that built it. Issues #2 and #5, from two different machines.
+
+So `eth0` is arranged rather than assumed. Where the expanded devices already
+give the seat a port on a bridge or a managed bridge network, nothing is
+written. Any other answer gets `eth0` attached to `incusbr0`, or to a bridge
+this daemon makes when the host has none to offer. It runs while provisioning
+and again before a start, so a seat built on such a host is repaired by a
+restart rather than by being built again, and it is reported rather than fatal,
+because a managed bridge needs dnsmasq and a build that dies is worse than a
+seat that streams.
+
+- **The pairing panel says which of the two it is.** "Not running" and "running
+  with no address on eth0" were one message; they are two now, and the second
+  prints the addresses the seat does have.
+- **A failing address read is logged instead of swallowed**, and the wait
+  before a seat is called ready waits for both interfaces and says what each
+  one costs.
+- **`prepare.sh` says what the default profile gives a seat as eth0**, which is
+  the one line that would have answered both issues without a round trip.
+
+**`sudo polyseat-lan-bridge` died on its last line and left two seats
+stopped.** `${#STOPPED[@]:-0}` is the array length operator with a default
+glued to it, which bash calls a bad substitution when it reaches the line and
+not before. So the run did everything it promised, built the bridge, moved the
+host address over, repointed both seats, and then died on its last step with
+the two seats it had stopped left stopped and nothing said about them. The
+array is initialised at the top of that section, so there was never anything
+for a default to do. Issue #4.
+
+The list of stopped seats is printed from an `EXIT` trap now as well, which
+costs nothing on a run that reaches the end by itself. And the reason this is
+not a one character commit is that nothing here could have caught it: `bash -n`
+parses the broken line happily and shellcheck says nothing about it at any
+severity, both measured rather than assumed, so neither CI step covering that
+file had any runtime coverage of it. `host/test-lan-bridge.sh` lifts the three
+functions out of the script by name and runs them against a recording stub for
+`incus`, with no root, no network and no Incus. Against the broken line it
+fails nine of its fifteen assertions.
+
+**The report says what a running seat is encoding with.** The hardware template
+asks for that line because it is the one that separates a card that works from
+one that quietly fell back to the CPU, and such a seat starts, streams and
+looks entirely healthy until somebody plays on it. It was also the only field
+in that template asking for a value from the web interface rather than from a
+command, and two reports in a row answered it with something else. A running
+seat now carries it in `sudo polyseatd -report`:
+
+```
+  seat:                  lounge
+    container:           Running
+    interfaces:          eth0 10.233.136.54, eth1 10.20.30.94
+    encoder:             nvenc (H.264, HEVC, AV1)
+```
+
+`libx264` there is said outright as the software encoder with the GPU path
+broken, because anybody who can tell it from `vaapi` at a glance did not need
+the report. It is the daemon's own read, so a report cannot describe a machine
+differently from the way it is being run.
+
+**One AMD machine has now run this.** [docs/amd.md](docs/amd.md) opened with
+"Nobody has run this on an AMD card" from the day it was written and no longer
+does. Issue #3 is a CachyOS host with an RX 9070 XT and a Radeon AI PRO R9700
+in it, `gpu_render_node` naming the second because it has no display attached,
+and a seat that was built, came up and streamed. Three things that could only
+ever be answered by a card are answered: the detection and the override are
+right on a real AMD machine, the package set installs on one, and wlroots does
+render headless on `amdgpu` inside a container. What it does not settle is
+whether it encodes in hardware, which is what the encoder line above exists to
+say.
+
+And it turned up something that document had no line for. On a machine with two
+cards, three things have to agree about which one, and this sets two: the
+compositor through `WLR_RENDER_DRM_DEVICE` and Sunshine through `adapter_name`.
+The game is the third and nothing points it anywhere, because the Incus `gpu`
+device passes every card in the host through and a Vulkan game takes the first
+device the loader offers. Where that is not the card the seat composites and
+encodes on, every frame crosses the bus twice. Nothing changes about it here.
+It is written down, and the machine that has two cards has been asked what its
+games are really running on.
+
+**Seats are not touched by this.** Nothing here changes how one is built, the
+provisioning recipe is still generation 39, so an existing machine updates with
+a restart and no seat has to be provisioned again. A seat whose `eth0` came
+from somebody else's default profile is repaired by that same restart.
+
 ## 0.18.1
 
 **A seat with the CUDA toolkit in it could not be provisioned any more.** The
