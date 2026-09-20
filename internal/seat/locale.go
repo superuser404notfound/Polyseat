@@ -115,9 +115,9 @@ func localeCharmap(locale string) string {
 // enabled. Writing /etc/locale.conf every time is free and repairs a seat
 // whose file was replaced by an image update.
 //
-// This changes what new processes inherit, not what is already running, so a
-// seat that was built before this existed picks the language up when its
-// session next starts.
+// On a seat being built there is nothing more to it: the user manager starts
+// later and inherits the file. On a seat that is already running there is,
+// and it is the whole reason the last line exists. See localeScript.
 func (p *Provisioner) stepLocale(ctx context.Context) error {
 	locale := hostLocale()
 	if locale == "" {
@@ -128,7 +128,34 @@ func (p *Provisioner) stepLocale(ctx context.Context) error {
 
 	p.Log("setting the seat's language to %s", locale)
 
-	script := fmt.Sprintf(`
+	if _, err := p.sh(ctx, localeScript(locale)); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// localeScript is what the seat is asked to run.
+//
+// Idempotent, and cheap on the runs where there is nothing to do: locale-gen
+// takes a few seconds and is only reached when the entry was not already
+// enabled. Writing /etc/locale.conf every time is free and repairs a seat
+// whose file was replaced by an image update.
+//
+// The last line is the one that is easy to leave out and leaves the job half
+// done. /etc/locale.conf decides what a process started from now on inherits,
+// but the player's systemd keeps the environment it was started with, and on
+// a seat that has been up since before this ran that environment is the old
+// one. The session is restarted at the end of provisioning and would come
+// back in the old language anyway, which reads as the setting not working.
+// Writing it into the user manager first means the restart picks it up.
+//
+// It fails on a seat being built for the first time, because there is no
+// player logged in yet to have a manager, and that is not a failure: such a
+// seat has nothing running to be in the wrong language, and its manager will
+// read the file when it starts. Hence the guard rather than a bare call.
+func localeScript(locale string) string {
+	return fmt.Sprintf(`
 set -e
 
 if ! grep -q '^%[1]s %[2]s$' /etc/locale.gen; then
@@ -142,13 +169,9 @@ if ! grep -q '^%[1]s %[2]s$' /etc/locale.gen; then
 fi
 
 printf 'LANG=%%s\n' '%[1]s' > /etc/locale.conf
-`, locale, localeCharmap(locale))
 
-	if _, err := p.sh(ctx, script); err != nil {
-		return err
-	}
-
-	return nil
+systemctl --user --machine=%[3]s@ set-environment LANG='%[1]s' || true
+`, locale, localeCharmap(locale), Player)
 }
 
 // ------------------------------------------------------------- the keyboard

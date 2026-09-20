@@ -1,6 +1,7 @@
 package seat
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -204,5 +205,35 @@ func TestSwayConfigHasNoInputBlockWithoutAKeyboard(t *testing.T) {
 
 	if strings.Contains(string(out), "input *") {
 		t.Errorf("the config has an input block in it:\n%s", out)
+	}
+}
+
+// The fragment is assembled with Sprintf and runs as root inside a seat, so
+// a quoting mistake in it is a mistake nobody sees until provisioning stops
+// half way. sh itself is the only honest judge of that.
+func TestLocaleScriptIsValidShell(t *testing.T) {
+	for _, locale := range []string{"de_DE.UTF-8", "en_GB.ISO-8859-1", "ja_JP.UTF-8"} {
+		cmd := exec.Command("sh", "-n")
+		cmd.Stdin = strings.NewReader(localeScript(locale))
+
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("%s: sh rejects the script: %v\n%s", locale, err, out)
+		}
+	}
+}
+
+// Writing the file is not enough on a seat that is already up: the player's
+// systemd holds the environment it started with, and the session restart at
+// the end of provisioning would bring the old language back.
+func TestLocaleScriptTellsTheUserManagerToo(t *testing.T) {
+	script := localeScript("de_DE.UTF-8")
+
+	if !strings.Contains(script, "set-environment LANG='de_DE.UTF-8'") {
+		t.Errorf("the script never reaches the user manager:\n%s", script)
+	}
+
+	// A seat being built has no such manager and must not fail because of it.
+	if !strings.Contains(script, "set-environment LANG='de_DE.UTF-8' || true") {
+		t.Errorf("a missing user manager would fail the step:\n%s", script)
 	}
 }
