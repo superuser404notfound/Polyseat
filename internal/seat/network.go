@@ -268,6 +268,52 @@ func lanDevice(uplink, hwaddr string, isolated bool) map[string]string {
 	return device
 }
 
+// lanReachesHost says whether the host can reach a seat over its LAN
+// interface, which is true exactly when that interface is a port on a bridge.
+//
+// Then the host and the seat are two devices on one segment, which is what the
+// "reaches the host" checkbox means and what makes the seat's own LAN address
+// usable as a way in. A macvlan is the other answer and is never this: it
+// cannot talk to its own host by design, and that is most of why an isolated
+// seat is isolated.
+//
+// Read from the seat's devices rather than worked out from the uplink and the
+// checkbox, because those two say what the seat should be and this says what it
+// is. A seat built before the uplink was bridged keeps a macvlan until
+// something rewrites it.
+func lanReachesHost(instance *api.Instance) bool {
+	if instance == nil {
+		return false
+	}
+
+	_, device := findNIC(instance.ExpandedDevices, lanDeviceName)
+
+	return device != nil && device["nictype"] == "bridged"
+}
+
+// ManagementPath says which of a seat's interfaces this daemon can reach its
+// Sunshine on, and the address it would use there. Both empty when there is
+// none, which is a seat that streams and cannot be paired from the page.
+//
+// Shared with the report so that the report answers the question rather than
+// printing the addresses and leaving the reader to apply the rule. The rule
+// itself is in managementAddress.
+//
+// A nil instance answers for eth0 alone: the caller that has not looked the
+// seat up yet can ask cheaply and only pay for the lookup when the answer
+// turns on how the LAN interface is attached.
+func ManagementPath(addresses map[string][]string, instance *api.Instance) (string, string) {
+	if addrs := addresses[mgmtDeviceName]; len(addrs) > 0 {
+		return mgmtDeviceName, addrs[0]
+	}
+
+	if addrs := addresses[lanDeviceName]; len(addrs) > 0 && lanReachesHost(instance) {
+		return lanDeviceName, addrs[0]
+	}
+
+	return "", ""
+}
+
 // lanMAC reads the address a seat's LAN interface already has, from the device
 // if it was pinned there and from the volatile key Incus keeps otherwise.
 //
@@ -408,28 +454,56 @@ func findNIC(devices map[string]map[string]string, ifname string) (string, map[s
 	return "", nil
 }
 
+// handsOutLeases says whether a managed bridge can give an instance on it an
+// address at all.
+//
+// A managed bridge with no address of its own runs no dnsmasq, so a seat on it
+// comes up with the interface present and empty. That is the exact shape of the
+// failure this whole management path exists to prevent, and it was reported as
+// a bug once the daemon started arranging eth0 itself: `incus network create`
+// with `ipv4.address=none` is an ordinary thing for somebody to have done to
+// their own Incus, and the seat then has an eth0 that never gets a lease.
+// Measured here against such a bridge: the container is running, holds eth0,
+// and Incus reports no address on it.
+//
+// `ipv4.dhcp=false` is the same thing said differently: an address on the
+// bridge and nothing handing one out.
+func handsOutLeases(network *api.Network) bool {
+	if address := network.Config["ipv4.address"]; address == "" || address == "none" {
+		return false
+	}
+
+	return network.Config["ipv4.dhcp"] != "false"
+}
+
 // managementUsable says whether a device would let the host reach the seat, and
 // when it would not, why not in a sentence a log line can carry.
 //
-// networkType is how a managed network is looked up, passed in so that the
-// judgement can be tested without an Incus on the other end.
-func managementUsable(device map[string]string, networkType func(string) (string, bool, error)) (bool, string, error) {
+// lookup is how a managed network is read, passed in so that the judgement can
+// be tested without an Incus on the other end.
+func managementUsable(device map[string]string, lookup func(string) (*api.Network, error)) (bool, string, error) {
 	if device == nil {
 		return false, "this host's default profile gives a seat no " + mgmtDeviceName, nil
 	}
 
-	if network := device["network"]; network != "" {
-		kind, managed, err := networkType(network)
+	if name := device["network"]; name != "" {
+		network, err := lookup(name)
 		if err != nil {
 			return false, "", err
 		}
 
-		if kind == "bridge" && managed {
-			return true, "", nil
+		if network == nil || network.Type != "bridge" || !network.Managed {
+			return false, fmt.Sprintf("%s hangs off the network %q, which is not a managed bridge",
+				mgmtDeviceName, name), nil
 		}
 
-		return false, fmt.Sprintf("%s hangs off the network %q, which is not a managed bridge",
-			mgmtDeviceName, network), nil
+		if !handsOutLeases(network) {
+			return false, fmt.Sprintf("%s hangs off %q, a managed bridge that hands out no "+
+				"address, so the seat holds that interface and never gets a lease on it",
+				mgmtDeviceName, name), nil
+		}
+
+		return true, "", nil
 	}
 
 	// A bridge is a bridge whoever made it: the host has a port on it and the
@@ -470,8 +544,10 @@ func managementBridge(client *incusx.Client) (string, error) {
 
 		// A managed bridge with no address of its own hands out no leases, so a
 		// seat on it would come up without one. That is the failure this whole
-		// function exists to prevent, so it does not count as an answer.
-		if addr := network.Config["ipv4.address"]; addr == "" || addr == "none" {
+		// function exists to prevent, so it does not count as an answer. The
+		// same rule decides whether an eth0 somebody else's profile already
+		// wrote is worth keeping, which is what handsOutLeases is shared for.
+		if !handsOutLeases(network) {
 			continue
 		}
 
@@ -505,18 +581,9 @@ func ensureManagement(ctx context.Context, client *incusx.Client, name string, l
 		return err
 	}
 
-	networkType := func(network string) (string, bool, error) {
-		net, err := client.Network(network)
-		if err != nil || net == nil {
-			return "", false, err
-		}
-
-		return net.Type, net.Managed, nil
-	}
-
 	key, device := findNIC(instance.ExpandedDevices, mgmtDeviceName)
 
-	usable, why, err := managementUsable(device, networkType)
+	usable, why, err := managementUsable(device, client.Network)
 	if err != nil {
 		return err
 	}

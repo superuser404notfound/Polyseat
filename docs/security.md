@@ -365,6 +365,15 @@ profile gives no interface or a macvlan is one the daemon cannot reach at all.
 The daemon then attaches `eth0` to a managed bridge of its own when it builds or
 starts the seat. Same arrangement, same exposure, different name.
 
+Where even that does not take - a profile whose `eth0` hangs off a bridge that
+hands out no addresses, and the daemon's own repair refused by the Incus on that
+machine - the daemon talks to the seat on its LAN address instead, and only when
+that interface is a port on a bridge. That adds no exposure of its own: a seat
+on a bridge port is already on one segment with the host, which is what the
+"reaches the host" checkbox says, and the traffic is the daemon dialling out to
+the seat's Sunshine rather than anything new listening here. A seat on a macvlan
+never takes this path, because a macvlan cannot reach its own host.
+
 What is actually reachable there was measured:
 
 ```

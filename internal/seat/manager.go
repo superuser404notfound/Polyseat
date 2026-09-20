@@ -2504,15 +2504,65 @@ func (m *Manager) sunshineClient(name string) (*sunshine.Client, error) {
 		return nil, fmt.Errorf("this seat has no Sunshine login yet, provision it")
 	}
 
-	// eth0, the Incus bridge, never eth1. The seats reach the LAN through
-	// macvlan, and a macvlan interface cannot talk to its own host, so the
-	// address Moonlight uses is precisely the one that does not work here.
-	address := m.addressOn(name, mgmtDeviceName)
+	address := m.managementAddress(name)
 	if address == "" {
 		return nil, m.noManagementPath(name)
 	}
 
 	return sunshine.New(address, secrets.SunshineUser, secrets.SunshinePassword), nil
+}
+
+// managementAddress is the address this daemon talks to a seat's Sunshine on,
+// and it is not always the one on the management bridge.
+//
+// eth0 first, always. It is the daemon's own path to the seat, it is there
+// whatever the LAN is doing, and on a seat that is isolated or on a macvlan it
+// is the only way in at all: a macvlan cannot talk to its own host, so the
+// address Moonlight uses is precisely the one that does not work.
+//
+// eth1 when eth0 has no address and the seat's LAN interface is a port on a
+// bridge. Then the host and the seat are devices on one segment by the owner's
+// own decision, and the address Moonlight reaches the seat by reaches it from
+// here too. That fallback is not a nicety: the same person reported twice that
+// the pairing panel was the only broken thing on a machine whose seats streamed
+// perfectly, because eth0 came from a default profile this program does not own
+// and never got a lease. Arranging eth0 properly is still attempted on every
+// build and every start; this is what keeps the panel working on the hosts
+// where that arrangement does not take.
+//
+// Nothing is written here. A pairing request is a read of the seat, and
+// hotplugging an interface onto a container somebody is playing on because a
+// page was opened would be a surprising amount of damage for a GET.
+func (m *Manager) managementAddress(name string) string {
+	m.mu.Lock()
+
+	var addresses map[string][]string
+
+	if rt, ok := m.rt[name]; ok {
+		addresses = rt.addresses
+	}
+
+	m.mu.Unlock()
+
+	// Twice, and the first one is deliberately blind: without an instance
+	// ManagementPath can only answer eth0, which is the common case and the one
+	// that should not pay for an Incus round trip on every pairing request.
+	if _, address := ManagementPath(addresses, nil); address != "" {
+		return address
+	}
+
+	if len(addresses[lanDeviceName]) == 0 {
+		return ""
+	}
+
+	instance, _, err := m.client.Instance(name)
+	if err != nil {
+		return ""
+	}
+
+	_, address := ManagementPath(addresses, instance)
+
+	return address
 }
 
 // noManagementPath says why the daemon cannot talk to a seat's Sunshine.
@@ -2548,9 +2598,23 @@ func (m *Manager) noManagementPath(name string) error {
 		have = "it has " + named
 	}
 
+	// And why the LAN address was not used instead, when there is one. On a
+	// seat whose eth1 is a port on a bridge it would have been, so reaching
+	// this line with an address on eth1 means that interface is a macvlan:
+	// either this seat is isolated or the uplink is not a bridge. Saying so
+	// turns "but it has an address right there" into something to act on.
+	why := ". Restarting the seat attaches one"
+
+	if len(addresses[lanDeviceName]) > 0 {
+		why = ", and its LAN interface is a macvlan, which cannot reach its own " +
+			"host: that is a seat with \"reaches the host\" turned off, or a host " +
+			"whose uplink is not a bridge. Restarting the seat attaches a " +
+			"management interface"
+	}
+
 	return fmt.Errorf("this seat is running but has no address on %s, the interface "+
-		"the daemon reaches its Sunshine over: %s. Restarting the seat attaches one",
-		mgmtDeviceName, have)
+		"the daemon reaches its Sunshine over: %s%s",
+		mgmtDeviceName, have, why)
 }
 
 // NamedAddresses renders what a seat's interfaces are holding, in a fixed order

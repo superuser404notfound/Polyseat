@@ -2868,7 +2868,31 @@ func (p *Provisioner) waitAddresses(ctx context.Context) error {
 		}
 	}
 
+	// Only eth0 missing, on a seat whose LAN interface is a port on a bridge,
+	// is not a fault: the daemon reaches that seat's Sunshine over eth1
+	// instead, see managementAddress. Saying it in the log anyway, because the
+	// seat is then running on an arrangement this program did not choose for
+	// it and whoever reads the log later should not have to work that out.
+	if len(missing) == 1 && missing[0] == mgmtDeviceName && p.lanReachesHost() {
+		p.Log("no address on %s, so this daemon talks to this seat's Sunshine over %s, "+
+			"which works because that interface is a port on %s",
+			mgmtDeviceName, lanDeviceName, p.Uplink)
+
+		return nil
+	}
+
 	return errors.New(strings.Join(consequences(missing), "; "))
+}
+
+// lanReachesHost is the provisioner's view of whether the host can reach this
+// seat over its LAN interface.
+func (p *Provisioner) lanReachesHost() bool {
+	instance, _, err := p.Client.Instance(p.name())
+	if err != nil {
+		return false
+	}
+
+	return lanReachesHost(instance)
 }
 
 // consequences turns the interfaces a seat did not get an address on into what

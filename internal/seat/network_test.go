@@ -137,6 +137,139 @@ func TestLanMAC(t *testing.T) {
 	}
 }
 
+// lanReachesHost decides whether the daemon may fall back to a seat's LAN
+// address when the management interface has none, so getting it wrong either
+// leaves the pairing panel broken on a host where it need not be, or has the
+// daemon dial a macvlan that cannot answer it.
+func TestLanReachesHost(t *testing.T) {
+	cases := []struct {
+		name    string
+		devices map[string]map[string]string
+		want    bool
+	}{
+		{
+			name: "a port on the bridge",
+			devices: map[string]map[string]string{
+				"eth1": {"type": "nic", "nictype": "bridged", "parent": "br0", "name": "eth1"},
+			},
+			want: true,
+		},
+		{
+			name: "an isolated seat, macvlan on that same bridge",
+			devices: map[string]map[string]string{
+				"eth1": {"type": "nic", "nictype": "macvlan", "parent": "br0", "name": "eth1"},
+			},
+			want: false,
+		},
+		{
+			name: "a host whose uplink is a plain interface",
+			devices: map[string]map[string]string{
+				"eth1": {"type": "nic", "nictype": "macvlan", "parent": "enp7s0", "name": "eth1"},
+			},
+			want: false,
+		},
+		{
+			// Filed under another key, which findNIC exists for: the
+			// interface name is what the seat sees.
+			name: "the LAN device under a key of its own",
+			devices: map[string]map[string]string{
+				"net1": {"type": "nic", "nictype": "bridged", "parent": "br0", "name": "eth1"},
+			},
+			want: true,
+		},
+		{
+			name: "no LAN interface at all",
+			devices: map[string]map[string]string{
+				"eth0": {"type": "nic", "network": "incusbr0"},
+			},
+			want: false,
+		},
+	}
+
+	if lanReachesHost(nil) {
+		t.Error("an instance that could not be read was taken for a reachable one")
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			instance := &api.Instance{}
+			instance.ExpandedDevices = c.devices
+
+			if got := lanReachesHost(instance); got != c.want {
+				t.Fatalf("lanReachesHost = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// ManagementPath is the rule the pairing panel and the report both read, so
+// the two cannot describe the same seat differently.
+func TestManagementPath(t *testing.T) {
+	bridged := &api.Instance{}
+	bridged.ExpandedDevices = map[string]map[string]string{
+		"eth1": {"type": "nic", "nictype": "bridged", "parent": "br0", "name": "eth1"},
+	}
+
+	isolated := &api.Instance{}
+	isolated.ExpandedDevices = map[string]map[string]string{
+		"eth1": {"type": "nic", "nictype": "macvlan", "parent": "br0", "name": "eth1"},
+	}
+
+	both := map[string][]string{"eth0": {"10.233.136.54"}, "eth1": {"10.20.30.94"}}
+	lanOnly := map[string][]string{"eth1": {"10.20.30.94"}}
+
+	cases := []struct {
+		name      string
+		addresses map[string][]string
+		instance  *api.Instance
+		iface     string
+		address   string
+	}{
+		{
+			name:      "the management interface wins whenever it has an address",
+			addresses: both,
+			instance:  bridged,
+			iface:     mgmtDeviceName,
+			address:   "10.233.136.54",
+		},
+		{
+			// The reported seat: eth0 present and empty, eth1 a port on the
+			// bridge, so the host is on the same segment and can be used.
+			name:      "no address on the management interface, LAN on a bridge",
+			addresses: lanOnly,
+			instance:  bridged,
+			iface:     lanDeviceName,
+			address:   "10.20.30.94",
+		},
+		{
+			name:      "an isolated seat has no second way in",
+			addresses: lanOnly,
+			instance:  isolated,
+		},
+		{
+			// What the cheap first ask looks like: no instance, so nothing can
+			// be said about the LAN interface and only eth0 counts.
+			name:      "no instance to judge the LAN interface by",
+			addresses: lanOnly,
+		},
+		{
+			name:     "a seat with no address at all",
+			instance: bridged,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			iface, address := ManagementPath(c.addresses, c.instance)
+
+			if iface != c.iface || address != c.address {
+				t.Fatalf("ManagementPath = %q %q, want %q %q",
+					iface, address, c.iface, c.address)
+			}
+		})
+	}
+}
+
 // Bridging a configured uplink changes which name is right without changing the
 // configuration that named it, and the kernel is the one that knows. Everything
 // that is not a bridge port has to come back unchanged, including the names
@@ -369,23 +502,33 @@ func TestFindNIC(t *testing.T) {
 // eth0 the host cannot reach is a seat that streams to Moonlight and cannot be
 // paired from the page, and the interface says it is not running instead.
 func TestManagementUsable(t *testing.T) {
-	networks := map[string]struct {
-		kind    string
-		managed bool
-	}{
-		"incusbr0":   {"bridge", true},
-		"lanmacvlan": {"macvlan", true},
-		"somebodys":  {"bridge", false},
+	networks := map[string]*api.Network{
+		"incusbr0": {
+			Name:       "incusbr0",
+			Type:       "bridge",
+			Managed:    true,
+			NetworkPut: api.NetworkPut{Config: map[string]string{"ipv4.address": "10.233.136.1/24"}},
+		},
+		"lanmacvlan": {Name: "lanmacvlan", Type: "macvlan", Managed: true},
+		"somebodys":  {Name: "somebodys", Type: "bridge"},
+		"addressless": {
+			Name:       "addressless",
+			Type:       "bridge",
+			Managed:    true,
+			NetworkPut: api.NetworkPut{Config: map[string]string{"ipv4.address": "none"}},
+		},
+		"noleases": {
+			Name:    "noleases",
+			Type:    "bridge",
+			Managed: true,
+			NetworkPut: api.NetworkPut{Config: map[string]string{
+				"ipv4.address": "10.1.2.1/24",
+				"ipv4.dhcp":    "false",
+			}},
+		},
 	}
 
-	networkType := func(name string) (string, bool, error) {
-		net, ok := networks[name]
-		if !ok {
-			return "", false, nil
-		}
-
-		return net.kind, net.managed, nil
-	}
+	lookup := func(name string) (*api.Network, error) { return networks[name], nil }
 
 	cases := []struct {
 		name   string
@@ -427,11 +570,24 @@ func TestManagementUsable(t *testing.T) {
 			device: nil,
 			want:   false,
 		},
+		{
+			// Reported: a seat holding an eth0 that never gets a lease looks
+			// from the daemon exactly like a seat with no eth0 at all, and
+			// this judgement used to call it fine and leave it alone.
+			name:   "a managed bridge with no address of its own",
+			device: map[string]string{"type": "nic", "network": "addressless"},
+			want:   false,
+		},
+		{
+			name:   "a managed bridge that hands out no leases",
+			device: map[string]string{"type": "nic", "network": "noleases"},
+			want:   false,
+		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			usable, why, err := managementUsable(c.device, networkType)
+			usable, why, err := managementUsable(c.device, lookup)
 			if err != nil {
 				t.Fatalf("managementUsable: %v", err)
 			}

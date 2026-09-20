@@ -443,10 +443,14 @@ func (o *out) seats(cfg config.Config) {
 		if status == "Running" {
 			if addresses, err := client.Addresses(s.Name); err != nil {
 				o.unreadable("  interfaces", err)
-			} else if named := seat.NamedAddresses(addresses); named != "" {
-				o.line("  interfaces", named)
 			} else {
-				o.line("  interfaces", "none of them has an address")
+				if named := seat.NamedAddresses(addresses); named != "" {
+					o.line("  interfaces", named)
+				} else {
+					o.line("  interfaces", "none of them has an address")
+				}
+
+				o.line("  pairs over", pairsOver(client, s.Name, addresses))
 			}
 
 			o.line("  encoder", encoderOf(client, s))
@@ -503,6 +507,25 @@ func encoderOf(client *incusx.Client, s seat.Seat) string {
 	defer cancel()
 
 	return describeEncoder(seat.ReadEncoders(ctx, client, s.Name, s.PlayerUID))
+}
+
+// pairsOver says which interface the daemon would reach this seat's Sunshine
+// on, which is the question two bug reports turned on and neither report could
+// answer: a seat can stream perfectly and still be unpairable from the page,
+// and the addresses alone do not say which it is.
+func pairsOver(client *incusx.Client, name string, addresses map[string][]string) string {
+	instance, _, err := client.Instance(name)
+	if err != nil {
+		return "not known, this seat could not be read: " + err.Error()
+	}
+
+	iface, address := seat.ManagementPath(addresses, instance)
+	if address == "" {
+		return "nothing: no address on the management interface, and this seat's " +
+			"LAN interface cannot reach the host. Pairing from the page fails"
+	}
+
+	return iface + " " + address
 }
 
 // describeEncoder puts the answer into words. Separate from reading it so that
