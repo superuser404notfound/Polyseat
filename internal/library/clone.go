@@ -35,6 +35,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -183,6 +184,22 @@ var Keep = Owner{UID: -1, GID: -1}
 // the end, so an interrupted clone never leaves a half-populated game directory
 // that Steam would report as installed and then fail to launch.
 func Clone(src, dst string, owner Owner) (Result, error) {
+	return clone(src, dst, owner, nil)
+}
+
+// CloneFolder is Clone for the shared folders, where what the seat owns lives
+// inside the tree being copied rather than next to it.
+//
+// A destination that already has a wine prefix keeps that prefix's user
+// directory: it is left out of the copy and carried across the swap, so an
+// update to the game does not take the saves with it. A destination that has
+// none is given the source's, which is what makes a game playable in a seat
+// that has never seen it. See private.go for where the line is drawn and why.
+func CloneFolder(src, dst string, owner Owner) (Result, error) {
+	return clone(src, dst, owner, privateDirs(dst))
+}
+
+func clone(src, dst string, owner Owner, carry map[string]bool) (Result, error) {
 	var result Result
 
 	info, err := os.Lstat(src)
@@ -209,7 +226,7 @@ func Clone(src, dst string, owner Owner) (Result, error) {
 	// is what keeps a failed clone from occupying space forever.
 	defer os.RemoveAll(staging)
 
-	if err := cloneTree(src, staging, owner, &result); err != nil {
+	if err := cloneTree(src, staging, "", owner, carry, &result); err != nil {
 		return result, err
 	}
 
@@ -251,8 +268,25 @@ func Clone(src, dst string, owner Owner) (Result, error) {
 		}
 	}
 
+	// What the destination owned moves into the tree about to replace it. A
+	// move and not a copy: it is a rename inside one directory, so the saves
+	// are never duplicated and never rewritten, however large they have got.
+	moved, err := carryPrivate(previous, staging, carry)
+	if err != nil {
+		if previous != "" {
+			os.Rename(previous, dst)
+		}
+
+		return result, err
+	}
+
 	if err := os.Rename(staging, dst); err != nil {
 		if previous != "" {
+			// Back where they came from first, or restoring the old copy
+			// would restore it without the saves that were just taken out of
+			// it, and the staging directory carrying them is about to be
+			// removed.
+			carryPrivate(staging, previous, moved)
 			os.Rename(previous, dst)
 		}
 
@@ -266,7 +300,56 @@ func Clone(src, dst string, owner Owner) (Result, error) {
 	return result, nil
 }
 
-func cloneTree(src, dst string, owner Owner, result *Result) error {
+// carryPrivate moves the listed directories from one tree into another.
+//
+// Used across the swap at the end of a clone, in both directions: forwards to
+// keep a seat's saves, and backwards to put them where they were if the swap
+// then fails. It answers with what it actually moved, which is what makes the
+// backwards call possible and is not the same as what it was asked to move: a
+// directory that has since gone is not an error, it is a seat that uninstalled
+// something while the daemon was working.
+func carryPrivate(from, to string, carry map[string]bool) (map[string]bool, error) {
+	moved := map[string]bool{}
+
+	if from == "" || len(carry) == 0 {
+		return moved, nil
+	}
+
+	names := make([]string, 0, len(carry))
+	for name := range carry {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	for _, name := range names {
+		source := filepath.Join(from, name)
+
+		if _, err := os.Lstat(source); err != nil {
+			continue
+		}
+
+		target := filepath.Join(to, name)
+
+		// The parent is normally already there, because it came from the tree
+		// being copied. It is not when the game dropped the directory that
+		// used to hold the prefix, and then the saves still have to land
+		// somewhere rather than being thrown away.
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return moved, err
+		}
+
+		if err := os.Rename(source, target); err != nil {
+			return moved, err
+		}
+
+		moved[name] = true
+	}
+
+	return moved, nil
+}
+
+func cloneTree(src, dst, rel string, owner Owner, carry map[string]bool, result *Result) error {
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		return err
@@ -275,6 +358,14 @@ func cloneTree(src, dst string, owner Owner, result *Result) error {
 	for _, entry := range entries {
 		srcPath := filepath.Join(src, entry.Name())
 		dstPath := filepath.Join(dst, entry.Name())
+		here := filepath.Join(rel, entry.Name())
+
+		// Left out because the destination has its own and is about to get it
+		// back. Copying it first and overwriting it afterwards would be the
+		// same result and several gigabytes of work.
+		if carry[here] {
+			continue
+		}
 
 		info, err := entry.Info()
 		if err != nil {
@@ -287,7 +378,7 @@ func cloneTree(src, dst string, owner Owner, result *Result) error {
 				return err
 			}
 
-			if err := cloneTree(srcPath, dstPath, owner, result); err != nil {
+			if err := cloneTree(srcPath, dstPath, here, owner, carry, result); err != nil {
 				return err
 			}
 

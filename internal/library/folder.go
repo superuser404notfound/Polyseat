@@ -122,6 +122,12 @@ func FolderAt(dir, name string) (Folder, error) {
 // and the kernel keeps the directory entries cached, so on a warm filesystem a
 // large game costs a fraction of a second; the pool still only does it for
 // folders whose recorded version it needs to check.
+//
+// What the seat owns is left out of both numbers, and the timestamp is the
+// reason. A version here is "the newest thing inside", so counting a wine
+// prefix's user directory would make every evening at the game a new version
+// of it: the folder would be taken into the pool again and copied over the
+// other seat, several gigabytes at a time, because somebody saved.
 func measure(root string) (Folder, error) {
 	var folder Folder
 
@@ -135,6 +141,12 @@ func measure(root string) (Folder, error) {
 			}
 
 			return err
+		}
+
+		// Never the root itself: a folder that is nothing but a prefix would
+		// otherwise measure as empty and lose to every copy of itself.
+		if d.IsDir() && path != root && seatPrivate(path) {
+			return filepath.SkipDir
 		}
 
 		info, err := d.Info()

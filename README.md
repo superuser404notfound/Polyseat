@@ -257,8 +257,16 @@ working after a game updates, and a seat that is behind is brought forward as
 soon as nothing in it is using the files.
 
 **Launchers other than Steam work too.** Each seat has a `shared/` directory
-where one folder is one game; point Heroic, Lutris or Bottles at it and the game
-appears in the other seats by itself.
+where one folder is one game, and a seat's Lutris already installs there, so a
+game installed the ordinary way appears in the other seats by itself. Heroic and
+Bottles get there by pointing them at the same directory.
+
+**Each seat keeps its own saves**, including for those games. A Windows game
+installed through a launcher brings its wine prefix along, and the part of that
+prefix where saves live is the seat's: an update to the game never carries it
+between seats, and playing does not make the folder look new and copy it. Two
+people can play the same game in two seats without meeting each other's
+progress.
 
 **Every seat carries Proton CachyOS** alongside Valve's own, set as the default,
 keeping itself up to date, and waiting for a seat that is neither streaming nor

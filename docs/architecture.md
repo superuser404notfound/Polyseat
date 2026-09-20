@@ -493,6 +493,27 @@ modification time inside the tree, which is why cloning preserves file times.
 Without that a copy would always look newer than its own original and the two
 would carry each other back and forth forever.
 
+**The saves stay in the seat.** Lutris points at this directory by default, so
+installing a game the ordinary way puts it here, and for a Windows game that
+brings the wine prefix with it: a Lutris installer sets the prefix to
+`$GAMEDIR`, which is the folder itself, so the prefix root and the game root
+are one directory and the game files sit in `drive_c/Program Files`. The prefix
+cannot be left out, because the prefix is the game.
+
+So the line is drawn one level further in, at `drive_c/users`, which is where
+wine keeps Documents, AppData and Saved Games and therefore what the person
+playing made. That directory is the seat's, in the same sense `compatdata/` is
+on the Steam side: it is not counted when the folder's version is measured, so
+an evening at a game does not make the folder a new version and copy it over
+the other seat; and a clone leaves it alone, carrying the destination's own
+across the swap rather than replacing it. A seat that has never seen the game
+is given the one that came with it, so that a game keeping data files rather
+than saves under `drive_c/users` works there at all.
+
+What this does not cover is a game that saves into its own installation
+directory, as titles from before the prefix convention do. Nothing can, without
+knowing that particular game, which is the manifest this design does not have.
+
 **This needs a filesystem that can share blocks.** btrfs and XFS created with
 `reflink=1` can; ZFS only through block cloning in OpenZFS 2.2 and only at
 dataset granularity; ext4 cannot at all. The daemon probes by cloning a real

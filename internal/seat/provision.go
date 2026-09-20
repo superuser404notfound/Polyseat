@@ -31,7 +31,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 43
+const Generation = 44
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -2308,6 +2308,11 @@ func (p *Provisioner) registerLibrary(ctx context.Context) error {
 		"install has finished, so it waits until the folder has stopped changing\n" +
 		"for a couple of minutes and treats it as done. A download that stalls\n" +
 		"for longer than that can be picked up half complete.\n" +
+		"\n" +
+		"Your saves stay here. For a Windows game the launcher puts a wine\n" +
+		"prefix in the game folder, and drive_c/users inside it, where the saves\n" +
+		"live, belongs to this seat: an update to the game never carries it to\n" +
+		"another seat and never gets one from there.\n" +
 		"\n" +
 		"Delete a folder here and it will not be offered to this seat again.\n" +
 		"The other seats keep their copies. Nothing here is a licence: a game\n" +

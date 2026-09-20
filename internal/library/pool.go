@@ -503,7 +503,7 @@ func (p *Pool) harvestFolders(m Member, report *Report, log Logger) error {
 
 		log("taking the folder %s from %s into the pool", folder.Name, m.Name)
 
-		result, err := Clone(
+		result, err := CloneFolder(
 			filepath.Join(dir, folder.Name),
 			filepath.Join(p.PoolFolders(), folder.Name),
 			p.own,
@@ -602,7 +602,7 @@ func (p *Pool) distributeFolders(m Member, report *Report, log Logger) error {
 			log("giving the folder %s to %s", name, m.Name)
 		}
 
-		result, err := Clone(
+		result, err := CloneFolder(
 			filepath.Join(p.PoolFolders(), name),
 			filepath.Join(dir, name),
 			m.Owner,
