@@ -323,6 +323,21 @@ func cloneTree(src, dst string, owner Owner, result *Result) error {
 				return err
 			}
 
+			// The link's own timestamp, for the same reason files and
+			// directories get theirs back: measure() stats every entry in the
+			// tree, symlinks included, and takes the newest as the folder's
+			// version. A fresh link would make every copy newer than the
+			// original it was made from, and the pool would carry the two
+			// back and forth for as long as it ran.
+			//
+			// os.Chtimes follows the link, which would stamp the target
+			// instead, and for a link pointing outside the pool the target is
+			// not the pool's to touch. Lutimes is the one that does not
+			// follow.
+			if err := lutimes(dstPath, info.ModTime()); err != nil {
+				return err
+			}
+
 			result.Symlinks++
 
 		case info.Mode().IsRegular():
@@ -340,6 +355,20 @@ func cloneTree(src, dst string, owner Owner, result *Result) error {
 	}
 
 	return nil
+}
+
+// lutimes sets a path's times without following it, so that it works on a
+// symlink itself rather than on whatever the link points at.
+//
+// The access time is set to the modification time rather than preserved. A
+// symlink's atime is not something the pool has any use for, and reading it
+// back only to write it again would be two syscalls to keep a number nobody
+// looks at.
+func lutimes(path string, modTime time.Time) error {
+	stamp := unix.NsecToTimespec(modTime.UnixNano())
+
+	return unix.UtimesNanoAt(unix.AT_FDCWD, path,
+		[]unix.Timespec{stamp, stamp}, unix.AT_SYMLINK_NOFOLLOW)
 }
 
 func cloneFile(srcPath, dstPath string, info os.FileInfo, owner Owner, result *Result) error {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -484,5 +485,98 @@ func TestCloneRootOwnership(t *testing.T) {
 		if int(stat.Uid) != uid || int(stat.Gid) != gid {
 			t.Errorf("%s is owned by %d:%d, want %d:%d", path, stat.Uid, stat.Gid, uid, gid)
 		}
+	}
+}
+
+// A folder's version is the newest timestamp anywhere inside it, and measure()
+// stats symlinks along with everything else. So a clone that gives the link a
+// fresh timestamp makes the copy newer than the original it was made from, and
+// the pool then hands the two back and forth forever: the seat that was just
+// written from the pool immediately looks like the one with the newer copy.
+//
+// Cheap to get wrong, because os.Chtimes follows the link and the only way to
+// stamp the link itself is the syscall.
+func TestCloneDoesNotMakeACopyLookNewerThanItsSource(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+
+	mkdirs(t, src)
+	write(t, filepath.Join(src, "game.bin"), "data", 0o644)
+
+	// Absolute and pointing outside the tree, which is the case that matters:
+	// a game folder whose writable state is kept per seat.
+	if err := os.Symlink("/home/player/.local/share/game", filepath.Join(src, "state")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Age the whole tree, so that "now" and "the source's time" cannot be
+	// confused for each other. The root last, because writing into a
+	// directory bumps it.
+	old := time.Now().Add(-48 * time.Hour)
+
+	if err := lutimes(filepath.Join(src, "state"), old); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{filepath.Join(src, "game.bin"), src} {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dst := filepath.Join(dir, "dst")
+
+	if _, err := Clone(src, dst, Keep); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+
+	before, err := measure(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := measure(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if after.Newer(before) {
+		t.Errorf("the copy measures newer than its source, %v against %v: "+
+			"the pool would copy it straight back", after.Newest, before.Newest)
+	}
+}
+
+// The link's own timestamp, not the one belonging to whatever it points at.
+// A link into a per seat directory has a target the pool must not touch, and
+// on a dangling link there is nothing to touch at all.
+func TestCloneKeepsTheSymlinksOwnTime(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+
+	mkdirs(t, src)
+
+	if err := os.Symlink("/nowhere/at/all", filepath.Join(src, "dangling")); err != nil {
+		t.Fatal(err)
+	}
+
+	old := time.Now().Add(-72 * time.Hour).Truncate(time.Second)
+
+	if err := lutimes(filepath.Join(src, "dangling"), old); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(dir, "dst")
+
+	if _, err := Clone(src, dst, Keep); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+
+	info, err := os.Lstat(filepath.Join(dst, "dangling"))
+	if err != nil {
+		t.Fatalf("the dangling link did not survive: %v", err)
+	}
+
+	if got := info.ModTime().Truncate(time.Second); !got.Equal(old) {
+		t.Errorf("the link came out stamped %v, want %v", got, old)
 	}
 }
