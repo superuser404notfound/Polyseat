@@ -204,3 +204,86 @@ func TestNoGamesIsRememberedAsAnAnswer(t *testing.T) {
 		t.Error("a Lutris with nothing installed would be started again every minute")
 	}
 }
+
+// What Lutris really prints, taken from a seat on this machine. The log is on
+// the same stream as the document and does not stop at the closing bracket,
+// which is what the listing has to survive: it did not, and the scan then
+// started Lutris again every minute for an answer it threw away.
+const lutrisOutput = `2026-09-20 16:04:50,602: The Battle.net source is unavailable because Google protobuf could not be loaded: No module named 'google'
+2026-09-20 16:04:50,702: Starting Lutris 0.5.22
+2026-09-20 16:04:51,909: "card1" is NVIDIA GeForce RTX 4080 (10de:2704 19da:2688 nvidia) Driver 615.71.09
+[
+  {
+    "id": 1,
+    "slug": "viva-pinata",
+    "name": "Viva Piñata",
+    "runner": "linux",
+    "platform": "Windows",
+    "directory": "/home/player/games/shared/Viva Pinata",
+    "coverPath": null
+  }
+]
+2026-09-20 16:04:51,910: Shutting down Lutris
+`
+
+func TestTheListingSurvivesTheLineLutrisPrintsAfterIt(t *testing.T) {
+	start := lutrisDocument(lutrisOutput)
+	if start < 0 {
+		t.Fatal("the document was not found in what Lutris printed")
+	}
+
+	games, err := lutrisListing(lutrisOutput[start:])
+	if err != nil {
+		t.Fatalf("a real listing did not parse: %v", err)
+	}
+
+	if len(games) != 1 {
+		t.Fatalf("%d games came out of a listing holding one: %v", len(games), games)
+	}
+
+	if games[0].Name != "Viva Piñata" {
+		t.Errorf("the game came out as %q", games[0].Name)
+	}
+
+	if games[0].Launch != "lutris lutris:rungameid/1" {
+		t.Errorf("the game would be started with %q", games[0].Launch)
+	}
+}
+
+// The log around the document is prose, and prose may hold a bracket. Taking
+// the first one anywhere would start the parse inside a sentence.
+func TestABracketInTheLogIsNotTheDocument(t *testing.T) {
+	out := "2026-09-20 16:04:50,602: reading [Errno 2] while looking for a runner\n[]\n"
+
+	start := lutrisDocument(out)
+	if start < 0 {
+		t.Fatal("the document was not found at all")
+	}
+
+	if _, err := lutrisListing(out[start:]); err != nil {
+		t.Errorf("the parse began inside the log line: %v", err)
+	}
+}
+
+// A Lutris with nothing installed answers with an empty document, and that is
+// an answer rather than a failure: it is remembered, and the seat is left alone
+// until something changes.
+func TestAnEmptyListingIsNotAFailure(t *testing.T) {
+	games, err := lutrisListing("[]\n2026-09-20 16:04:51,910: Shutting down Lutris\n")
+	if err != nil {
+		t.Fatalf("an empty listing failed: %v", err)
+	}
+
+	if len(games) != 0 {
+		t.Errorf("%d games came out of an empty listing", len(games))
+	}
+}
+
+// And output that really is broken has to say so. Answering "no games" is how
+// this hid for a release: the app list simply had no Lutris game in it and
+// nothing anywhere said why.
+func TestOutputThatCannotBeReadIsAnError(t *testing.T) {
+	if _, err := lutrisListing("[ {\"id\": }"); err == nil {
+		t.Error("broken output was read as a seat with no games")
+	}
+}

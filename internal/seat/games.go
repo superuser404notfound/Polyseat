@@ -419,11 +419,59 @@ func (p *Provisioner) lutrisGames(ctx context.Context) ([]Game, error) {
 
 	// Lutris prints warnings before the JSON, so take the document rather than
 	// the output.
-	start := strings.Index(out, "[")
+	start := lutrisDocument(out)
 	if start < 0 {
 		return nil, nil
 	}
 
+	games, err := lutrisListing(out[start:])
+	if err != nil {
+		return nil, err
+	}
+
+	// Only a listing that was really taken is remembered, and only against a
+	// stamp the seat actually answered with. Remembering an empty stamp would
+	// hold whatever a failed read returned for as long as the daemon lives.
+	if stamp != "" {
+		p.lutris.remember(stamp, games)
+	}
+
+	return games, nil
+}
+
+// lutrisDocument is where the JSON begins in what Lutris printed.
+//
+// The first "[" at the start of a line rather than the first one anywhere. What
+// surrounds the document is a log, a log is prose, and prose is allowed to
+// contain a bracket; the document itself never begins anywhere but at the
+// start of a line.
+func lutrisDocument(out string) int {
+	if strings.HasPrefix(out, "[") {
+		return 0
+	}
+
+	if i := strings.Index(out, "\n["); i >= 0 {
+		return i + 1
+	}
+
+	return -1
+}
+
+// lutrisListing reads the games out of the document Lutris printed.
+//
+// Decoded rather than unmarshalled, and that is the whole of the difference:
+// Lutris writes its log and its document to the same stream, and the last line
+// of the log - "Shutting down Lutris" - comes after the closing bracket.
+// Unmarshal takes its input as one value and refuses anything that follows it,
+// so every listing failed to parse, and the failure was returned as "no games"
+// rather than as an error. The listing was then never remembered, Lutris was
+// started again a minute later to be asked the same question, and the stutter
+// lutrisMemory exists to prevent was back on a one minute timer while the app
+// list showed no Lutris game at all.
+//
+// A Decoder reads one value and leaves the rest of the stream where it is,
+// which is exactly the shape of this output.
+func lutrisListing(doc string) ([]Game, error) {
 	var found []struct {
 		ID        int    `json:"id"`
 		Name      string `json:"name"`
@@ -431,8 +479,8 @@ func (p *Provisioner) lutrisGames(ctx context.Context) ([]Game, error) {
 		CoverPath string `json:"coverPath"`
 	}
 
-	if err := json.Unmarshal([]byte(out[start:]), &found); err != nil {
-		return nil, nil
+	if err := json.NewDecoder(strings.NewReader(doc)).Decode(&found); err != nil {
+		return nil, fmt.Errorf("read what Lutris listed: %w", err)
 	}
 
 	var games []Game
@@ -449,13 +497,6 @@ func (p *Provisioner) lutrisGames(ctx context.Context) ([]Game, error) {
 			Source: "lutris",
 			Slug:   f.Slug,
 		})
-	}
-
-	// Only a listing that was really taken is remembered, and only against a
-	// stamp the seat actually answered with. Remembering an empty stamp would
-	// hold whatever a failed read returned for as long as the daemon lives.
-	if stamp != "" {
-		p.lutris.remember(stamp, games)
 	}
 
 	return games, nil
