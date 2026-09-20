@@ -10,6 +10,61 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.28.0
+
+**A game installed on this machine now reaches the seats, and one installed in a
+seat can be started here.** The pool has had two halves since Steam stopped
+being the only launcher, and the host was a member of one of them.
+
+- **The host has a shared folder**, at `~/Games/shared` below whoever owns the
+  library the pool gives Steam titles to. `Member.Folders` said the situation in
+  as many words before this: "a seat gets one from the provisioner; the host has
+  no equivalent place". Both directions work from it, so a folder game installed
+  here reaches every seat and one installed in a seat turns up here.
+
+  The switch is the directory existing. Making it turns the host on and removing
+  it turns it off, which beats a setting somebody has to find; the daemon never
+  creates it, for the same reason it never creates anything else inside
+  somebody's own library. The shape matches a seat on purpose: a seat's Lutris
+  has `game_path` at `/home/player/games` with `shared/` beneath it, so the
+  host's wants `~/Games`, which is where Lutris installs by default anyway.
+
+- **A folder may carry `polyseat-setup.sh`, and it is run where the folder
+  lands.** Inside the container as the player for a seat, as the library's owner
+  for the host, never as root.
+
+  This is the step the Steam half gets for free: an `appmanifest` travels inside
+  the library folder and Steam reads the library itself. Lutris has nothing of
+  the kind - its registry is a row in that machine's `pga.db` and a YAML beside
+  it, and a host install names a runner under `~/.local/share/lutris/runners`
+  that no seat has - so without this a game that arrives is files nothing in
+  that member's launcher knows about.
+
+  It is not a manifest. The daemon reads nothing out of the script and has no
+  opinion about which launcher it speaks to. It runs again on every update, so
+  these have to be safe to run twice, and a failure goes to that member's log
+  and stops nothing else, because the files arrived either way.
+
+- **The library sync no longer holds its lock while that happens.** One of these
+  scripts is minutes of work - the first run of the folder this came from builds
+  a wine prefix - and the lock is a promise that two clones will not run into
+  each other, not a promise to hold the interface up meanwhile.
+
+Two bugs found on the way, both in code this release then depends on. The host's
+`Updatable` governs both halves and was computed from the Steam library alone,
+so the daemon would have asked whether anybody was using Steam and then replaced
+a folder game running out of the other directory on the strength of that answer.
+And `hostIdle` built its search as `dir + "/"`, so an empty path became `/`,
+which every process on the machine matches: a host that sat out the folder half
+would have been reported busy forever and never received a title again.
+
+**What is proven and what is not.** Both halves were run on this machine: a
+folder game reached `~/Games/shared` by reflink, its setup registered it in this
+machine's Lutris, and it was started here; the same folder's scripts were then
+run in both seats and the game started there too. What has not been watched from
+end to end is the daemon doing the running by itself, because that wants a build
+of this release installed on a host with a seat that has never seen the folder.
+
 ## 0.27.0
 
 **The stream stuttered for a few seconds at a time, and the game was fine.**
