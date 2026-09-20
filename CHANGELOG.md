@@ -10,6 +10,45 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.26.0
+
+**Games in a seat never offered DLSS.** Of the whole NVIDIA driver, exactly
+one library did not arrive, and the Windows half of NGX was never going to
+arrive at all. Nothing failed and nothing was logged: a missing option is not
+an error anywhere, which is why it took somebody noticing it was not in the
+menu.
+
+**Seats have to be built again.** The recipe is at generation 45, so every
+seat is marked stale and wants provisioning. A few minutes per seat.
+
+- **The driver's NGX libraries are carried into the seat.** Measured on this
+  machine, the difference between what `nvidia-container-cli list --libraries`
+  names and what arrives in a seat is `libnvidia-ngx.so` and nothing else.
+  Raytracing is there, NVML is there, all of it is there except the one file
+  DLSS needs. `nvidia.driver.capabilities` is already `all` and the list even
+  names the library; it still does not land.
+
+  The Windows half is not a library and was never a candidate for injection.
+  The driver ships `nvngx.dll` and `_nvngx.dll` for wine, and Proton finds
+  them by a rule of its own: it asks the loader where `libGLX_nvidia` came
+  from and looks for `nvidia/wine` beside it. In a seat that directory did not
+  exist, so Proton copied nothing into the prefix, DXVK-NVAPI found no NGX,
+  and the game drew its settings menu without the option.
+
+  Both halves are copied from the host rather than installed from a package,
+  for the reason the Vulkan manifest already is: they belong to the running
+  driver, and copying them again when the seat is provisioned keeps them in
+  step with it. Where Proton will look is asked of the seat rather than
+  assumed, because it is the seat's loader that answers the same question
+  later, and a seat with no NVIDIA library answers with nothing rather than
+  with a path built from an empty string.
+
+  **What is proven and what is not.** Proton's own discovery rule is satisfied
+  in a seat here, checked by running that rule: it resolves `libGLX_nvidia` to
+  `/usr/lib`, looks in `/usr/lib/nvidia/wine`, and finds `nvngx.dll`. That the
+  option then appears in a particular game's settings has not been checked
+  against a game that has one.
+
 ## 0.25.0
 
 **Two people playing the same game in two seats overwrote each other's
