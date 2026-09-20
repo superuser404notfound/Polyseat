@@ -491,21 +491,8 @@ func (m *Manager) syncLibrary(ctx context.Context) {
 		return
 	}
 
-	// Serialised against the interface's own buttons, so an import started by
-	// hand and the timer cannot both be cloning into the same seat.
-	m.syncMu.Lock()
-	defer m.syncMu.Unlock()
-
-	if err := ctx.Err(); err != nil {
-		return
-	}
-
-	report, err := m.pool.Sync(members, func(f string, a ...any) {
-		m.log.Info("library: " + fmt.Sprintf(f, a...))
-	})
-	if err != nil {
-		m.log.Error("the library sync failed", "err", err)
-
+	report, ok := m.syncOnce(ctx, members)
+	if !ok {
 		return
 	}
 
@@ -538,6 +525,40 @@ func (m *Manager) syncLibrary(ctx context.Context) {
 	}
 
 	m.notify()
+
+	// Last, and outside the lock taken above: a folder that has just arrived
+	// may carry a script to make itself usable where it landed, and running one
+	// takes minutes rather than milliseconds.
+	m.settleFolders(ctx, members, report)
+}
+
+// syncOnce is the part of a pass that holds the lock.
+//
+// Split out so that what follows a pass does not. The lock serialises the pool
+// against the interface's own buttons, which is a promise about two clones not
+// running into each other, not a promise to hold anybody up while a wine prefix
+// is built. false means the pass did not happen and its caller has nothing to
+// report.
+func (m *Manager) syncOnce(ctx context.Context, members []library.Member) (library.Report, bool) {
+	// Serialised against the interface's own buttons, so an import started by
+	// hand and the timer cannot both be cloning into the same seat.
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return library.Report{}, false
+	}
+
+	report, err := m.pool.Sync(members, func(f string, a ...any) {
+		m.log.Info("library: " + fmt.Sprintf(f, a...))
+	})
+	if err != nil {
+		m.log.Error("the library sync failed", "err", err)
+
+		return library.Report{}, false
+	}
+
+	return report, true
 }
 
 // moved records one title changing hands, in the seat's own log or in the

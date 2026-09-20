@@ -1005,3 +1005,20 @@ func TestEnsureLeavesAnExternalLibraryAlone(t *testing.T) {
 		t.Error("Ensure made a seat directory for the host, which has its own library")
 	}
 }
+
+// Moves for shared folders and for Steam titles travel in the same list and are
+// told apart by this, outside the package. A folder somebody called "440" is
+// the case the prefix exists for.
+func TestFolderName(t *testing.T) {
+	if name, ok := FolderName(folderKey("Viva Pinata")); !ok || name != "Viva Pinata" {
+		t.Errorf("FolderName(folderKey(x)) = %q, %v; want the name back", name, ok)
+	}
+
+	if name, ok := FolderName(folderKey("440")); !ok || name != "440" {
+		t.Errorf("a folder named like an app id did not survive: %q, %v", name, ok)
+	}
+
+	if _, ok := FolderName("440"); ok {
+		t.Error("a Steam app id was taken for a folder")
+	}
+}

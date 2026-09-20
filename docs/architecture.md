@@ -500,10 +500,28 @@ a folder plus a row in that machine's `pga.db` plus a YAML under
 are not replicated and could not sensibly be, since the runner a host install
 names lives under `~/.local/share/lutris/runners` and a seat has no such path.
 So a game installed on the host arrives in every seat as files that nothing in
-that seat's Lutris knows about. Registering it there is the folder's own job,
-which is what the `setup-seat.sh` convention is for, and it is the reason a
-shared folder is a directory with a launcher in it rather than an export of
-somebody's launcher.
+that seat's Lutris knows about. Registering it there is the folder's own job.
+
+**A folder may carry `polyseat-setup.sh`**, and the daemon runs it wherever that
+folder has just been delivered: inside the container as the player for a seat,
+and as the library's owner for the host, never as root. It runs after the sync's
+own lock has been let go, because the honest work behind one of these is minutes
+of wine prefix, and it runs again on every update, so these scripts have to be
+safe to run twice. A failure is written to that member's log and stops nothing
+else; the files arrived either way.
+
+This is not the manifest this design does without. The daemon reads nothing out
+of the script, and has no opinion about what is in it or which launcher it
+speaks to. It is the same bargain as the rest of this side: the directory is the
+unit, and what is inside it is its own business. What it buys is the step the
+Steam half gets for free, where an `appmanifest` travels inside the library and
+Steam reads the library itself.
+
+The script runs as the member's owner rather than as the daemon, and that is
+the whole of the trust argument: the pool is fed by the members, a member is a
+seat whose player deliberately has no sudo, and running a folder's script as
+that owner hands it exactly what the person it came from already had. A seat
+cannot reach further into the host by putting a file in a shared folder.
 
 The two signals Steam gives are replaced by facts read off the tree. Finished
 becomes "nothing in it has changed for a couple of minutes", which is honest but

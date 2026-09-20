@@ -100,12 +100,26 @@ const hostSharedDir = "Games/shared"
 // environment, because the daemon runs as root and root's home is not where
 // anybody's games are.
 func hostFolders(uid int) string {
-	who, err := user.LookupId(strconv.Itoa(uid))
-	if err != nil || who.HomeDir == "" {
+	who := ownerOf(uid)
+	if who == nil || who.HomeDir == "" {
 		return ""
 	}
 
 	return sharedIn(who.HomeDir)
+}
+
+// ownerOf is the passwd entry for one uid, or nil when the system has none.
+//
+// One lookup in one place, because two callers want different fields of the
+// same answer and looking it up twice invites them to disagree about what to do
+// when there is no answer at all.
+func ownerOf(uid int) *user.User {
+	who, err := user.LookupId(strconv.Itoa(uid))
+	if err != nil {
+		return nil
+	}
+
+	return who
 }
 
 // sharedIn is the folder directory below one home, or empty when it is not

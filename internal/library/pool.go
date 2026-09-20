@@ -30,10 +30,23 @@ const (
 	stateFile = "state.json"
 )
 
-// folderKey namespaces a shared folder in the per seat bookkeeping, which is
+// folderPrefix namespaces a shared folder in the per seat bookkeeping, which is
 // otherwise keyed by Steam app id. Without it a folder somebody called "440"
 // would share an entry with Team Fortress 2.
-func folderKey(name string) string { return "folder:" + name }
+const folderPrefix = "folder:"
+
+func folderKey(name string) string { return folderPrefix + name }
+
+// FolderName is the folder a Move or an app id refers to, and whether it refers
+// to one at all.
+//
+// Exported because a caller outside this package has to tell the two kinds of
+// Move apart - a shared folder can be acted on as a directory and a Steam title
+// cannot - and doing that by writing the prefix out again somewhere else is how
+// the two spellings drift apart later.
+func FolderName(appID string) (string, bool) {
+	return strings.CutPrefix(appID, folderPrefix)
+}
 
 // settleTime is how long an app has to have been untouched before it is taken
 // into the pool.
@@ -237,6 +250,11 @@ func (p *Pool) folders(m Member) string {
 
 	return p.SeatFolders(m.Name)
 }
+
+// FoldersOf is folders for a caller outside this package, which needs the same
+// answer to find a delivered folder on disk afterwards. Empty means the member
+// does not take part in this half.
+func (p *Pool) FoldersOf(m Member) string { return p.folders(m) }
 
 // Ensure creates a seat's library with the ownership the container needs.
 //
@@ -838,7 +856,7 @@ func (p *Pool) Remove(appID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if name, ok := strings.CutPrefix(appID, "folder:"); ok {
+	if name, ok := FolderName(appID); ok {
 		if err := safeName(name); err != nil {
 			return err
 		}
