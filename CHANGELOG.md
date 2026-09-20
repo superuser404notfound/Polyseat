@@ -10,6 +10,69 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.27.0
+
+**The stream stuttered for a few seconds at a time, and the game was fine.**
+Sunshine's capture and encode threads ran below everything they have to keep
+pace with, including the compositor they capture from. Nothing failed and
+nothing was logged as an error; the warning that says so has been in every
+session log since the first seat.
+
+**Seats have to be built again.** The recipe is at generation 46, so every seat
+is marked stale and wants provisioning. A few minutes per seat.
+
+- **Sunshine may now lower its own threads.** It asks for nice -10 on the
+  threads that take the frame off the compositor and nice -15 on the ones that
+  hand it to NVENC, and in a seat it was refused every time:
+
+      Warning: setpriority failed for nice -10: Keine Berechtigung
+      Warning: setpriority failed for nice -15: Keine Berechtigung
+
+  `RLIMIT_NICE` defaults to 0 in a container, and it is a floor written upside
+  down: the lowest nice a process may set is `20 - rlim_cur`, so 0 forbids
+  negative values outright. `limits.kernel.nice=40` is the other end. Sunshine
+  then decides per thread, which is the part no single setting can do.
+
+  What made it matter is that the priorities around Sunshine are not neutral.
+  `ananicy-cpp` on the host matches processes by name and does not stop at the
+  container boundary, so on a CachyOS host a seat came out ordered like this,
+  measured in a seat here:
+
+      sway         -12   LowLatency_RT
+      wineserver   -12   LowLatency_RT
+      the game      -5   Game
+      sunshine       0   no rule exists
+
+  While the machine has headroom nothing shows. When a scene turns expensive
+  the capture threads lose the CPU to a game seven steps above them, frames
+  leave late, and the client sees a stutter that no frametime graph inside the
+  seat will ever explain. A rule on the host fixes it too and is worth having;
+  this is here so that a seat does not depend on the host having one.
+
+- **A seat with a session in it can be restarted at all.** Provisioning reached
+  for one Incus restart with a ninety second timeout, and on a running seat
+  that call does not succeed. Measured here: ninety seconds was not enough, a
+  hundred and fifty were not either, and both attempts left the container
+  stopped rather than running, so the caller got an error and a seat that was
+  no longer there. The container's systemd waits out its own stop jobs for the
+  lingering user manager, which is the session. With Sway asked to leave first
+  the same container went down in 1.1 seconds.
+
+  The restart is now stop-then-start, the session first and a kill to fall back
+  on, which is what `haltContainer` has always done for the daemon's own stops.
+  `Restart` is gone from the Incus client rather than left there to be reached
+  for again: it has no force, which is exactly why the failed attempts left a
+  seat that was not running.
+
+  This matters for this release in particular, because the key above is applied
+  by the step that performs that restart.
+
+**What is proven and what is not.** Both halves were measured on this machine,
+in both seats: `RLIMIT_NICE` arrives as 40, Sunshine sits at -12 with a host
+rule in place, and the stop sequence is the 1.1 seconds above against the two
+timeouts before it. That the stutter itself is gone has not been confirmed by
+playing, only that what caused the encoder to be late is no longer there.
+
 ## 0.26.0
 
 **Games in a seat never offered DLSS.** Of the whole NVIDIA driver, exactly
