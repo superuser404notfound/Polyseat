@@ -10,6 +10,67 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.28.1
+
+**A seat's management interface can be there and still be useless, and the
+daemon took its presence for the answer.** 0.19.0 taught it to arrange `eth0`
+itself rather than assume the host's default profile had, and that judgement
+looked at the device without asking what the device could deliver. One shape got
+past it: a managed bridge with no address of its own. The seat then holds
+`eth0`, Incus reports no address on it, and the pairing panel says so while the
+seat streams perfectly over the interface that works. Reported twice by the same
+person, once before that fix and once after it.
+
+**Seats do not have to be built again.** The recipe is still at generation 46.
+An existing seat is repaired by stopping and starting it, which is when the
+daemon writes that interface.
+
+- **A managed bridge is a management path only when it hands out addresses.**
+  `ipv4.address` unset or `none` means no dnsmasq on it, and `ipv4.dhcp=false`
+  says the same thing differently; either way a seat on it comes up with the
+  interface present and empty. `managementBridge` already refused to pick such a
+  bridge when it chose one itself. The rule was simply never applied to an
+  `eth0` somebody else's profile had already written, which is the only `eth0`
+  this daemon did not choose.
+
+- **And when `eth0` has no address anyway, the daemon talks to the seat on its
+  LAN address.** Allowed exactly when that interface is a port on a bridge: the
+  host and the seat are then two devices on one segment by the owner's own
+  decision, which is what the "reaches the host" checkbox means, and the address
+  Moonlight reaches the seat by reaches it from here too. Never on a macvlan,
+  isolated seat or not, because that interface cannot talk to its own host by
+  design and dialling it would hang rather than fail.
+
+  Nothing is written for this. A pairing request is a read of the seat, and
+  hotplugging an interface onto a container somebody is playing on because a
+  page was opened is not a repair, it is a surprise. Arranging `eth0` properly
+  is still attempted on every build and every start; this is what keeps the
+  panel working on a host where that arrangement does not take.
+
+- **The error when there is no path at all now says why the LAN address was not
+  used.** That reason is always the same one - the seat's own interface is a
+  macvlan - and it has two causes worth telling apart: "reaches the host" turned
+  off for this seat, or a host whose uplink is not a bridge.
+
+- **A seat that comes up without `eth0` and does not need it says so plainly.**
+  The start used to log that no device can be paired from the page, which is now
+  untrue on a bridged host; it names the interface it will use instead.
+
+- **`sudo polyseatd -report` says which interface each running seat is paired
+  over**, beside the addresses it already printed. The addresses alone never
+  answered the question these reports turn on, which is whether pairing from the
+  page can work at all, and the rule that answers it is now one function the
+  report and the panel both read.
+
+**What is proven and what is not.** The bridge with no address was reproduced
+here and repaired: a throwaway container on `incus network create polytest0
+ipv4.address=none` held an `eth0` with no address, the daemon left it alone
+before this and moves it to `incusbr0` after it, where it takes a lease. That
+the LAN path works was measured on this machine against a running seat, where
+Sunshine's API answers on both of that seat's addresses. What has not been seen
+is the fallback being the only way in, because no host here is arranged that
+way.
+
 ## 0.28.0
 
 **A game installed on this machine now reaches the seats, and one installed in a
