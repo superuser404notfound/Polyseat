@@ -32,7 +32,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 45
+const Generation = 46
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -337,6 +337,59 @@ func (p *Provisioner) waitSystemd(ctx context.Context) error {
 	}
 
 	return fmt.Errorf("systemd inside the container did not become ready")
+}
+
+// restartContainer brings the seat down and back up, the session first, and
+// waits for its init to be ready again.
+//
+// This used to be one call to the client's Restart with ninety seconds, and on
+// any seat with a session in it that call does not succeed. Measured on this
+// machine rather than reasoned about: ninety seconds was not enough, a hundred
+// and fifty were not either, and both attempts left the container stopped
+// rather than running, so what the caller got was an error and a seat that was
+// no longer there. Stopping Sway first brought the same container down at once.
+//
+// The cause is the one haltContainer already describes: the container's systemd
+// waits out its own stop jobs for the lingering user manager, and those jobs are
+// the session. Asking the session to go first removes the wait rather than
+// waiting longer for it. Stopping the session is not a precondition for any of
+// this to be correct, only for it to be quick, so a failure there is logged and
+// the stop goes ahead regardless.
+//
+// The kill is the second half and matters as much. Restart has no force, so a
+// seat that overruns is simply reported as failed; Stop followed by Kill ends
+// with the container down either way, which is the state Start can work from. A
+// seat holds nothing that a clean unmount protects.
+//
+// It is deliberately not haltContainer itself. That one belongs to the Manager,
+// takes its uid and its log from there, and leaves the seat stopped because that
+// is what its callers want. Should a third caller ever need this, the two are
+// worth folding together then.
+func (p *Provisioner) restartContainer(ctx context.Context) error {
+	p.Log("restarting the container so the new configuration takes effect")
+
+	if _, _, err := p.Client.Try(ctx, p.name(), append(playerPrefix(p.uid),
+		"systemctl", "--user", "stop", "polyseat-sway.service")...); err != nil {
+		p.Log("! could not stop the session cleanly: %v", err)
+	}
+
+	if err := p.Client.Stop(ctx, p.name(), 90); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		p.Log("! it did not shut down in time (%v), forcing it", err)
+
+		if err := p.Client.Kill(ctx, p.name()); err != nil {
+			return err
+		}
+	}
+
+	if err := p.Client.Start(ctx, p.name()); err != nil {
+		return err
+	}
+
+	return p.waitSystemd(ctx)
 }
 
 // ------------------------------------------------------------------- network
@@ -1825,6 +1878,48 @@ func (p *Provisioner) stepGPU(ctx context.Context) error {
 		// Set explicitly rather than left at the default either way, because
 		// leaving it implicit is exactly how seat1 and seat2 came to differ.
 		"security.nesting": "true",
+
+		// RLIMIT_NICE, so that Sunshine may lower its own threads.
+		//
+		// Sunshine asks for nice -10 on the threads that take the frame off the
+		// compositor and nice -15 on the ones that hand it to NVENC. It asks at
+		// the start of every stream, and in a seat it was refused every time:
+		//
+		//     Warning: setpriority failed for nice -10: Keine Berechtigung
+		//     Warning: setpriority failed for nice -15: Keine Berechtigung
+		//
+		// The default rlimit is 0, and RLIMIT_NICE is a floor expressed upside
+		// down: the lowest nice a process may set is 20 - rlim_cur, so 0 means
+		// "never below 20", which is to say never negative at all. 40 is the
+		// other end, -20, and the number to pick because it is Sunshine that
+		// decides how far down each of its threads belongs, not this.
+		//
+		// What made it matter rather than merely untidy is that the priorities
+		// around Sunshine are not neutral. ananicy-cpp on the host matches
+		// processes by name and does not stop at the container boundary - seat
+		// processes are ordinary host PIDs to it - so on a CachyOS host a seat
+		// comes out ordered like this:
+		//
+		//     sway         -12   LowLatency_RT
+		//     wineserver   -12   LowLatency_RT
+		//     the game      -5   Game
+		//     sunshine       0   no rule exists
+		//
+		// The encoder therefore sits underneath every single thing it has to
+		// keep pace with, including the compositor it captures from. While the
+		// machine has headroom nothing shows. When a scene turns expensive the
+		// capture threads lose the CPU to a game seven steps above them, frames
+		// leave late, and the client sees a few seconds of stutter that no
+		// frametime graph inside the seat will ever explain, because the game
+		// was fine.
+		//
+		// A rule on the host would also fix it, and is worth having. This is
+		// here so that a seat does not depend on one: the machine that grows
+		// the next seat may have no ananicy at all, and Sunshine's own request
+		// is per thread, which a name-matched rule cannot be.
+		//
+		// Takes effect at container start, like the two above it.
+		"limits.kernel.nice": "40",
 	}
 
 	// The vendor's own keys on top. On NVIDIA that switches the driver
@@ -1875,20 +1970,13 @@ func (p *Provisioner) stepGPU(ctx context.Context) error {
 		return err
 	}
 
-	// nvidia.runtime and security.nesting only take effect on a fresh start,
-	// and a device that was just added is not in a running container either, so
-	// a change here costs a restart. Nothing changed means nothing to restart,
-	// which is what keeps re-provisioning a healthy seat from interrupting it.
+	// nvidia.runtime, security.nesting and limits.kernel.nice only take effect
+	// on a fresh start, and a device that was just added is not in a running
+	// container either, so a change here costs a restart. Nothing changed means
+	// nothing to restart, which is what keeps re-provisioning a healthy seat
+	// from interrupting it.
 	if changed {
-		p.Log("restarting the container so the new configuration takes effect")
-
-		// Ninety seconds rather than thirty: a seat with a session in it takes
-		// longer to shut down than an empty container does.
-		if err := p.Client.Restart(ctx, p.name(), 90); err != nil {
-			return err
-		}
-
-		if err := p.waitSystemd(ctx); err != nil {
+		if err := p.restartContainer(ctx); err != nil {
 			return err
 		}
 	}

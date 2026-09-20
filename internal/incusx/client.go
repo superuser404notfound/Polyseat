@@ -351,10 +351,12 @@ func (c *Client) Kill(ctx context.Context, name string) error {
 	return c.changeState(ctx, name, "stop", 0, true)
 }
 
-// Restart stops and starts in one operation.
-func (c *Client) Restart(ctx context.Context, name string, timeout int) error {
-	return c.changeState(ctx, name, "restart", timeout, false)
-}
+// There is deliberately no Restart here. Incus has the operation and this
+// wrapper used to expose it, but it has no force, so a seat that overruns the
+// timeout comes back as an error with the container in whatever state it
+// reached - stopped, in the case that took this out. Every caller of it wanted
+// the session stopped first and a kill to fall back on, which is two calls and
+// a decision rather than one operation. See restartContainer in internal/seat.
 
 // ------------------------------------------------------------------ config
 
