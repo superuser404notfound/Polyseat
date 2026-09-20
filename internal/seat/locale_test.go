@@ -1,7 +1,9 @@
 package seat
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -235,5 +237,45 @@ func TestLocaleScriptTellsTheUserManagerToo(t *testing.T) {
 	// A seat being built has no such manager and must not fail because of it.
 	if !strings.Contains(script, "set-environment LANG='de_DE.UTF-8' || true") {
 		t.Errorf("a missing user manager would fail the step:\n%s", script)
+	}
+}
+
+// The probe decides where the DLSS libraries are put, and it is awk and
+// readlink inside a shell fragment assembled in Go. sh is the only honest
+// judge of whether the quoting survived.
+func TestNGXWineDirProbeIsValidShell(t *testing.T) {
+	cmd := exec.Command("sh", "-n")
+	cmd.Stdin = strings.NewReader(ngxWineDirProbe)
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("sh rejects the probe: %v\n%s", err, out)
+	}
+}
+
+// A seat with no NVIDIA library must answer with nothing rather than with a
+// path built from an empty string, which would be "/nvidia/wine" and would
+// scatter driver DLLs at the root of the filesystem.
+func TestNGXWineDirProbeSaysNothingWithoutADriver(t *testing.T) {
+	dir := t.TempDir()
+
+	// ldconfig that knows about no such library, which is what an AMD seat
+	// looks like from in here.
+	stub := filepath.Join(dir, "ldconfig")
+
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\necho '\t\tlibc.so.6 (libc6,x86-64) => /usr/lib/libc.so.6'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("sh", "-s")
+	cmd.Stdin = strings.NewReader(ngxWineDirProbe)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"))
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the probe failed instead of answering with nothing: %v\n%s", err, out)
+	}
+
+	if strings.TrimSpace(string(out)) != "" {
+		t.Errorf("the probe answered %q, want nothing", out)
 	}
 }

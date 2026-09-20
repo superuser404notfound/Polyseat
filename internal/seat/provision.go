@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,7 +32,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 44
+const Generation = 45
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -2051,6 +2052,10 @@ func (p *Provisioner) stepNvidiaUserspace(ctx context.Context) error {
 		}
 	}
 
+	if err := p.installNGX(ctx); err != nil {
+		return err
+	}
+
 	// Reported rather than fatal: the authoritative check is which encoder
 	// Sunshine picks once the session is up, and that is what the interface
 	// shows.
@@ -2063,6 +2068,94 @@ func (p *Provisioner) stepNvidiaUserspace(ctx context.Context) error {
 		p.Log("EGL reports NVIDIA")
 	} else {
 		p.Log("! EGL could not be confirmed here, check the encoder once the session runs")
+	}
+
+	return nil
+}
+
+// ngxWineDirProbe answers with the directory Proton will look in, or with
+// nothing when the seat has no NVIDIA GLX library to look beside.
+//
+// Asked of the seat rather than assumed, because it is the seat's loader that
+// answers the same question later and the answer is the whole point: Proton
+// takes the real path of libGLX_nvidia and appends nvidia/wine to its
+// directory. Anywhere else and the files are not found.
+const ngxWineDirProbe = `set -e
+lib=$(ldconfig -p | awk '/libGLX_nvidia\.so\.0/ {print $NF; exit}')
+[ -n "$lib" ] || exit 0
+printf '%s/nvidia/wine\n' "$(dirname "$(readlink -f "$lib")")"
+`
+
+// installNGX carries the parts of the driver that DLSS needs.
+//
+// Of the whole driver, libnvidia-container leaves exactly one library behind:
+// libnvidia-ngx.so, the native half of NGX. Measured on this machine, the
+// difference between what `nvidia-container-cli list --libraries` names and
+// what arrives in a seat is that one file and nothing else.
+//
+// The Windows half is not a library at all and was never going to be injected.
+// The driver ships nvngx.dll and _nvngx.dll for wine, and Proton looks for
+// them by its own rule: it asks the loader where libGLX_nvidia came from and
+// looks for nvidia/wine next to it. Where that directory is missing Proton
+// copies nothing into the prefix, DXVK-NVAPI finds no NGX, and a game simply
+// does not offer DLSS in its settings. Nothing fails and nothing is logged,
+// which is why this went unnoticed.
+//
+// Copied from the host rather than installed from a package, for the reason
+// the Vulkan manifest above is: these files belong to the running driver, and
+// copying them again when the seat is provisioned keeps them in step with it.
+func (p *Provisioner) installNGX(ctx context.Context) error {
+	// Where Proton will look, which is beside the library the loader actually
+	// resolves rather than a path assumed here. Asked of the seat, because it
+	// is the seat's loader that will answer the question later.
+	dir, err := p.sh(ctx, ngxWineDirProbe)
+	if err != nil {
+		return err
+	}
+
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		p.Log("! no NVIDIA GLX library in the seat, skipping DLSS support")
+
+		return nil
+	}
+
+	// The versioned file, reached through the soname, so that the name it
+	// lands under is the one the host is actually running.
+	if real, err := filepath.EvalSymlinks("/usr/lib/libnvidia-ngx.so.1"); err != nil {
+		p.Log("! this host's driver has no NGX library, so DLSS will not be offered: %v", err)
+	} else if body, err := os.ReadFile(real); err != nil {
+		return err
+	} else if err := p.Client.PushFile(p.name(),
+		"/usr/lib/"+filepath.Base(real), body, 0o755, 0, 0); err != nil {
+		return err
+	}
+
+	dlls, err := filepath.Glob("/usr/lib/nvidia/wine/*.dll")
+	if err != nil {
+		return err
+	}
+
+	if len(dlls) == 0 {
+		p.Log("! this host's driver ships no wine DLLs for NGX, so DLSS will not be offered")
+	}
+
+	for _, dll := range dlls {
+		body, err := os.ReadFile(dll)
+		if err != nil {
+			return err
+		}
+
+		if err := p.Client.PushFile(p.name(),
+			dir+"/"+filepath.Base(dll), body, 0o644, 0, 0); err != nil {
+			return err
+		}
+	}
+
+	// The soname symlink beside what was just pushed, which is what anything
+	// loading NGX asks for.
+	if _, err := p.sh(ctx, "ldconfig"); err != nil {
+		return err
 	}
 
 	return nil
