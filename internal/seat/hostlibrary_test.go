@@ -141,3 +141,53 @@ func TestHostIdle(t *testing.T) {
 		}
 	})
 }
+
+// The host takes part in the launcher agnostic half of the pool when
+// ~/Games/shared exists and not otherwise, so this is the whole switch and
+// there is nowhere else it can be read from.
+func TestSharedIn(t *testing.T) {
+	home := t.TempDir()
+
+	if got := sharedIn(home); got != "" {
+		t.Errorf("a home without the directory took part anyway: %q", got)
+	}
+
+	// A file of that name is not the switch. Stat succeeds on it, so without
+	// the IsDir test the daemon would hand ScanFolders something it cannot
+	// read and report the pool broken rather than the host absent.
+	flat := filepath.Join(home, hostSharedDir)
+
+	if err := os.MkdirAll(filepath.Dir(flat), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(flat, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := sharedIn(home); got != "" {
+		t.Errorf("a file called %s was taken for the directory: %q", hostSharedDir, got)
+	}
+
+	if err := os.Remove(flat); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.MkdirAll(flat, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := sharedIn(home); got != flat {
+		t.Errorf("sharedIn = %q, want %q", got, flat)
+	}
+}
+
+// hostIdle is asked about the folder half even when the host does not take
+// part in it, and an empty path must not become the needle "/", which every
+// process on the machine matches. Without this the host would be reported busy
+// forever and never receive a title again.
+func TestHostIdleWithoutDirectory(t *testing.T) {
+	if !hostIdle("", os.Geteuid()) {
+		t.Error("an absent directory was reported busy")
+	}
+}

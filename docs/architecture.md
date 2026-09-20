@@ -485,6 +485,26 @@ place, `/home/player/games/shared/`, where one folder is one game: put a game
 there and it reaches the other seats, and the daemon never needs to know which
 launcher made it. Point Heroic, Lutris, Bottles or a downloaded installer at it.
 
+**The host has the same place**, at `~/Games/shared` below whoever owns the
+library the pool gives Steam titles to. It is read when it exists and not
+otherwise, so making the directory is what switches the host on and removing it
+is what switches it off; the daemon never creates it, for the same reason it
+never creates anything else in somebody's own library. The shape matches a seat
+on purpose: a seat's Lutris has `game_path` at `/home/player/games` with
+`shared/` beneath it, so the host's wants `~/Games`, which is where Lutris
+installs by default anyway.
+
+What travels is the directory, and only the directory. A Lutris installation is
+a folder plus a row in that machine's `pga.db` plus a YAML under
+`~/.config/lutris/games/`, and the last two are per machine and per user; they
+are not replicated and could not sensibly be, since the runner a host install
+names lives under `~/.local/share/lutris/runners` and a seat has no such path.
+So a game installed on the host arrives in every seat as files that nothing in
+that seat's Lutris knows about. Registering it there is the folder's own job,
+which is what the `setup-seat.sh` convention is for, and it is the reason a
+shared folder is a directory with a launcher in it rather than an export of
+somebody's launcher.
+
 The two signals Steam gives are replaced by facts read off the tree. Finished
 becomes "nothing in it has changed for a couple of minutes", which is honest but
 weaker: a download that stalls for longer than that can be picked up half

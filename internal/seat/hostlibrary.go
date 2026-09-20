@@ -3,6 +3,7 @@ package seat
 import (
 	"bytes"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"syscall"
@@ -54,12 +55,74 @@ func (m *Manager) hostMembers() []library.Member {
 		return nil
 	}
 
+	uid, gid := int(st.Uid), int(st.Gid)
+	folders := hostFolders(uid)
+
 	return []library.Member{{
-		Name:      hostMember,
-		Apps:      apps,
-		Owner:     library.Owner{UID: int(st.Uid), GID: int(st.Gid)},
-		Updatable: hostIdle(apps, int(st.Uid)),
+		Name:    hostMember,
+		Apps:    apps,
+		Folders: folders,
+		Owner:   library.Owner{UID: uid, GID: gid},
+
+		// Both halves, because this one flag governs both. Without the second
+		// term the daemon would ask whether anybody is using the Steam library
+		// and then replace a folder game that is running out of the other
+		// directory on the strength of that answer. hostIdle takes the
+		// directory it is asked about, so the same probe covers it; an empty
+		// path is nobody's and answers yes.
+		Updatable: hostIdle(apps, uid) && hostIdle(folders, uid),
 	}}
+}
+
+// hostSharedDir is where the host keeps the launcher agnostic folders, below
+// the home of whoever owns the library the pool gives games to.
+//
+// The same shape a seat has, deliberately. A seat's Lutris is built with
+// game_path at /home/player/games and its shared folders are the shared/
+// beneath that, so the host reads ~/Games/shared and its Lutris wants game_path
+// at ~/Games. That is also Lutris's own default on a fresh install, which means
+// the ordinary way of installing a game is already the right one.
+const hostSharedDir = "Games/shared"
+
+// hostFolders is the host's side of the launcher agnostic pool, or empty when
+// it is not taking part.
+//
+// Taking part is the directory existing, and that is the whole switch. The
+// alternative was another path in the pool's state with the API and the
+// interface to set it, for a question that has one sensible answer; and the
+// daemon must not create it, because Ensure deliberately does nothing for an
+// external member and making directories in somebody's home on their behalf is
+// not a thing to start doing here. `mkdir -p ~/Games/shared` turns it on and
+// removing it turns it off, which is a switch somebody can find without being
+// told where the setting is.
+//
+// The home comes from the uid that owns the Steam library rather than from the
+// environment, because the daemon runs as root and root's home is not where
+// anybody's games are.
+func hostFolders(uid int) string {
+	who, err := user.LookupId(strconv.Itoa(uid))
+	if err != nil || who.HomeDir == "" {
+		return ""
+	}
+
+	return sharedIn(who.HomeDir)
+}
+
+// sharedIn is the folder directory below one home, or empty when it is not
+// there.
+//
+// Split from hostFolders so the half with the decision in it can be tested
+// against a temporary directory, rather than against whatever the person
+// running the tests happens to have in their own home.
+func sharedIn(home string) string {
+	dir := filepath.Join(home, hostSharedDir)
+
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+
+	return dir
 }
 
 // hostIdle answers, for the host, the same question libraryIdle answers for a
@@ -75,6 +138,14 @@ func (m *Manager) hostMembers() []library.Member {
 // costs nothing and the interface says an update is waiting; replacing files
 // under a running game corrupts an install.
 func hostIdle(dir string, uid int) bool {
+	// No directory is nobody's, and saying so here rather than at the call site
+	// is what keeps the needle below from becoming "/", which every process on
+	// the machine matches. A member that does not take part in one half of the
+	// pool passes an empty path for it.
+	if dir == "" {
+		return true
+	}
+
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return false

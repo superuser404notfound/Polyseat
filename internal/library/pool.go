@@ -81,8 +81,9 @@ type Member struct {
 
 	// Folders is the launcher agnostic directory. Only read for an external
 	// member, and empty there means it does not take part in that side at all.
-	// A seat gets one from the provisioner; the host has no equivalent place,
-	// so it shares Steam titles and nothing else.
+	// A seat gets one from the provisioner; the host's is ~/Games/shared below
+	// the owner of the library it receives into, and it is empty until that
+	// directory exists, which is how taking part is switched on there.
 	Folders string
 }
 
