@@ -10,6 +10,34 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.24.1
+
+**The language arrived in the file and not in the session.** 0.24.0 gave a
+seat the host's locale and, on a seat that was already running, left it
+looking like it had done nothing at all.
+
+**Seats do not have to be built again.** The recipe is still at generation
+43. A seat that took 0.24.0 already has the right `/etc/locale.conf` and the
+right sway config; what was stale is the environment of a process that is
+still running, and provisioning it again is not what fixes that. Installing
+this and letting the seat restart its session is.
+
+- **The player's systemd is told the language too.** Writing
+  `/etc/locale.conf` decides what a process started from then on inherits.
+  The user manager is not such a process: it keeps the environment it was
+  started with, and on a seat that has been up since before the locale step
+  ran, that environment is the old one. The session is restarted at the end
+  of provisioning and inherits from it, so it comes back in the old language,
+  which reads as the setting not working. Observed on both seats here:
+  `locale.conf` said `de_DE.UTF-8` and the sway in front of it still said
+  `C.UTF-8`.
+
+  The value now goes into the user manager before the session is restarted.
+  That call is allowed to fail: a seat being built for the first time has no
+  player logged in to have a manager, and such a seat has nothing running to
+  be in the wrong language, because its manager reads the file when it
+  starts.
+
 ## 0.24.0
 
 **A seat never took anything from the machine it runs on but its hardware.**
