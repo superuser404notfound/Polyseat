@@ -10,6 +10,79 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.24.0
+
+**A seat never took anything from the machine it runs on but its hardware.**
+Not its language and not its keyboard layout, so a German host handed out
+seats that answered in English and put a US layout under every key. Both come
+from the host now, and a bug found on the way out stops the shared library
+carrying a folder back and forth forever.
+
+**Seats have to be built again.** The recipe is at generation 43, so every
+seat is marked stale and wants provisioning. A few minutes per seat.
+
+- **The seat takes the host's language.** A seat is built from a plain Arch
+  image, and a plain Arch image has no locale: systemd falls back to
+  `C.UTF-8`. Steam and the launcher come up in English, and so does every
+  Windows title in the seat, because wine reads the Unix locale to decide what
+  `GetUserDefaultUILanguage` answers and a game that ships fifteen
+  translations picks by that alone. The new `locale` step reads `LANG` out of
+  the host's `/etc/locale.conf`, generates that locale in the seat and writes
+  the seat's own `locale.conf`.
+
+  Read from the file rather than from the daemon's environment, because
+  polyseatd is a system service: its `LANG` is whatever systemd started it
+  with, not what the person sitting at this machine chose. `C`, `POSIX` and
+  `C.*` are the absence of a locale rather than a choice and are not copied.
+
+  Two things are worth knowing about when it takes effect. A running session
+  keeps the environment it started with, so the language arrives when the
+  session next starts. And wine writes a prefix's idea of the locale when the
+  prefix is updated, not on every run, so a prefix built before the seat had a
+  language keeps answering with the old one until `wineboot -u` is run in it.
+
+- **The seat takes the host's keyboard.** xkb's default is `us`, so signing in
+  to a store from a seat meant hunting for `y` and `z`. The layout, variant,
+  model and options come out of the host's `/etc/vconsole.conf`, which is
+  where `systemd-localed` keeps them, and become an `input *` block in the
+  seat's sway config. `KEYMAP` is deliberately ignored: that one is the
+  console keymap and a container has no console to apply it to.
+
+  A host that never set a layout gets no block at all rather than an explicit
+  `us`, so sway keeps its own default instead of being handed a guess. A
+  layout is also required before a variant, a model or an option is carried:
+  half a keyboard would replace the default with something incomplete.
+
+  These values are written into a config file that is read line by line, so
+  they are checked before they go in. A value carrying a newline or a brace
+  would not be a bad layout, it would be a sway directive somebody else wrote.
+
+- **A cloned symlink gets its own timestamp back.** `Clone` restored the
+  modification time of every file and every directory it copied, and of no
+  symlink. A folder's version in the pool is the newest timestamp anywhere
+  inside it and `measure` stats symlinks along with the rest, so a copy
+  containing a single symlink always measured newer than the original it was
+  made from. The pool then handed the folder back and forth for as long as it
+  ran: the seat that had just been written from the pool immediately looked
+  like the one holding the newer copy, was taken back into the pool, and was
+  written out over the other seat again a minute later.
+
+  This is the failure the times are preserved to prevent, described in
+  [docs/architecture.md](docs/architecture.md) as two copies carrying each
+  other back and forth forever. It was closed for files and directories and
+  open for symlinks.
+
+  It surfaced putting a game into `shared/` whose writable state has to stay
+  per seat, which is a symlink out of the tree and therefore the first folder
+  in this library to contain one. What it looked like was not an error
+  anywhere: files written into the shared folder were simply gone a few
+  minutes later, in every seat at once.
+
+  `os.Chtimes` was not an option and is the reason this was missed. It follows
+  the link, so it would have stamped the target, and for a link pointing out
+  of the pool the target is not the pool's to touch. `utimensat` with
+  `AT_SYMLINK_NOFOLLOW` is the one that does not follow.
+
 ## 0.23.0
 
 **The small picture in the corner was still there in 0.22.0**, reported from
