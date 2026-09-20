@@ -3,9 +3,11 @@ package seat
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -40,18 +42,6 @@ if question == "watch":
     print(json.dumps(answers))
 elif question == "mine":
     print(json.dumps(module.is_big_picture(payload)))
-elif question == "picture":
-    painted = payload["painted"]
-
-    def sample(x, y):
-        if painted is None:
-            return 0
-
-        left, top, wide, high = painted
-
-        return 40 if left <= x < left + wide and top <= y < top + high else 0
-
-    print(json.dumps(module.unpainted(payload["node"], sample)))
 else:
     node = module.window(payload["tree"], payload["id"])
     print(json.dumps(None if node is None else node.get("id")))
@@ -410,65 +400,6 @@ func TestTheWatcherOnlyPutsBackAWindowThatIsStillThere(t *testing.T) {
 	}
 }
 
-func verdict(t *testing.T, node, painted string) any {
-	t.Helper()
-
-	payload := fmt.Sprintf(`{"node":%s,"painted":%s}`, node, painted)
-
-	var answer any
-	if err := json.Unmarshal(askWatcher(t, "picture", payload), &answer); err != nil {
-		t.Fatalf("the driver printed something unreadable")
-	}
-
-	return answer
-}
-
-// The second reported case, in the numbers a seat produced: a fullscreen
-// window of 3840x2160 that was mapped at 1280x800, with everything outside
-// that corner exactly black. Nothing in sway's tree says a client painted only
-// part of its window, so this is read off the screen.
-func TestAPictureInTheCornerIsSeenForWhatItIs(t *testing.T) {
-	const window = `{"id":6,"pid":2965,"name":"Big-Picture-Modus","window_properties":{"class":"steam"},
-		"fullscreen_mode":1,"rect":{"x":0,"y":0,"width":3840,"height":2160},
-		"geometry":{"x":0,"y":0,"width":1280,"height":800}}`
-
-	if got := verdict(t, window, `[0,0,1280,800]`); got != true {
-		t.Errorf("a picture drawn in the top left corner was answered with %v, want it recognised", got)
-	}
-
-	if got := verdict(t, window, `[0,0,3840,2160]`); got != false {
-		t.Errorf("a picture that fills the screen was answered with %v, want it left alone", got)
-	}
-
-	// The half minute a cold Steam spends unpacking its UI. There is nothing
-	// on the screen to judge, and answering "it fills the screen" there would
-	// mean the picture is never looked at again, which is the whole bug.
-	if got := verdict(t, window, `null`); got != nil {
-		t.Errorf("a screen with nothing painted on it yet was answered with %v, want no answer", got)
-	}
-}
-
-// What it must not touch. A window that is not fullscreen is somebody's tiled
-// window, and a window mapped at the size of the screen has no smaller picture
-// it could be stuck at, so neither is worth a screenshot.
-func TestAWindowWithNothingToRepairIsNotLookedAt(t *testing.T) {
-	windowed := `{"id":6,"pid":2965,"name":"Big-Picture-Modus","window_properties":{"class":"steam"},
-		"fullscreen_mode":0,"rect":{"x":0,"y":0,"width":1920,"height":2130},
-		"geometry":{"x":0,"y":0,"width":1280,"height":800}}`
-
-	if got := verdict(t, windowed, `[0,0,1280,800]`); got != false {
-		t.Errorf("a tiled window was answered with %v, want it left alone", got)
-	}
-
-	whole := `{"id":6,"pid":2965,"name":"Big-Picture-Modus","window_properties":{"class":"steam"},
-		"fullscreen_mode":1,"rect":{"x":0,"y":0,"width":1920,"height":1080},
-		"geometry":{"x":0,"y":0,"width":1920,"height":1080}}`
-
-	if got := verdict(t, whole, `null`); got != false {
-		t.Errorf("a window mapped at the size of the screen was answered with %v, want it left alone", got)
-	}
-}
-
 // The three places that match the title have to carry the same pattern, or the
 // one that is wrong silently does nothing at all, which is precisely how the
 // English sentence survived in all three until a German seat was streamed.
@@ -483,5 +414,253 @@ func TestEverythingAgreesOnHowBigPictureIsMatched(t *testing.T) {
 		if !strings.Contains(string(asset(file)), pattern) {
 			t.Errorf("%s does not carry %s, so it matches a window nobody has", file, pattern)
 		}
+	}
+}
+
+// runBigPicture runs the launcher the way Sunshine runs it, against a sway
+// that answers with the trees this test hands it and writes down everything
+// else it is told, and a Steam that writes the one line this now turns on:
+// what it thinks its own scaling is.
+//
+// reacts is whether that Steam answers an off and on the way the real one
+// does, by working the factor out again. Both halves are needed, because the
+// thing being checked is a conversation and not a command.
+func runBigPicture(t *testing.T, factor string, reacts bool, trees ...string) (asked []string, said string) {
+	t.Helper()
+
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("SKIPPED: no python3, so the script cannot read a tree here")
+	}
+
+	home := t.TempDir()
+
+	script := filepath.Join(home, "polyseat-bigpicture")
+	if err := os.WriteFile(script, asset("assets/bigpicture.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	logs := filepath.Join(home, ".local/share/Steam/logs")
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Lines from before this launch, which must be ignored: the factor that
+	// matters is the one Steam works out for the window being opened now.
+	stale := "[2026-09-19 12:00:00] ThreadSetForceDeviceScaleFactors 1.000000 * 9.999999 = 10.000000\n"
+	if err := os.WriteFile(filepath.Join(logs, "webhelper.txt"), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A socket rather than a file, because the script asks whether it is one.
+	runtime := filepath.Join(home, "run")
+	if err := os.MkdirAll(runtime, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	listener, err := net.Listen("unix", filepath.Join(runtime, "sway-ipc.1000.1.sock"))
+	if err != nil {
+		t.Skipf("SKIPPED: no unix socket here, so the script cannot be run: %v", err)
+	}
+
+	defer listener.Close()
+
+	for i, tree := range trees {
+		name := filepath.Join(home, fmt.Sprintf("tree.%d", i+1))
+		if err := os.WriteFile(name, []byte(tree), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stub := func(name, body string) {
+		t.Helper()
+
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const right = "ThreadSetForceDeviceScaleFactors 1.000000 * 1.423025 = 1.420000"
+
+	answer := ""
+	if reacts {
+		answer = `case "$*" in *"fullscreen enable") echo '[t] ` + right + `' >> ` +
+			filepath.Join(logs, "webhelper.txt") + ";; esac\n"
+	}
+
+	// Each get_tree is answered with the next tree the test gave, and with the
+	// last one for ever after, so that a test can describe a player leaving
+	// Big Picture between one command and the next.
+	stub("swaymsg", `#!/bin/sh
+if [ "$1" = "-t" ]; then
+    n=$(cat `+home+`/calls 2>/dev/null || echo 0)
+    n=$((n + 1))
+    echo "$n" > `+home+`/calls
+    file=`+home+`/tree.$n
+    [ -f "$file" ] || file=$(ls `+home+`/tree.* | sort -V | tail -1)
+    cat "$file"
+    exit 0
+fi
+echo "$*" >> `+home+`/asked
+`+answer)
+
+	// Steam writes what it made of the window's size, or nothing at all.
+	write := ""
+	if factor != "" {
+		write = "echo '[t] ThreadSetForceDeviceScaleFactors 1.000000 * " + factor +
+			"' >> " + filepath.Join(logs, "webhelper.txt") + "\n"
+	}
+
+	stub("steam", "#!/bin/sh\n"+write)
+	stub("setsid", "#!/bin/sh\nexec \"$@\"\n")
+
+	// Short rather than instant: Steam writes its line from a process this
+	// script put in the background, and a sleep that returns before that
+	// happens would be testing the test.
+	stub("sleep", "#!/bin/sh\nexec /bin/sleep 0.1\n")
+
+	cmd := exec.Command("/bin/sh", script)
+	cmd.Env = []string{
+		"PATH=" + bin + ":/usr/bin:/bin",
+		"HOME=" + home,
+		"XDG_RUNTIME_DIR=" + runtime,
+	}
+
+	var complaints strings.Builder
+	cmd.Stderr = &complaints
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("running the script failed: %v: %s", err, complaints.String())
+	}
+
+	recorded, err := os.ReadFile(filepath.Join(home, "asked"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+
+	if len(recorded) == 0 {
+		return nil, complaints.String()
+	}
+
+	return strings.Split(strings.TrimSpace(string(recorded)), "\n"), complaints.String()
+}
+
+const bigPictureFull = `{"type":"root","nodes":[{"type":"output","nodes":[
+	{"type":"workspace","id":2,"name":"1","nodes":[
+		{"type":"con","id":6,"pid":2965,"name":"Big-Picture-Modus",
+		 "window_properties":{"class":"steam"},"fullscreen_mode":1,
+		 "rect":{"x":0,"y":0,"width":1920,"height":1080},
+		 "geometry":{"x":0,"y":0,"width":1280,"height":800}}]}]}]}`
+
+const bigPictureWindowed = `{"type":"root","nodes":[{"type":"output","nodes":[
+	{"type":"workspace","id":2,"name":"1","nodes":[
+		{"type":"con","id":6,"pid":2965,"name":"Big-Picture-Modus",
+		 "window_properties":{"class":"steam"},"fullscreen_mode":0,
+		 "rect":{"x":0,"y":0,"width":960,"height":1050},
+		 "geometry":{"x":0,"y":0,"width":1280,"height":800}}]}]}]}`
+
+var (
+	off = `-- [class="^steam$" title="[Bb]ig[ _-][Pp]icture"] fullscreen disable`
+	on  = `-- [class="^steam$" title="[Bb]ig[ _-][Pp]icture"] fullscreen enable`
+)
+
+// The number this now turns on, and where it comes from. Big Picture is a
+// fixed 1280x800 interface that Steam scales to its window, so filling a
+// 1920x1080 screen with it takes sqrt(1920/1280 * 1080/800) = 1.423025, and
+// that is to six places what Steam writes in its own log when it gets it
+// right. When it gets it wrong it writes 1.000000 and never looks again.
+func TestSteamsOwnFactorDecidesWhetherAnythingIsDone(t *testing.T) {
+	asked, said := runBigPicture(t, "1.423025 = 1.420000", false, bigPictureFull)
+
+	if len(asked) != 0 {
+		t.Errorf("sway was asked for %q on a Big Picture that already filled the screen", asked)
+	}
+
+	if !strings.Contains(said, "came up at the size of the screen") {
+		t.Errorf("the journal says %q, want it to say it found nothing to do", said)
+	}
+}
+
+// The reported bug, and the repair, with Steam answering the way the seat's
+// log shows it answering: the off and on is a change of size, and a change of
+// size is the one thing that makes Steam work the factor out again.
+func TestAWrongFactorIsRepairedAndTheRepairIsChecked(t *testing.T) {
+	asked, said := runBigPicture(t, "1.000000 = 1.000000", true, bigPictureFull)
+
+	if want := []string{off, on}; !reflect.DeepEqual(asked, want) {
+		t.Errorf("sway was asked for %q, want one off and on", asked)
+	}
+
+	if !strings.Contains(said, "fills the screen after 1 off and on") {
+		t.Errorf("the journal says %q, want it to say the repair worked", said)
+	}
+}
+
+// And when it does not work, it says so with both numbers in the line, rather
+// than flashing the screen until somebody notices.
+func TestAFactorThatWillNotBudgeIsGivenUpOnOutLoud(t *testing.T) {
+	asked, said := runBigPicture(t, "1.000000 = 1.000000", false, bigPictureFull)
+
+	if len(asked) != 4 {
+		t.Errorf("sway was asked for %q, want two tries of an off and on", asked)
+	}
+
+	if !strings.Contains(said, "1.000000") || !strings.Contains(said, "1.423025") {
+		t.Errorf("the journal says %q, want what Steam is drawing at and what it should be", said)
+	}
+}
+
+// A Steam that says nothing about its own scaling is not a Steam that is
+// wrong. This is the one place 0.22.0 got backwards: it could not read the
+// screen, called that "nothing painted yet", and waited it out in silence.
+func TestASilentSteamIsSaidOutLoudAndGivenOneTry(t *testing.T) {
+	asked, said := runBigPicture(t, "", false, bigPictureFull)
+
+	if want := []string{off, on}; !reflect.DeepEqual(asked, want) {
+		t.Errorf("sway was asked for %q, want exactly one off and on, done blind", asked)
+	}
+
+	if !strings.Contains(said, "says nothing about its own scaling") {
+		t.Errorf("the journal says %q, want it to say it could not tell", said)
+	}
+}
+
+// What this must never do. By the time the factor has been read the player may
+// have left Big Picture or started a game from it, and pulling the screen off
+// a game and handing it back is worse than the corner this is here to fix.
+func TestNothingIsTakenFromAWindowThatIsNoLongerBigPicture(t *testing.T) {
+	asked, said := runBigPicture(t, "1.000000 = 1.000000", false,
+		bigPictureFull, bigPictureWindowed)
+
+	if len(asked) != 0 {
+		t.Errorf("sway was asked for %q after the player had left Big Picture", asked)
+	}
+
+	if !strings.Contains(said, "no longer has the screen") {
+		t.Errorf("the journal says %q, want it to say why it stopped", said)
+	}
+}
+
+// The other half of the job, which the rule in the sway configuration misses
+// on a cold start because the window is mapped before it has a title.
+func TestABigPictureThatNeverTakesTheScreenIsAskedAndThenLeft(t *testing.T) {
+	asked, said := runBigPicture(t, "1.000000 = 1.000000", false, bigPictureWindowed)
+
+	if len(asked) == 0 {
+		t.Fatalf("a windowed Big Picture was never asked to go fullscreen")
+	}
+
+	for _, command := range asked {
+		if strings.Contains(command, "fullscreen disable") {
+			t.Fatalf("a window that never had the screen was taken off it: %q", asked)
+		}
+	}
+
+	if !strings.Contains(said, "never had the screen") {
+		t.Errorf("the journal says %q, want it to say it gave up", said)
 	}
 }

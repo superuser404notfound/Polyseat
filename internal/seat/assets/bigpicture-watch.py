@@ -39,39 +39,28 @@ Pressing $mod+f is the case this must never undo. It looks like the first line
 above and nothing follows it, so no window is ever remembered as having taken
 fullscreen, and nothing is put back.
 
-The second: start the seat, pick Big Picture in Moonlight before anything else,
-and it paints a small picture in the top left corner of a black screen. That one
-is not about fullscreen at all, which is why it survived every fix above.
-Measured in a seat rather than guessed:
+The other thing a cold Big Picture does - owning the whole screen while
+painting 1280x800 of it - lives in polyseat-bigpicture and not here. It is not
+about fullscreen at all: the window has it. Big Picture is a fixed 1280x800
+interface that Steam scales to its window, and on a cold start it works that
+scale out once, while the window is still its own 1280x800, and never again.
+The launcher is the one that knows whether Steam was started cold, which is
+the only thing that turned out to matter, so it is the one that does something
+about it.
 
-    container        id=6   rect 3840x2160   geometry 1280x800   fullscreen 1
-
-Steam maps the window at its own 1280x800, the rule in the sway configuration
-makes it fullscreen before the Steam UI process is running, and what finally
-paints keeps the size the window had when it was mapped. Every pixel outside
-that corner is exactly black, and `fullscreen_mode` is 1, so the launcher and
-this watcher both thought the job was done. Asking sway for fullscreen a second
-time, once the UI is alive, is a configure Steam does react to: one off-and-on
-and the picture fills the screen. That is what a player does by hand when they
-restart Big Picture and it "fixes itself".
-
-Nothing in sway's tree says what a client painted, so the screen itself is
-asked, with grim, at four points. The title still appears below for the one
-case the events cannot describe: a cold Steam maps its window before it has a
-title, so the rule matching on the title never fires, and the window stays in a
-corner with nothing having taken anything from it. That match is a pattern
-rather than an English sentence, and a test holds the three files that carry it
-to the same one.
+The title appears below for the one case the events cannot describe: a cold
+Steam maps its window before it has a title, so the rule matching on the title
+never fires, and the window stays in a corner with nothing having taken
+anything from it. That match is a pattern rather than an English sentence, and
+a test holds the three files that carry it to the same one.
 """
 
 import glob
 import json
 import os
 import re
-import select
 import socket
 import struct
-import subprocess
 import sys
 import time
 
@@ -91,36 +80,6 @@ TITLE = re.compile(r"[Bb]ig[ _-][Pp]icture")
 # still count as having taken it. sway does both in one transaction, so the
 # events arrive together; this is loose only to survive a busy seat.
 TOGETHER = 2.0
-
-# How long to let Steam paint before looking at the screen. A cold Steam is
-# still unpacking its UI process when the window is mapped, and a black screen
-# is what it looks like either way until that finishes.
-SETTLE = 4.0
-
-# How long the window is left windowed between the two halves of an off-and-on.
-# Long enough to be a configure of its own rather than one sway folds into the
-# next, short enough not to read as a flicker.
-OFF = 0.4
-
-# How many times to insist. One off-and-on was enough every time this was
-# reproduced; after three the black is somebody else's and the seat is better
-# left alone than flashed at.
-TRIES = 3
-
-# What counts as painted. The surface nobody drew on is exactly black, and
-# Steam's own darkest corners are not: measured at 28 out of 255 on the bottom
-# edge of a Big Picture that fills the screen.
-FAINT = 8
-
-# How far outside the painted corner to look, so that a border or a rounded
-# edge is not what answers.
-MARGIN = 20
-
-# How long to keep looking at a freshly fullscreened Big Picture before leaving
-# it alone. A cold Steam unpacks and updates itself first, and the same number
-# is what polyseat-bigpicture waits for the window itself.
-PATIENCE = 120.0
-
 
 def log(message):
     print(f"polyseat-bigpicture-watch: {message}", file=sys.stderr, flush=True)
@@ -373,140 +332,10 @@ def again(ident):
     return pick
 
 
-def look(x, y, size=12):
-    """The brightest channel in a small square of the screen, or None.
-
-    grim is in a seat because the desktop portal needs it, and it is asked for
-    a dozen pixels rather than a screen so that this costs nothing worth
-    measuring. A PPM because reading one needs no library: two lines of header
-    and then the bytes.
-    """
-    try:
-        shot = subprocess.run(
-            ["grim", "-g", f"{x},{y} {size}x{size}", "-t", "ppm", "-"],
-            capture_output=True, timeout=10).stdout
-    except (OSError, subprocess.SubprocessError) as exc:
-        log(f"could not look at the screen: {exc}")
-
-        return None
-
-    head = shot.split(b"\n", 3)
-
-    if len(head) < 4 or head[0] != b"P6" or not head[3]:
-        return None
-
-    return max(head[3])
-
-
-def unpainted(node, sample):
-    """Whether this window holds the screen and has drawn on a corner of it.
-
-    True when it has, False when the picture fills the screen, and None while
-    there is nothing to judge yet, which on a cold Steam is the first half
-    minute: the window is up and the UI process behind it is still unpacking.
-
-    It has to be read off the screen, because nothing in sway's tree carries
-    it. The window is the size sway gave it either way; what Steam painted into
-    it is the size the window had when it was mapped. So the screen is asked
-    directly, at one point inside the corner Steam would have drawn in and
-    three outside it, and only the exact black of a surface nobody painted
-    counts as outside.
-
-    sample answers with the brightest channel at a point, and is an argument so
-    that a test can describe a picture nobody has to render.
-    """
-    if not node.get("fullscreen_mode"):
-        return False
-
-    rect = node.get("rect") or {}
-    drawn = node.get("geometry") or {}
-
-    width, height = rect.get("width") or 0, rect.get("height") or 0
-    small, short = drawn.get("width") or 0, drawn.get("height") or 0
-
-    if not (0 < small < width and 0 < short < height):
-        # The window was mapped at the size of the screen, so there is no
-        # smaller picture it could be stuck at.
-        return False
-
-    x, y = rect.get("x") or 0, rect.get("y") or 0
-
-    inside = sample(x + small // 2, y + short // 2)
-    if inside is None or inside <= FAINT:
-        return None
-
-    outside = [sample(x + small + MARGIN, y + short // 2),
-               sample(x + small // 2, y + short + MARGIN),
-               sample(x + width - MARGIN, y + height - MARGIN)]
-
-    return all(value == 0 for value in outside)
-
-
-def holding(event):
-    """The id of a Big Picture window that is holding the screen now, or None.
-
-    Every event carries the whole window, so this needs no tree: whatever just
-    happened, if Big Picture is fullscreen it is worth looking at what it has
-    painted there.
-    """
-    container = event.get("container") or {}
-
-    if event.get("change") == "close" or not is_big_picture(container):
-        return None
-
-    return container.get("id") if container.get("fullscreen_mode") else None
-
-
-def step(path, plan):
-    """Do what the plan says is due, and answer with what is due next, or None
-    when there is nothing left to do about that window."""
-    ident, now = plan["id"], time.monotonic()
-
-    if plan["step"] == "on":
-        order(path, f"[con_id={ident}] fullscreen enable")
-
-        return dict(plan, step="look", at=now + SETTLE, tries=plan["tries"] + 1)
-
-    tree = talk(path, GET_TREE)
-    if tree is None:
-        return None
-
-    node = window(tree, ident)
-    if node is None:
-        return None
-
-    verdict = unpainted(node, look)
-
-    if verdict is None:
-        # Nothing on the screen to judge yet. On a cold Steam that is the
-        # ordinary first half minute, so it is worth waiting out.
-        if now > plan["until"]:
-            return None
-
-        return dict(plan, at=now + SETTLE)
-
-    if not verdict:
-        if plan["tries"]:
-            log(f"window {ident} fills the screen after "
-                f"{plan['tries']} off and on")
-
-        return None
-
-    if plan["tries"] >= TRIES:
-        log(f"window {ident} still paints a corner of the screen after "
-            f"{TRIES} tries, leaving it as it is")
-
-        return None
-
-    order(path, f"[con_id={ident}] fullscreen disable")
-
-    return dict(plan, step="on", at=now + OFF)
-
-
 def main():
     path = socket_path()
     if not path:
-        log("no sway socket, Big Picture will keep whatever size it is given")
+        log("no sway socket, so Big Picture stays wherever a game leaves it")
 
         return 0
 
@@ -520,33 +349,14 @@ def main():
 
         return 0
 
-    state, seen, looked, plan = {}, set(), set(), None
+    state, seen = {}, set()
 
     while True:
-        wait = None if plan is None else max(0.0, plan["at"] - time.monotonic())
-
-        try:
-            ready, _, _ = select.select([events], [], [], wait)
-        except OSError:
-            return 0
-
-        if not ready:
-            ident = plan["id"]
-            plan = step(path, plan)
-
-            if plan is None:
-                # Whatever it found, that window has been dealt with. Steam
-                # renames its window while it runs, and looking again at every
-                # rename would mean a screenshot a minute forever.
-                looked.add(ident)
-
-            continue
-
         try:
             event = recv(events)
         except (OSError, ValueError):
-            # sway going away is the session ending, and the session starts this
-            # again when it comes back.
+            # sway going away is the session ending, and the session starts
+            # this again when it comes back.
             return 0
 
         # Both, always, even when the first one answers: the second is also
@@ -556,20 +366,10 @@ def main():
         fresh = cold_start(seen, event)
 
         if back is not None:
-            ask(path, again(back), "the window that took fullscreen from it closed")
+            ask(path, again(back),
+                "the window that took fullscreen from it closed")
         elif fresh is not None:
             ask(path, again(fresh), "Big Picture appeared without fullscreen")
-
-        if event.get("change") == "close":
-            looked.discard((event.get("container") or {}).get("id"))
-
-        ident = holding(event)
-
-        if (ident is not None and ident not in looked
-                and (plan is None or plan["id"] != ident)):
-            now = time.monotonic()
-            plan = {"id": ident, "at": now + SETTLE, "until": now + PATIENCE,
-                    "step": "look", "tries": 0}
 
 
 if __name__ == "__main__":

@@ -18,6 +18,23 @@
 # resolution still plays; a seat whose prep command returned non-zero does not
 # start at all. Every path below therefore ends in exit 0, and says on the way
 # out what it did.
+#
+# The width is handed on exactly as the client asked for it, and one thing is
+# worth writing down about that. A seat whose width is not a multiple of four
+# cannot be photographed: it reads a frame back in a 24-bit format, grim rounds
+# the stride up to four bytes, wlroots wants a stride that is a whole number of
+# three-byte pixels, and the two only agree on a multiple of four.
+#
+#     2248 wide   stride 6744   2248 pixels exactly        a screenshot
+#     2250 wide   stride 6752   2250 pixels and two bytes  "Invalid stride"
+#
+# A phone asking for 2250x1206 leaves the seat like that, and everything that
+# takes a screenshot there fails, xdg-desktop-portal-wlr included, since it
+# shells out to grim. Nothing in a seat needs a screenshot today - the one
+# thing that did, in 0.22.0, was taken out again - so the client gets the width
+# it asked for. If something here ever has to read the screen, this is the
+# first thing to check, and rounding the width down by up to three pixels is
+# the whole fix.
 
 : "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
 export XDG_RUNTIME_DIR
