@@ -10,6 +10,58 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.28.2
+
+**Every minute, in every running seat, the daemon started Lutris to ask what it
+has installed, threw the answer away and asked again.** The guard against
+exactly that was written in 0.13.1 and has been in the source ever since; it was
+simply never reached. Lutris prints its log and its document to the same stream
+and does not stop at the closing bracket - "Shutting down Lutris" comes after it
+- and `json.Unmarshal` refuses anything that follows the value it was given. So
+every listing failed to parse, the failure was returned as "this seat has no
+Lutris games" rather than as a read that did not work, and nothing was
+remembered, logged or shown.
+
+Starting Lutris is not a cheap question. It is a GTK application that probes the
+card with glxinfo and vulkaninfo on the way up, and every compositor sharing
+that card - the host's and every seat's - stops drawing for about a second while
+those contexts are made. That is the stutter people have been feeling on a one
+minute timer, and it is the same cause as 0.13.1, reached through a different
+door.
+
+**Seats do not have to be built again.** The recipe is still at generation 46.
+The daemon is what changed, so a restart is the whole of it, and updating from
+the interface does that.
+
+- **The listing is decoded rather than unmarshalled.** A `Decoder` reads one
+  value and leaves the rest of the stream where it is, which is the shape of
+  this output: a document with a log wrapped around it.
+
+- **The document is looked for at the start of a line.** The first `[` anywhere
+  would do until the day a log line holds one, and what surrounds the document
+  is prose written for people to read.
+
+- **Output that genuinely cannot be read is now an error**, which
+  `installedGames` already logs into the seat. Answering "no games" to a failed
+  read is what let this sit through several releases with nothing in the journal
+  to find.
+
+- **Lutris games reach Moonlight's list.** Not a change so much as the first
+  time it has worked: the list is built from the listing that never parsed, so
+  since 0.1.0, where the listing was added, every seat has offered Lutris the
+  launcher and never a game installed in it.
+
+**What is proven and what is not.** The cost was measured on this machine before
+anything was touched: three minutes of process sampling caught five `lutris
+--list-games` runs and five `vulkaninfo` runs, alternating between the two
+running seats, and `apps.json` in both seats held the launcher and not the game.
+The fix was proven against the seat it was found in - the real output of that
+command, taken from a running seat and put through the built code, comes back as
+the game with its `rungameid` - and that same output, log lines and all, is what
+the test uses. What has not been watched yet is an hour of a daemon carrying
+this: that the asking stops rather than merely succeeding is what the memory
+does, and the memory has its own tests but has never been seen idle on hardware.
+
 ## 0.28.1
 
 **A seat's management interface can be there and still be useless, and the
