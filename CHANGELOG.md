@@ -10,6 +10,79 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.23.0
+
+**The small picture in the corner was still there in 0.22.0**, reported from
+the same couch with the same photograph. The repair in 0.22.0 was right. What
+was wrong was the thing that decided whether to run it: it read the screen with
+grim, and in that seat it could not, and said nothing about it.
+
+**Seats have to be built again.** The recipe is at generation 42, so every seat
+is marked stale and wants provisioning. A few minutes per seat.
+
+- **What Big Picture does is scaling, not resizing.** "Steam paints the size
+  the window had when it was mapped" is what 0.22.0 said and it is not what
+  happens. Big Picture is a fixed 1280x800 interface, created hidden, at that
+  size and at no position at all. When Steam shows it, it asks once how big the
+  window has become and scales to that, and it never asks again:
+
+      Created window: size: 1280,800 pos: 805240832,805240832
+      WasHidden 1: (0, 0) 1280x800
+      ThreadSetForceDeviceScaleFactors 1.000000 * 1.000000 = 1.000000
+      WasHidden 0: (0, 0) 1280x800
+      ThreadSetForceDeviceScaleFactors 1.000000 * 1.423025 = 1.420000
+
+  The last line is sway having made the window fullscreen before Steam asked.
+  Without it, a 1280x800 interface is drawn at scale one into a window that
+  owns the whole screen.
+
+- **Which of the two happens is a race.** sway's rule can only fire once the
+  window is mapped and titled; Steam's one question comes when it likes. Nine
+  starts in one seat on one day, each matched by process id to the Steam that
+  opened it:
+
+      into a client that was already running    4 starts, 4 came up right
+      starting a client of its own              5 starts, 1 came up right
+
+  which is why restarting Big Picture looks like a cure. An earlier draft of
+  this release did exactly that and repaired only cold starts. It is not wrong
+  about the odds, but it is a guess about a race standing in for a number that
+  can be read, and four warm starts is not a promise.
+
+- **So Steam is asked what it thinks, instead of the screen being
+  photographed.** The factor for a window of w by h has to be
+  sqrt(w/1280 * h/800), which is 1.423025 for 1920x1080 and 1.627852 for
+  2250x1206, both exact to six places against what the seats wrote down. If the
+  factor is right, nothing happens at all and nobody sees a flicker. If it is
+  wrong, Big Picture is taken off fullscreen and put back, which is the change
+  of size Steam does react to, and then the factor is read again to see whether
+  it helped. Two tries, and then it says which number it is stuck at.
+
+- **A Steam that says nothing is not a Steam that is wrong.** It gets one
+  off-and-on, done blind, and a line in the journal saying so. That is the one
+  thing 0.22.0 had backwards: it could not read the screen, called that
+  "nothing painted yet", and waited it out for two minutes in silence.
+
+- **The screenshot is gone, and with it two silent wrong answers**, both
+  measured in the seat that kept reporting the bug:
+
+      grim:      2250 wide, stride 6752, "Invalid stride", no picture at all
+      threshold: the seat's own background #1b2430 reads 48, FAINT was 8
+
+  A width that is not a multiple of four cannot be photographed at all in these
+  seats, and the phone on the couch asks for 2250x1206. The second needs no
+  unusual width: a fullscreen window that has not painted yet shows the seat's
+  background, which is brighter than the threshold for "somebody has drawn
+  here", so the verdict came back as "it fills the screen, leave it alone" and
+  that window was never looked at again. Run against a live seat, the 0.22.0
+  function said `False` to a screen that was 92 percent wallpaper.
+
+- **polyseat-bigpicture-watch is two hundred lines smaller** and does only what
+  it was written for: putting Big Picture back when a game that took the screen
+  from it ends. grim is no longer named in the seat's package list, and the
+  stride finding is written down in polyseat-resize rather than acted on, since
+  nothing in a seat needs a screenshot now.
+
 ## 0.22.0
 
 **Big Picture came up as a small picture in the corner of a black screen, and
