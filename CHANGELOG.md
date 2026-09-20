@@ -10,6 +10,59 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.25.0
+
+**Two people playing the same game in two seats overwrote each other's
+saves.** Installing a Windows game through a launcher puts its wine prefix in
+the shared folder, the prefix is where the saves live, and the pool replaces a
+game folder wholesale when it carries a newer copy across. The one who played
+last won.
+
+**Seats have to be built again.** The recipe is at generation 44, so every
+seat is marked stale and wants provisioning. A few minutes per seat. Only the
+note in `shared/README.txt` changes; the repair itself is in the daemon and
+works as soon as it is installed.
+
+- **The part of a wine prefix where saves live belongs to the seat.** The
+  Steam half of the library already promises this and gets it from Steam's
+  layout: game files are in `common/<game>`, the Proton prefix is in
+  `compatdata/` next to it, and taking only the first leaves the second
+  behind. `docs/architecture.md` says so and a test asserts that no prefix
+  ever reaches the pool. The folder half had no such layout and, it turns out,
+  no such promise kept.
+
+  A seat's Lutris installs into `shared/` by default, which is deliberate and
+  is what makes "install a game and it appears in the other seats" true. It
+  also means the prefix arrives in the shared tree. So playing rewrote it,
+  which made the folder a new version, which copied several gigabytes to the
+  other seat because somebody saved; and the next update to the game replaced
+  the other seat's prefix along with it.
+
+  The prefix cannot simply be skipped the way `compatdata/` is. A Lutris
+  installer sets the prefix to `$GAMEDIR`, so the prefix root and the game
+  root are one directory and the game files sit in `drive_c/Program Files`:
+  skipping the prefix would skip the game. The line is drawn one level further
+  in, at `drive_c/users`, which is where wine keeps Documents, AppData and
+  Saved Games and therefore what the person playing made. Everything else in
+  the prefix is the install and is still shared, including the registry that
+  knows what was installed.
+
+  That directory is now left out of the measurement that decides a folder's
+  version, so an evening at a game is not a new version of it. And a clone
+  leaves it alone: the destination's own is carried across the swap by a
+  rename rather than replaced, so the saves are never copied and never
+  rewritten however large they have got.
+
+  A seat that has never seen the game is given the one that came with it,
+  rather than nothing, so that a game keeping data files rather than saves
+  under `drive_c/users` is playable there at all. The cost of that choice is
+  that the first copy carries whatever the installing seat had.
+
+  **What this does not cover** is a game that saves into its own installation
+  directory, as titles from before the prefix convention do. Nothing can,
+  without knowing that particular game, which is the manifest this design
+  deliberately does not have.
+
 ## 0.24.1
 
 **The language arrived in the file and not in the session.** 0.24.0 gave a
