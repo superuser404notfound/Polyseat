@@ -31,7 +31,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 42
+const Generation = 43
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -108,9 +108,14 @@ type Step struct {
 //     seats never showed it: they already had the user.
 //   - The session last, because it needs the addresses of a running container
 //     to generate Sunshine's allowed origins.
+//   - The locale first of the steps that touch the seat's filesystem, so that
+//     everything installed after it is installed into a seat that already has
+//     the host's language. Nothing later reads it, but a seat whose language
+//     is set at the end is a seat that spent the whole build in English.
 func Steps() []Step {
 	return []Step{
 		{"container", (*Provisioner).stepContainer},
+		{"locale", (*Provisioner).stepLocale},
 		{"network", (*Provisioner).stepNetwork},
 		{"packages", (*Provisioner).stepPackages},
 		{"sunshine", (*Provisioner).stepSunshine},
@@ -2398,7 +2403,10 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		}
 	}
 
-	sway, err := render("assets/sway.config", map[string]string{"Resolution": p.Seat.Resolution})
+	sway, err := render("assets/sway.config", map[string]string{
+		"Resolution": p.Seat.Resolution,
+		"Keyboard":   hostKeyboard().swayInput(),
+	})
 	if err != nil {
 		return err
 	}
