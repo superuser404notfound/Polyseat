@@ -271,6 +271,22 @@ const (
 	hideLauncher = "/usr/local/bin/polyseat-launcher hide"
 )
 
+// Steam lives in gamescope on a workspace of its own, so picking one or the
+// other in Moonlight is a switch between the two rather than a window being
+// raised. sway.config assigns gamescope there and says why.
+//
+// Through a script rather than a shell line, and that is the same lesson
+// polyseat-capped carries: Sunshine takes the command apart itself and never
+// gives a shell the quotes to work with, so a `sh -c '...'` here arrives as
+// words and does nothing at all. It did exactly that once.
+const (
+	toGamescope = workspacePath + " 2"
+	toDesktop   = workspacePath + " 1"
+)
+
+// workspacePath is where the seat keeps the switch.
+const workspacePath = "/usr/local/bin/polyseat-workspace"
+
 // polyseatApps builds every entry Polyseat owns, and the names in order.
 //
 // A function of its arguments rather than part of the writer, because the one
@@ -283,19 +299,24 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 	ours := []app{
 		{
 			Name:      "Desktop",
-			PrepCmd:   []prep{{Do: showLauncher}},
+			PrepCmd:   []prep{{Do: showLauncher}, {Do: toDesktop}},
 			ImagePath: "desktop.png",
 			Polyseat:  true,
 		},
 		{
 			Name: "Steam Big Picture",
-			// Through a script rather than straight to Steam, because the sway
-			// rule that fullscreens the window matches on its title and a cold
-			// Steam maps the window before it has one. See polyseat-bigpicture.
-			Detached: []string{"setsid /usr/local/bin/polyseat-bigpicture"},
-			// The undo side closes Big Picture again so the seat does not sit
-			// in it until somebody notices.
-			PrepCmd:   []prep{{Do: hideLauncher, Undo: "setsid steam steam://close/bigpicture"}},
+			// Steam runs in gamescope from the moment the session starts, so
+			// this switches to the workspace it is on and asks it for Big
+			// Picture. What used to stand here was polyseat-bigpicture, which
+			// fought Steam's window into fullscreen and corrected the one
+			// scaling question Steam asks; inside gamescope neither is needed,
+			// because gamescope hands Steam a screen of exactly the right size.
+			//
+			// The undo no longer closes Big Picture either. Reopening it is
+			// free once Steam is warm, and leaving it open means the next
+			// player lands in it rather than watching it build itself.
+			Detached:  []string{"setsid steam steam://open/bigpicture"},
+			PrepCmd:   []prep{{Do: hideLauncher}, {Do: toGamescope, Undo: toDesktop}},
 			ImagePath: "steam.png",
 			Polyseat:  true,
 		},
@@ -316,8 +337,12 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 		taken[key] = true
 
 		ours = append(ours, app{
-			Name:      name,
-			Detached:  []string{"setsid " + launch},
+			Name:     name,
+			Detached: []string{"setsid " + launch},
+			// A Steam game started this way is started by the Steam that runs
+			// inside gamescope, so it appears there. A Lutris or flatpak title
+			// has no such parent and stays on the desktop, which is why the
+			// switch is part of the launcher's entry and not of this one.
 			PrepCmd:   []prep{{Do: hideLauncher}},
 			ImagePath: image,
 			Polyseat:  true,

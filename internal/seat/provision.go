@@ -32,7 +32,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 48
+const Generation = 49
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -2794,6 +2794,7 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		{"/usr/local/bin/polyseat-icons", asset("assets/icons.py"), 0o755, 0},
 		{"/usr/local/bin/polyseat-bigpicture", asset("assets/bigpicture.sh"), 0o755, 0},
 		{steamScriptPath, asset("assets/steam.sh"), 0o755, 0},
+		{workspacePath, asset("assets/workspace.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-pad-pointer", asset("assets/pad-pointer.py"), 0o755, 0},
 		{"/usr/local/bin/polyseat-bigpicture-watch", asset("assets/bigpicture-watch.py"), 0o755, 0},
 	}

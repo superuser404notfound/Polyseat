@@ -47,6 +47,19 @@ func runSteamScript(t *testing.T, alreadyRunning bool) (started, said string) {
 	stub("pgrep", "#!/bin/sh\nexit "+code+"\n")
 	stub("setsid", "#!/bin/sh\nexec \"$@\"\n")
 
+	// A screen to read the starting size off, in sway's own shape.
+	stub("swaymsg", "#!/bin/sh\ncat <<'JSON'\n"+
+		`[{"name":"HEADLESS-1","current_mode":{"width":2560,"height":1440,"refresh":60000}}]`+
+		"\nJSON\n")
+
+	// gamescope writes down how it was called and then runs what came after
+	// the separator, so that the whole chain is exercised rather than just its
+	// first link.
+	stub("gamescope", "#!/bin/sh\n"+
+		"echo \"$*\" > "+filepath.Join(home, "gamescope")+"\n"+
+		"for a in \"$@\"; do shift; [ \"$a\" = -- ] && break; done\n"+
+		"exec \"$@\"\n")
+
 	// What Steam was started with, and whether the cap came with it.
 	stub("steam", "#!/bin/sh\necho \"$* mangohud=$MANGOHUD\" > "+
 		filepath.Join(home, "started")+"\n")
@@ -84,18 +97,56 @@ func runSteamScript(t *testing.T, alreadyRunning bool) (started, said string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
+	if b, err := os.ReadFile(filepath.Join(home, "gamescope")); err == nil {
+		gamescopeArgs = strings.TrimSpace(string(b))
+	} else {
+		gamescopeArgs = ""
+	}
+
 	return strings.TrimSpace(string(body)), string(out)
 }
+
+// gamescopeArgs is how the last run called gamescope. A package level value
+// rather than a third return, because only two of the tests below look at it
+// and the rest read better without it.
+var gamescopeArgs string
 
 // Silent is the whole point of starting it early rather than late: a Steam that
 // opens its window would put a store page on the screen of a seat nobody is
 // sitting at, and Big Picture would cost twice the memory for a thing nobody
 // asked to see.
-func TestSteamIsStartedSilently(t *testing.T) {
+func TestSteamIsStartedSilentlyInsideGamescope(t *testing.T) {
 	started, _ := runSteamScript(t, false)
 
 	if !strings.HasPrefix(started, "-silent") {
 		t.Errorf("started steam %q, want -silent", started)
+	}
+}
+
+// The in-game overlay does not work under rootless Xwayland at all, and -e is
+// what makes gamescope carry it. Without the flag the overlay never appears;
+// without gamescope it appears at one or two frames a second. steam.sh has the
+// measurement.
+func TestSteamRunsInsideGamescopeWithTheSteamIntegration(t *testing.T) {
+	runSteamScript(t, false)
+
+	for _, want := range []string{"-e", "--xwayland-count 2", "-f", "--backend wayland"} {
+		if !strings.Contains(gamescopeArgs, want) {
+			t.Errorf("gamescope was called without %q: %s", want, gamescopeArgs)
+		}
+	}
+}
+
+// The starting size is the screen as it is, not a number in a file: a seat
+// streams to whatever a client asks for, and polyseat-resize changes the output
+// under a running gamescope, which then follows it.
+func TestSteamTakesTheScreenSizeFromSway(t *testing.T) {
+	runSteamScript(t, false)
+
+	for _, want := range []string{"-W 2560", "-H 1440", "-r 60"} {
+		if !strings.Contains(gamescopeArgs, want) {
+			t.Errorf("gamescope did not get %q from sway: %s", want, gamescopeArgs)
+		}
 	}
 }
 
