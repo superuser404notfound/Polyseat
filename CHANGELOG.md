@@ -10,6 +10,75 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.29.0
+
+**Steam is started with the session, and the daemon is allowed to close an idle
+one.** The two belong together: the first is what takes the wait off the player,
+the second is what stops that wait being paid for with settings that quietly
+stop being applied.
+
+The wait was real and measured here: a cold Steam in a seat takes 15 to 25
+seconds before it shows anything, and those seconds were spent in front of
+somebody who had just picked a game. It was only ever paid once per seat boot,
+because Steam outlives the stream that started it - the Big Picture entry closes
+Big Picture and not the client - so this moves that one wait off the player and
+on to the boot.
+
+Silently, and not into Big Picture. Summed PSS in two seats on this machine:
+`steam -silent` is 16 processes and 732 MB, Steam with Big Picture open is 18
+and 1324 MB, and Big Picture also renders its interface for as long as it is
+open, which in an autostarted seat is for as long as the host is on.
+
+What made this more than a convenience is the other half. Three steps change
+things Steam has already read - the default Proton, a compatibility tool's
+manifest, a tool being taken away - and all three gave up when Steam was
+running, because Steam keeps `config.vdf` in memory and writes the whole of it
+out when it exits, so an edit made underneath it is undone rather than ignored.
+With Steam outliving every stream, that gate was already closed on any seat that
+had been played in since it started. Autostart would have closed it for good.
+So the daemon now asks Steam to leave, with `steam -shutdown`, when nobody is
+streaming and nothing in the seat still has the library open, does its work, and
+starts a silent one again afterwards.
+
+**Seats have to be provisioned again**, generation 47: the session configuration
+and one new script in the seat.
+
+- **The in-game Steam overlay no longer turns a game into a slideshow.** The
+  framerate limiter waits after the frame rather than before it,
+  `fps_limit_method=late` where this asked for `early`.
+
+  "early" budgets a frame from the moment the last one was presented, which
+  hands the stream a fresher picture and is why it was chosen. The overlay is a
+  fixed extra cost per frame, a budget computed before the work cannot absorb
+  it, and a missed budget costs the whole frame: 60 becomes 30, felt as a
+  stutter rather than as a slowdown. The tell, and the reason this hid for a
+  whole evening behind Steam's settings, is that the card does *less* work
+  while the overlay is open. Utilisation over each window, labelled by Steam's
+  own log, in one seat on one evening:
+
+      early, overlay open      +4 points over the closed baseline
+      no cap at all            +7
+      late, overlay open       +9
+
+  The cost is up to one frame interval of latency, 17 ms at 60 fps, paid
+  always. It buys a menu that works whenever it is opened.
+
+- **`polyseat-steam` starts it.** One script, used by the session and by the
+  daemon, so the two cannot come to different conclusions about what a started
+  Steam is. It does nothing when there is already one running.
+
+- **A pointer nobody is using disappears after ten seconds.** `hide_cursor` in
+  the session configuration. The pointer in a seat is Sunshine's virtual one or
+  the gamepad helper's, and both leave it standing where they stopped; wlroots
+  draws it into the very picture Sunshine captures, so it stayed on the
+  television until somebody moved a mouse and clicked. Confirmed on a 4K stream
+  out of a seat here.
+
+- **A game that outlived its stream stops the shutdown.** A stream that ends
+  leaves the game running on purpose, so that picking it again comes back to it.
+  The same probe the library uses answers whether anything in the seat still has
+  those files open, and Steam is left alone when it does.
+
 ## 0.28.2
 
 **Every minute, in every running seat, the daemon started Lutris to ask what it
