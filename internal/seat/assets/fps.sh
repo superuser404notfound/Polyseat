@@ -57,14 +57,35 @@ write() {
         if [ -n "$1" ]; then
             echo "fps_limit=$1"
 
-            # How the limiter waits, and it is not a detail. MangoHud's default
-            # is "late": render the frame the moment the last one was presented,
-            # then sleep out the rest of the interval. The frame is therefore
-            # almost a whole interval old by the time it is shown, and on a
-            # stream that age is added to every other delay in the chain.
-            # "early" sleeps first and renders last, so what goes out is as
-            # fresh as the cap allows. Same framerate, same heat, less lag.
-            echo "fps_limit_method=early"
+            # How the limiter waits, and it is not a detail.
+            #
+            # "late", MangoHud's default, renders the frame the moment the last
+            # one was presented and sleeps out the rest of the interval, so what
+            # goes out is almost a whole interval old. "early" sleeps first and
+            # renders last, which is fresher by up to that interval, and this
+            # file asked for "early" for exactly that reason.
+            #
+            # It was also what made the Steam overlay unusable in a seat, and it
+            # took a whole evening to find because every other suspect was a
+            # setting rather than a timing. "early" budgets the frame from the
+            # last presentation. Open the in-game overlay and every frame costs
+            # a few milliseconds more, the budget is missed, and the frame is
+            # pushed to the next interval: 60 becomes 30, as a stutter rather
+            # than as a slowdown. The tell is that the card does *less* work
+            # while the overlay is open, which is why "not enough power" was the
+            # wrong place to look. Measured in a seat on 2026-09-21, utilisation
+            # over each window, labelled by Steam's own log:
+            #
+            #     early, overlay open      +4 points over the closed baseline
+            #     no cap at all            +7
+            #     late, overlay open       +9
+            #
+            # The overlay is a fixed extra cost per frame, so it is precisely
+            # what a budget computed before the work cannot absorb. "late"
+            # absorbs it: a missed budget costs latency rather than a whole
+            # frame. The trade is up to one interval of lag, 17 ms at 60, paid
+            # always, against a menu that is unusable whenever it is open.
+            echo "fps_limit_method=late"
 
             # And how the finished frame reaches the compositor. A game with a
             # FIFO swapchain queues frames and waits for them to drain, which is

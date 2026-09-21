@@ -106,17 +106,35 @@ func TestFpsLeavesNoOverlayOnTheStream(t *testing.T) {
 	}
 }
 
-// The cap decides how many frames are drawn, these two decide how old the one
-// that goes out is. MangoHud's default is to render a frame the moment the last
-// one was presented and then sleep, which hands the stream a picture that is
-// already almost an interval old, and a FIFO swapchain adds a queue on top.
+// The cap decides how many frames are drawn, the present mode decides how old
+// the one that goes out is: a FIFO swapchain queues frames and hands the stream
+// the oldest one still in line, mailbox keeps only the newest.
 func TestFpsAsksForTheFreshestFrameItCan(t *testing.T) {
 	conf, _ := runFps(t, "60")
 
-	for _, want := range []string{"fps_limit_method=early", "vulkan_present_mode=mailbox"} {
-		if !strings.Contains(conf, want) {
-			t.Errorf("%q is missing, so the cap costs a frame it does not have to:\n%s", want, conf)
-		}
+	if !strings.Contains(conf, "vulkan_present_mode=mailbox") {
+		t.Errorf("the present mode is missing, so the cap costs a frame it does not have to:\n%s", conf)
+	}
+}
+
+// And the limiter waits after the work rather than before it.
+//
+// "early" budgets the frame from the last presentation, which is fresher by up
+// to one interval and is what this file used to ask for. It also turned the
+// Steam overlay into a stutter: the overlay is a fixed extra cost per frame, a
+// budget computed before the work cannot absorb it, and every missed budget
+// costs a whole frame instead of a little latency. Measured in a seat, see the
+// numbers in fps.sh. A test rather than a comment because the two words are
+// interchangeable at a glance and only one of them leaves the menu usable.
+func TestFpsWaitsAfterTheFrameRatherThanBeforeIt(t *testing.T) {
+	conf, _ := runFps(t, "60")
+
+	if !strings.Contains(conf, "fps_limit_method=late") {
+		t.Errorf("the limiter does not wait late, so the in-game overlay stutters:\n%s", conf)
+	}
+
+	if strings.Contains(conf, "fps_limit_method=early") {
+		t.Errorf("the limiter waits early, which is what the overlay cannot absorb:\n%s", conf)
 	}
 }
 
