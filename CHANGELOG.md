@@ -10,6 +10,41 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.29.1
+
+**The autostarted Steam of 0.29.0 was starting games without the framerate
+cap.** The cap reaches a game by inheritance and by nothing else: Sunshine sets
+`MANGOHUD` and the preload on what it launches, Steam used to be one of those,
+and every game Steam started was a grandchild that inherited both. A Steam
+started by the session has neither, so from the moment the autostart landed,
+every game launched out of it rendered uncapped.
+
+Nothing says so when it happens. The cap has no log line, and the only symptom
+is that Steam's own performance counter stops reading 60. It went unnoticed for
+an afternoon here and was found by asking why a MangoHud setting had no effect.
+`polyseat-steam` now starts Steam through `polyseat-capped`, which is where
+those two variables already live, and a test holds the two files to it.
+
+**And the limiter waits early again.** 0.29.0 changed it to `late` on the
+theory that a budget computed before the work is what made the in-game Steam
+overlay stutter. The theory was good and it was wrong: the overlay stutters
+just as badly in a seat where MangoHud is not loaded at all, which is precisely
+what the bug above had produced. So the cap is not the cause, `early` comes
+back, and the frame of latency it was costing is not paid for nothing.
+
+**The in-game overlay stutter is still open.** What is known: it is a wait
+rather than a shortage, the card sits far below what it can do while the
+overlay is open, and it flips between one game start and the next with nothing
+changed. It is not the resolution, not the resize on connect, not the present
+mode, not the preloaded overlay hook, not the web view setting and not the cap.
+There is now an objective test for it, which is the useful part: with the
+overlay open a healthy run adds 7 to 9 points of GPU utilisation over the
+closed baseline and a stuttering one adds 4, and Steam's own log says to the
+second when the overlay was opened.
+
+**Seats have to be provisioned again**, generation 48: two of the scripts in
+the seat changed.
+
 ## 0.29.0
 
 **Steam is started with the session, and the daemon is allowed to close an idle
