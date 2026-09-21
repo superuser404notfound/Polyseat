@@ -46,10 +46,22 @@ func runSteamScript(t *testing.T, alreadyRunning bool) (started, said string) {
 
 	stub("pgrep", "#!/bin/sh\nexit "+code+"\n")
 	stub("setsid", "#!/bin/sh\nexec \"$@\"\n")
-	stub("steam", "#!/bin/sh\necho \"$*\" > "+filepath.Join(home, "started")+"\n")
+
+	// What Steam was started with, and whether the cap came with it.
+	stub("steam", "#!/bin/sh\necho \"$* mangohud=$MANGOHUD\" > "+
+		filepath.Join(home, "started")+"\n")
+
+	// The real wrapper rather than a stub of it, because the thing being
+	// checked is that these two files still agree about how a capped process
+	// is started.
+	capped := filepath.Join(bin, "polyseat-capped")
+	if err := os.WriteFile(capped, asset("assets/capped.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	cmd := exec.Command("/bin/sh", script)
-	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"),
+		"POLYSEAT_CAPPED="+capped)
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -82,8 +94,22 @@ func runSteamScript(t *testing.T, alreadyRunning bool) (started, said string) {
 func TestSteamIsStartedSilently(t *testing.T) {
 	started, _ := runSteamScript(t, false)
 
-	if started != "-silent" {
+	if !strings.HasPrefix(started, "-silent") {
 		t.Errorf("started steam %q, want -silent", started)
+	}
+}
+
+// The framerate cap reaches a game by inheritance and by nothing else: Sunshine
+// sets it on what it launches, Steam is one of those, and every game Steam
+// starts inherits it. A Steam the session starts instead has to pick the same
+// variables up on the way, or every game launched out of it runs uncapped and
+// nothing anywhere says so. That is what happened for an afternoon, which is
+// why this is a test and not a comment.
+func TestSteamIsStartedBehindTheCap(t *testing.T) {
+	started, _ := runSteamScript(t, false)
+
+	if !strings.Contains(started, "mangohud=1") {
+		t.Errorf("Steam was started without the cap: %q", started)
 	}
 }
 

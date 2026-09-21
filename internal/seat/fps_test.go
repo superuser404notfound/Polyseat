@@ -117,24 +117,18 @@ func TestFpsAsksForTheFreshestFrameItCan(t *testing.T) {
 	}
 }
 
-// And the limiter waits after the work rather than before it.
+// And the limiter waits before the work rather than after it, which is fresher
+// by up to one interval.
 //
-// "early" budgets the frame from the last presentation, which is fresher by up
-// to one interval and is what this file used to ask for. It also turned the
-// Steam overlay into a stutter: the overlay is a fixed extra cost per frame, a
-// budget computed before the work cannot absorb it, and every missed budget
-// costs a whole frame instead of a little latency. Measured in a seat, see the
-// numbers in fps.sh. A test rather than a comment because the two words are
-// interchangeable at a glance and only one of them leaves the menu usable.
-func TestFpsWaitsAfterTheFrameRatherThanBeforeIt(t *testing.T) {
+// This was "late" for one release, on the theory that "early" was what made the
+// in-game Steam overlay stutter. The overlay stutters just as badly with no cap
+// loaded at all, so the cap is not the cause and the latency is not worth
+// paying. fps.sh has the measurement.
+func TestFpsWaitsBeforeTheFrameRatherThanAfterIt(t *testing.T) {
 	conf, _ := runFps(t, "60")
 
-	if !strings.Contains(conf, "fps_limit_method=late") {
-		t.Errorf("the limiter does not wait late, so the in-game overlay stutters:\n%s", conf)
-	}
-
-	if strings.Contains(conf, "fps_limit_method=early") {
-		t.Errorf("the limiter waits early, which is what the overlay cannot absorb:\n%s", conf)
+	if !strings.Contains(conf, "fps_limit_method=early") {
+		t.Errorf("the limiter does not wait early, so every frame is older than it has to be:\n%s", conf)
 	}
 }
 

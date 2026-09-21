@@ -44,6 +44,26 @@ fi
 
 say "starting Steam in the background"
 
-setsid steam -silent >/dev/null 2>&1 </dev/null &
+# Through polyseat-capped, and that is not decoration.
+#
+# The framerate cap reaches a game by inheritance and by nothing else: Sunshine
+# sets MANGOHUD and the preload on the applications it launches, Steam is one
+# of them, and every game Steam starts is a grandchild that inherits both. A
+# Steam that the session starts instead has neither, so every game launched out
+# of it runs uncapped, which is a seat quietly rendering frames nobody will ever
+# see. It was exactly this, unnoticed for an afternoon, because nothing says so:
+# the cap has no log line and the only symptom is a number in Steam's own
+# counter that stops saying 60.
+#
+# polyseat-capped is where those two variables live for the launcher entries,
+# so it is what this uses rather than a second copy of them. Backgrounded here
+# rather than left to exec, because this returns to a session that has other
+# things to start.
+# Overridable so that a test can run the real polyseat-capped from a temporary
+# directory and check that what reaches Steam actually carries the cap. The
+# default is the only path a seat ever uses.
+CAPPED=${POLYSEAT_CAPPED:-/usr/local/bin/polyseat-capped}
+
+setsid "$CAPPED" steam -silent >/dev/null 2>&1 </dev/null &
 
 exit 0
