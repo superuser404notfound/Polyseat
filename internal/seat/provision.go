@@ -32,7 +32,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 46
+const Generation = 47
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -85,6 +85,12 @@ type Provisioner struct {
 	lutris *lutrisMemory
 
 	uid int64 // the player's uid inside the container, learned during the run
+
+	// closedSteam records that steamQuiet closed a Steam this run, so that
+	// whoever finishes the run can put one back. Not a parameter, because the
+	// closing happens three levels down in whichever step needed Steam out of
+	// the way and the starting belongs at the end of the whole pass.
+	closedSteam bool
 }
 
 // Step is one named, idempotent piece of provisioning.
@@ -134,7 +140,14 @@ func Steps() []Step {
 }
 
 // Run executes the whole recipe.
+//
+// Whatever closed a Steam on the way through puts one back at the end. Not in
+// the step that closed it: the next step may want it closed as well, and the
+// session at the end of the recipe starts one by itself on a seat whose session
+// was restarted. ResumeSteam is quiet in both of those cases.
 func (p *Provisioner) Run(ctx context.Context) error {
+	defer p.ResumeSteam(ctx)
+
 	for _, step := range Steps() {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -1103,12 +1116,12 @@ func (p *Provisioner) removeTool(ctx context.Context, t tool) error {
 		return err
 	}
 
-	running, err := p.steamRunning(ctx)
+	quiet, err := p.steamQuiet(ctx)
 	if err != nil {
 		return err
 	}
 
-	if running {
+	if !quiet {
 		p.Log("! %s stays for now: Steam is running, and taking a tool away "+
 			"under it leaves a menu entry that starts nothing", t.label)
 
@@ -1149,8 +1162,8 @@ func (p *Provisioner) installTool(ctx context.Context, t tool, release protonAss
 		// names the old one, so doing it while Steam holds config.vdf would
 		// leave the seat pointing at a tool that no longer exists, which reads
 		// as the default silently reverting to Valve's Proton.
-		running, err := p.steamRunning(ctx)
-		if err != nil || running {
+		quiet, err := p.steamQuiet(ctx)
+		if err != nil || !quiet {
 			return err
 		}
 
@@ -1218,6 +1231,161 @@ func (p *Provisioner) steamRunning(ctx context.Context) (bool, error) {
 	return code == 0, nil
 }
 
+// steamQuiet reports whether Steam is out of the way, and closes an idle one so
+// that it can be.
+//
+// The three steps that change what Steam has already read used to give up here
+// and say so. That was the right answer when a seat's Steam was only running
+// because somebody had just started it, and it stopped being the right answer
+// the moment Steam began outliving the stream that started it: the Big Picture
+// entry closes Big Picture and not the client, so a seat that has been played
+// in once carries a Steam until it is restarted, and the default Proton and
+// every tool rename waited behind it for the rest of the day. Autostarting
+// Steam would have made that permanent, which is why this exists in the same
+// change.
+//
+// `steam -shutdown` is Steam's own way of being asked to leave, and leaving is
+// exactly when it writes config.vdf out, so the file this then edits is the one
+// Steam last agreed with. Measured here: a silent Steam is gone in under eight
+// seconds.
+//
+// Two things make it unsafe, and both are asked rather than assumed. Somebody
+// streaming is the obvious one. The other is a game still running with nobody
+// watching, which is not a corner case at all: a stream that ends leaves the
+// game running on purpose, so that picking it again in Moonlight comes back to
+// it. Closing Steam under one of those takes the game with it.
+func (p *Provisioner) steamQuiet(ctx context.Context) (bool, error) {
+	running, err := p.steamRunning(ctx)
+	if err != nil || !running {
+		return !running, err
+	}
+
+	if p.uid == 0 {
+		if err := p.readUID(ctx); err != nil {
+			return false, err
+		}
+	}
+
+	_, code, err := p.Client.Try(ctx, p.name(), "test", "-e", SessionPath)
+	if err != nil {
+		return false, err
+	}
+
+	if code == 0 {
+		p.Log("Steam is running and somebody is streaming from this seat, so it was left alone")
+
+		return false, nil
+	}
+
+	idle, err := p.nothingUsing(ctx, idleProbe)
+	if err != nil {
+		return false, err
+	}
+
+	if !idle {
+		p.Log("Steam is running and something in the seat still has the library open, so it was left alone")
+
+		return false, nil
+	}
+
+	p.Log("closing an idle Steam, so that what changes below survives its exit")
+
+	if _, _, err := p.Client.Try(ctx, p.name(), append(playerPrefix(p.uid),
+		"DISPLAY=:0", "steam", "-shutdown")...); err != nil {
+		return false, err
+	}
+
+	deadline := time.Now().Add(steamShutdownWait)
+
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(time.Second):
+		}
+
+		running, err := p.steamRunning(ctx)
+		if err != nil {
+			return false, err
+		}
+
+		if !running {
+			p.closedSteam = true
+
+			return true, nil
+		}
+	}
+
+	// Not an error. A Steam that will not go is a Steam that is busy with
+	// something, and the step that asked simply does what it did before, which
+	// is to leave the seat as it is and come round again in six hours.
+	p.Log("! Steam did not close within %s, so nothing below it was changed", steamShutdownWait)
+
+	return false, nil
+}
+
+// steamShutdownWait is how long Steam is given to leave after being asked.
+//
+// Twice what it took here, because the measurement was of a silent Steam with
+// nothing open, and a Steam that has been sitting in Big Picture all evening
+// has more to write down on its way out.
+const steamShutdownWait = 20 * time.Second
+
+// StartSteam puts a silent Steam back into a running seat.
+//
+// The script does the deciding, including the part where there is already one
+// running, so that the session and the daemon cannot come to different
+// conclusions about what "Steam is started" means.
+//
+// Exported because the manager calls it at the end of an update pass, and quiet
+// about failure for the same reason the script is: a seat whose Steam did not
+// come back still streams, and the next session start has another go.
+func (p *Provisioner) StartSteam(ctx context.Context) {
+	if p.uid == 0 {
+		if err := p.readUID(ctx); err != nil {
+			return
+		}
+	}
+
+	if _, _, err := p.Client.Try(ctx, p.name(), append(playerPrefix(p.uid),
+		"DISPLAY=:0", steamScriptPath)...); err != nil {
+		p.Log("! Steam could not be started again: %v", err)
+
+		return
+	}
+
+	p.closedSteam = false
+
+	p.Log("Steam is running again")
+}
+
+// ResumeSteam starts Steam again if this run was the one that closed it.
+func (p *Provisioner) ResumeSteam(ctx context.Context) {
+	if !p.closedSteam {
+		return
+	}
+
+	p.StartSteam(ctx)
+}
+
+// nothingUsing runs one of the idle probes inside this seat.
+//
+// The manager's own version of this answers for a seat it may only know the
+// name of, so it settles the container's state first. Here the container is
+// known to be up: every caller is in the middle of provisioning it.
+func (p *Provisioner) nothingUsing(ctx context.Context, probe string) (bool, error) {
+	_, code, err := p.Client.Try(ctx, p.name(), "sh", "-c", probe)
+	if err != nil {
+		return false, err
+	}
+
+	return code == 0, nil
+}
+
+// steamScriptPath is the session's own way of starting Steam, which the daemon
+// borrows so that the two agree on what starting it means.
+const steamScriptPath = "/usr/local/bin/polyseat-steam"
+
 // steamConfigPath is where Steam keeps the setting for which compatibility tool
 // to run everything else with.
 const steamConfigPath = steamRoot + "/config/config.vdf"
@@ -1234,13 +1402,13 @@ const steamConfigPath = steamRoot + "/config/config.vdf"
 // anything else that changed in between. Provisioning is a reliable moment for
 // it: the session has just been rebuilt and nothing has started Steam yet.
 func (p *Provisioner) stepSteamPlay(ctx context.Context) error {
-	running, err := p.steamRunning(ctx)
+	quiet, err := p.steamQuiet(ctx)
 	if err != nil {
 		return err
 	}
 
-	if running {
-		p.Log("Steam is running, so the default Proton stays as it is for now")
+	if !quiet {
+		p.Log("the default Proton stays as it is for now")
 
 		return nil
 	}
@@ -2625,6 +2793,7 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		{"/usr/local/bin/polyseat-boxart", asset("assets/boxart.py"), 0o755, 0},
 		{"/usr/local/bin/polyseat-icons", asset("assets/icons.py"), 0o755, 0},
 		{"/usr/local/bin/polyseat-bigpicture", asset("assets/bigpicture.sh"), 0o755, 0},
+		{steamScriptPath, asset("assets/steam.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-pad-pointer", asset("assets/pad-pointer.py"), 0o755, 0},
 		{"/usr/local/bin/polyseat-bigpicture-watch", asset("assets/bigpicture-watch.py"), 0o755, 0},
 	}

@@ -95,5 +95,11 @@ func (m *Manager) updateProton(ctx context.Context) {
 				m.log.Warn("the GE-Proton update could not run", "seat", s.Name, "err", err)
 			}
 		}
+
+		// Either of those may have closed an idle Steam to get at a file Steam
+		// holds. The seat is meant to have one waiting, so it gets one back
+		// here rather than at the next session start, which on a machine that
+		// stays on is days away.
+		p.ResumeSteam(ctx)
 	}
 }
