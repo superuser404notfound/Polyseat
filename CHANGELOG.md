@@ -10,6 +10,75 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.30.0
+
+**Steam runs in gamescope, and the in-game overlay works.**
+
+It never did in a seat. Steam hands the overlay to a game through its own
+compositor, that compositor needs `GLX_EXT_texture_from_pixmap`, and NVIDIA's
+GLX client does not offer that extension against an X server it did not write.
+Xwayland is exactly that, so Steam says so and falls back to pushing a screen
+sized texture through main memory once per frame:
+
+    Error: ThreadInit: GLX_EXT_texture_from_pixmap extension unavailable
+    Error: Run: failed to initialize GL thread
+    SP BPM_uid0: Failed to create output window. Falling back to system composer
+
+What that costs was measured rather than guessed. The overlay's own page renders
+at 60 fps, read from inside it through Steam's CEF debugging port, and the
+player sees one or two. The game is untouched the whole time: 1680 and 2041
+consecutive frames at 16.7 ms with no outlier above 20. So nothing about the
+framerate cap, the present mode, the resolution or the resize on connect was
+ever the cause, and every one of them was tried and excluded.
+
+In gamescope that path does not exist. It is also not a workaround: gamescope is
+what a Steam Deck runs, so Steam and its overlay inside it is the one
+arrangement Valve actually tests. `-e` is what turns that integration on, and
+without it the overlay is not merely slow, it never appears at all.
+
+**The screen still follows the client.** gamescope is started at the size the
+seat's output has and follows the window afterwards, so `polyseat-resize` keeps
+working as it did: connect at 4K and the seat renders at 4K, connect at 1080p
+and it renders at 1080p. Confirmed by changing the output underneath a running
+gamescope.
+
+**The desktop is still there.** gamescope is fullscreen for as long as it
+exists, so it gets a workspace of its own and the two Moonlight entries switch
+between them. "Steam Big Picture" goes to gamescope, "Desktop" back to the
+terminal, the launcher grid, Firefox and Lutris.
+
+**Seats have to be provisioned again**, generation 49.
+
+- **`polyseat-bigpicture` is no longer started.** It fought Steam's window into
+  fullscreen and corrected the one scaling question Steam asks, which is what
+  0.23.0 was about. Inside gamescope neither is needed, because gamescope hands
+  Steam a screen of exactly the right size. The script and its watcher are still
+  installed, unused, until gamescope has proven itself over more than one
+  evening.
+
+- **Big Picture is no longer closed when a stream ends.** Reopening it is free
+  once Steam is warm, and leaving it open means the next player lands in it
+  rather than watching it build itself.
+
+- **`polyseat-workspace` is a new script in the seat**, because a `sh -c '...'`
+  in an application entry does not work: Sunshine takes the command apart
+  itself and never hands a shell the quotes, so the switch arrived as loose
+  words and silently did nothing. The same lesson `polyseat-capped` already
+  carried.
+
+- **Steam is started silently, not with `-gamepadui`.** That flag is the Deck's
+  session mode, where "switch to desktop" sends
+  `CSteamOSManager_SwitchToDesktop_Request` to a SteamOS service. There is none
+  here, so the request never answers and Big Picture hangs on that screen. The
+  overlay works because of gamescope, not because of that flag.
+
+- **gamescope runs on its Wayland backend.** With `DISPLAY` set it picks X11 and
+  its window in the session carries a class and no app_id, which is why the rule
+  `for_window [app_id="^gamescope$"]` that this session configuration has
+  shipped since the beginning had never once matched. As a Wayland window it
+  matches, the workspace assignment works, and it is one X server less in the
+  chain.
+
 ## 0.29.1
 
 **The autostarted Steam of 0.29.0 was starting games without the framerate
