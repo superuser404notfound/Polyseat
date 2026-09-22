@@ -21,11 +21,49 @@ func runSteamScript(t *testing.T, steamOutside bool) (started, said string) {
 	return runSteamScriptWith(t, steamOutside, false, true)
 }
 
+// The Moonlight entry runs the script with this argument, and what it must not
+// do is reach `steam steam://open/bigpicture` while there is no Steam: that
+// command starts one, outside gamescope, where the overlay does not work. So
+// the url has to come after the pair is up, and it has to come even when there
+// was nothing to start.
+func TestBigPictureIsAskedForAfterTheePairIsUp(t *testing.T) {
+	_, said := runSteamScriptArg(t, "bigpicture", false, false, true)
+
+	if !strings.Contains(said, "starting Steam in gamescope") {
+		t.Errorf("the pair was not started first: %q", said)
+	}
+
+	if !strings.Contains(said, "opening Big Picture") {
+		t.Errorf("Big Picture was never asked for: %q", said)
+	}
+}
+
+// And when gamescope is already there, the argument is the whole of the work.
+func TestBigPictureIsAskedForEvenWhenNothingHadToStart(t *testing.T) {
+	_, said := runSteamScriptArg(t, "bigpicture", false, true, true)
+
+	if !strings.Contains(said, "already running") {
+		t.Errorf("something was started although gamescope was there: %q", said)
+	}
+
+	if !strings.Contains(said, "opening Big Picture") {
+		t.Errorf("Big Picture was never asked for: %q", said)
+	}
+}
+
 // runSteamScriptWith drives the script through the three states a seat can be
 // in: nothing running, a Steam running outside gamescope, and a gamescope
 // already there. The last argument is whether the gamescope it starts survives,
 // which is the difference between the ordinary run and the retry.
 func runSteamScriptWith(t *testing.T, steamOutside, gamescopeRunning, gamescopeSurvives bool) (started, said string) {
+	t.Helper()
+
+	return runSteamScriptArg(t, "", steamOutside, gamescopeRunning, gamescopeSurvives)
+}
+
+// runSteamScriptArg is the same with an argument, which is how the Moonlight
+// entry calls it.
+func runSteamScriptArg(t *testing.T, arg string, steamOutside, gamescopeRunning, gamescopeSurvives bool) (started, said string) {
 	t.Helper()
 
 	home := t.TempDir()
@@ -109,7 +147,12 @@ func runSteamScriptWith(t *testing.T, steamOutside, gamescopeRunning, gamescopeS
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command("/bin/sh", script)
+	argv := []string{script}
+	if arg != "" {
+		argv = append(argv, arg)
+	}
+
+	cmd := exec.Command("/bin/sh", argv...)
 	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"),
 		"POLYSEAT_CAPPED="+capped,
 		// The waits are what a seat needs and what a test has no patience

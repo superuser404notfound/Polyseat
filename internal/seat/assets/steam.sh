@@ -57,6 +57,34 @@ export XDG_RUNTIME_DIR DISPLAY
 
 say() { echo "polyseat-steam: $*" >&2; }
 
+# polyseat-steam            make sure the seat has its Steam, in gamescope
+# polyseat-steam bigpicture the same, and then ask it for Big Picture
+#
+# The second form is what the Moonlight entry runs, and it exists because the
+# entry used to run `steam steam://open/bigpicture` directly. That command does
+# not only open Big Picture: with no Steam running it starts one, and the one it
+# starts is outside gamescope, which is the single arrangement where the in-game
+# overlay does not work. Closing Big Picture when a stream ends took Steam and
+# gamescope with it, so the next connection hit exactly that - a cold Steam in
+# the wrong place, Big Picture in the corner, no overlay. Reported from a
+# television twice before the log showed `steam.sh` as the parent.
+#
+# Now the entry cannot start Steam at all. It asks for the pair and then for
+# the window.
+want_bigpicture=0
+
+if [ "$1" = bigpicture ]; then
+    want_bigpicture=1
+fi
+
+open_bigpicture() {
+    [ "$want_bigpicture" = 1 ] || return 0
+
+    say "opening Big Picture"
+
+    setsid steam steam://open/bigpicture >/dev/null 2>&1 </dev/null &
+}
+
 # What decides is gamescope, not Steam, and getting that the wrong way round
 # cost a morning.
 #
@@ -72,6 +100,7 @@ say() { echo "polyseat-steam: $*" >&2; }
 # is not a Steam to keep.
 if pgrep -x gamescope-wl >/dev/null 2>&1; then
     say "gamescope is already running, so nothing was started"
+    open_bigpicture
 
     exit 0
 fi
@@ -96,6 +125,7 @@ if pgrep -x steam >/dev/null 2>&1; then
 
     if [ "$gone" = 0 ]; then
         say "! Steam would not close, so gamescope was not started"
+        open_bigpicture
 
         exit 0
     fi
@@ -143,6 +173,9 @@ if [ "$ready" = 0 ]; then
     exit 0
 fi
 
+# Nothing is asked for before there is something to ask. Big Picture is opened
+# at the end of this script, once the pair is up.
+
 # The screen as it is right now. Only the starting size: gamescope follows the
 # window afterwards, so a client that connects later and changes the output
 # takes this along with it.
@@ -166,8 +199,11 @@ except Exception:
 
 # shellcheck disable=SC2086
 set -- $size
+w=$1
+h=$2
+r=$3
 
-say "starting Steam in gamescope at ${1}x${2}@${3}"
+say "starting Steam in gamescope at ${w}x${h}@${r}"
 
 # Overridable so that a test can run the real polyseat-capped from a temporary
 # directory and check that what reaches Steam actually carries the cap. The
@@ -204,7 +240,7 @@ start() {
         --xwayland-count 2 -- "$CAPPED" steam -silent >"$LOG" 2>&1 </dev/null &
 }
 
-start "$1" "$2" "$3"
+start "$w" "$h" "$r"
 
 # And checked, because the failure is silent and expensive. gamescope takes a
 # few seconds to have a process of its own; if it is gone after that, the
@@ -220,7 +256,20 @@ if ! pgrep -x gamescope-wl >/dev/null 2>&1; then
     steam -shutdown >/dev/null 2>&1
     sleep 6
     mv -f "$LOG" "$LOG.first" 2>/dev/null
-    start "$1" "$2" "$3"
+    start "$w" "$h" "$r"
+fi
+
+# Steam needs a moment inside gamescope before it answers a url, and a request
+# that arrives too early is the very thing this script exists to prevent: the
+# `steam` command would start one of its own.
+if [ "$want_bigpicture" = 1 ]; then
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+        pgrep -x steam >/dev/null 2>&1 && break
+
+        sleep 1
+    done
+
+    open_bigpicture
 fi
 
 exit 0

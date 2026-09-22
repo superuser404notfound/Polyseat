@@ -335,15 +335,22 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 			//
 			// The undo closes Big Picture again, see closeBigPicture for the
 			// screen that made that necessary.
-			Detached: []string{"setsid steam steam://open/bigpicture"},
+			// Through polyseat-steam rather than straight to Steam, and that
+			// distinction is the whole of a morning. `steam
+			// steam://open/bigpicture` does not only open Big Picture: with no
+			// Steam running it starts one, outside gamescope, which is the
+			// single arrangement where the in-game overlay does not work. The
+			// script makes sure the pair is up first and can be called when it
+			// already is.
+			Detached: []string{"setsid " + steamScriptPath + " bigpicture"},
 			PrepCmd: []prep{
-				// The undo closes Big Picture when the stream ends, so that a
-				// screen somebody got stuck on never survives into the next
-				// session. Hung on this entry rather than one of its own,
-				// because Sunshine runs every `do` it is given and an entry
-				// with an empty one is not worth finding out about on
-				// somebody's television.
-				{Do: hideLauncher, Undo: closeBigPicture},
+				// The stream ending does not close Big Picture any more.
+				// Closing it takes Steam and gamescope with it, so the next
+				// connection found neither and started a cold Steam in the
+				// wrong place. The way out of a stuck screen is the Desktop
+				// entry, which still closes it, and picking Steam Big Picture
+				// afterwards puts the pair back.
+				{Do: hideLauncher},
 				{Do: toGamescope, Undo: toDesktop},
 			},
 			ImagePath: "steam.png",

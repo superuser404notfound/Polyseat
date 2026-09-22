@@ -679,8 +679,14 @@ func TestLaunchTargetIsSomethingSpecificOrNothing(t *testing.T) {
 // A Big Picture that cannot be left is worse than one that has to be rebuilt.
 // gamescope makes Steam offer "switch to desktop", Steam has no implementation
 // of it outside SteamOS, and the interface then waits on that screen for ever.
-// The way back is the pair of entries below, so both halves have to be there.
-func TestBigPictureCanBeLeftAgain(t *testing.T) {
+// The way back is the pair of entries below: Desktop closes it, Steam Big
+// Picture puts the whole arrangement back.
+//
+// The stream ending deliberately does not close it. Closing Big Picture takes
+// Steam and gamescope with it, so the next connection found neither and started
+// a cold Steam outside gamescope - which is the one place the overlay does not
+// work. That was worse than the screen it was meant to guard against.
+func TestBigPictureCanBeLeftAndComeBack(t *testing.T) {
 	apps, _ := polyseatApps(nil, nil)
 
 	var desktop, steam app
@@ -694,34 +700,39 @@ func TestBigPictureCanBeLeftAgain(t *testing.T) {
 		}
 	}
 
-	closes := func(a app) bool {
-		for _, c := range a.PrepCmd {
-			if strings.Contains(c.Do, "close/bigpicture") ||
-				strings.Contains(c.Undo, "close/bigpicture") {
-				return true
-			}
-		}
+	closes := false
 
-		return false
+	for _, c := range desktop.PrepCmd {
+		if strings.Contains(c.Do, "close/bigpicture") {
+			closes = true
+		}
 	}
 
-	if !closes(desktop) {
+	if !closes {
 		t.Error("picking Desktop leaves Big Picture open, so a stuck screen stays stuck")
 	}
 
-	if !closes(steam) {
-		t.Error("the stream ending leaves Big Picture open, so a stuck screen survives it")
+	for _, c := range steam.PrepCmd {
+		if strings.Contains(c.Undo, "close/bigpicture") {
+			t.Error("the stream ending closes Big Picture, which takes Steam and gamescope with it")
+		}
 	}
 
+	// And what puts it back may not be the bare steam command: with no Steam
+	// running that starts one outside gamescope.
 	opens := false
 
 	for _, d := range steam.Detached {
-		if strings.Contains(d, "open/bigpicture") {
+		if strings.Contains(d, "polyseat-steam bigpicture") {
 			opens = true
+		}
+
+		if strings.Contains(d, "steam://open/bigpicture") {
+			t.Errorf("Big Picture is opened directly, which can start a Steam outside gamescope: %q", d)
 		}
 	}
 
 	if !opens {
-		t.Error("nothing opens Big Picture again, so closing it is a one way trip")
+		t.Error("nothing asks for Big Picture, so picking it does nothing")
 	}
 }
