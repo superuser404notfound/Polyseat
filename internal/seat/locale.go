@@ -17,8 +17,15 @@ import (
 // answers and a title that ships fifteen translations picks by that alone, and
 // signing in to a store means hunting for y and z.
 //
-// The seat has neither of its own to be right about. It is a screen attached
-// to this machine, so it takes the machine's.
+// The clock is the third of them and was missed for a long time. A plain Arch
+// image has no /etc/localtime at all, so the seat runs on UTC while the machine
+// it is attached to runs on wall clock time. Two hours apart here, and it shows:
+// the clock in the corner of Big Picture is simply wrong, and so is every
+// timestamp a game or a log in the seat writes. It also cost an evening once,
+// reading a seat's log against the host's clock.
+//
+// The seat has none of the three of its own to be right about. It is a screen
+// attached to this machine, so it takes the machine's.
 
 // localePattern is what a locale name may look like before it is allowed into
 // a shell fragment. Nothing here comes from a seat or from the network, but it
@@ -108,6 +115,81 @@ func localeCharmap(locale string) string {
 	return "UTF-8"
 }
 
+// zonePattern is what a timezone name may look like before it is allowed into
+// a shell fragment. Same reasoning as localePattern: the value comes off the
+// host's disk and reaches a shell.
+var zonePattern = regexp.MustCompile(`^[A-Za-z0-9+_-]+(/[A-Za-z0-9+_-]+){0,2}$`)
+
+// hostTimezone reports the zone the host is set to, or "" when it cannot be
+// read.
+//
+// From the /etc/localtime symlink, which is where both timedatectl and every
+// distribution's installer put the answer. /etc/timezone is Debian's habit and
+// is not written on Arch, so the symlink is the one thing that is there
+// everywhere. Reading it rather than asking timedatectl for the same reason
+// hostLocale reads a file: polyseatd is a system service and has no bus of its
+// own to ask on.
+func hostTimezone() string {
+	target, err := os.Readlink("/etc/localtime")
+	if err != nil {
+		return ""
+	}
+
+	return parseLocaltime(target)
+}
+
+// parseLocaltime pulls the zone out of what /etc/localtime points at.
+//
+// Separate from the readlink so that the rejections can be checked without a
+// host to read: a relative link, a link into somewhere that is not the zone
+// database, and UTC, which is what a seat already has and therefore not work
+// worth doing.
+func parseLocaltime(target string) string {
+	const dir = "/usr/share/zoneinfo/"
+
+	// A relative link is what a distribution's installer sometimes writes,
+	// with any number of ../ in front of it. What matters is the part after
+	// the database directory.
+	i := strings.Index(target, dir)
+	if i < 0 {
+		return ""
+	}
+
+	zone := target[i+len(dir):]
+
+	// posix/ and right/ are the same zones under different leap second rules,
+	// and a seat has no business with either.
+	for _, prefix := range []string{"posix/", "right/"} {
+		zone = strings.TrimPrefix(zone, prefix)
+	}
+
+	if zone == "" || zone == "UTC" || zone == "Etc/UTC" || !zonePattern.MatchString(zone) {
+		return ""
+	}
+
+	return zone
+}
+
+// timezoneScript is what the seat is asked to run.
+//
+// The symlink rather than timedatectl, because timedatectl in a container
+// answers "Failed to set time zone: Access denied" on a read only /etc/adjtime
+// and because the symlink is what it would have written anyway.
+//
+// Nothing is restarted here. glibc reads the zone once per process, so what is
+// already running keeps the old one until it starts again; the session is
+// restarted at the end of provisioning, which is what the clock in Big Picture
+// hangs off.
+func timezoneScript(zone string) string {
+	return fmt.Sprintf(`
+set -e
+
+ln -sfn /usr/share/zoneinfo/%[1]s /etc/localtime
+printf '%%s
+' '%[1]s' > /etc/timezone
+`, zone)
+}
+
 // stepLocale gives the seat the host's language.
 //
 // Idempotent, and cheap on the runs where there is nothing to do: locale-gen
@@ -132,7 +214,27 @@ func (p *Provisioner) stepLocale(ctx context.Context) error {
 		return err
 	}
 
-	return nil
+	return p.setTimezone(ctx)
+}
+
+// setTimezone gives the seat the host's clock.
+//
+// Its own function and not a line in the step above, because a host without a
+// zone worth copying is the ordinary case on a machine that runs on UTC, and
+// that is a sentence in the log rather than an error.
+func (p *Provisioner) setTimezone(ctx context.Context) error {
+	zone := hostTimezone()
+	if zone == "" {
+		p.Log("the host has no timezone worth copying, leaving the seat on UTC")
+
+		return nil
+	}
+
+	p.Log("setting the seat's timezone to %s", zone)
+
+	_, err := p.sh(ctx, timezoneScript(zone))
+
+	return err
 }
 
 // localeScript is what the seat is asked to run.

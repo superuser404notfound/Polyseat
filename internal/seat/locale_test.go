@@ -279,3 +279,60 @@ func TestNGXWineDirProbeSaysNothingWithoutADriver(t *testing.T) {
 		t.Errorf("the probe answered %q, want nothing", out)
 	}
 }
+
+// The clock in the corner of Big Picture was two hours out for as long as
+// seats have existed, because a plain Arch image has no /etc/localtime and
+// falls back to UTC. What the seat takes is what the symlink on the host
+// points at, and the rejections are what these check.
+func TestTimezoneIsReadFromTheSymlink(t *testing.T) {
+	for _, c := range []struct{ target, want string }{
+		{"/usr/share/zoneinfo/Europe/Berlin", "Europe/Berlin"},
+		{"../usr/share/zoneinfo/Europe/Berlin", "Europe/Berlin"},
+		{"/usr/share/zoneinfo/America/Argentina/Salta", "America/Argentina/Salta"},
+		{"/usr/share/zoneinfo/posix/Europe/Berlin", "Europe/Berlin"},
+
+		// A seat is already on UTC, so copying it is work that changes nothing.
+		{"/usr/share/zoneinfo/UTC", ""},
+		{"/usr/share/zoneinfo/Etc/UTC", ""},
+
+		// Nothing that is not the zone database, and nothing that could carry
+		// a value into the shell fragment.
+		{"/etc/something-else", ""},
+		{"/usr/share/zoneinfo/../../../etc/shadow", ""},
+		{"/usr/share/zoneinfo/Europe/Berlin; rm -rf /", ""},
+		{"", ""},
+	} {
+		if got := parseLocaltime(c.target); got != c.want {
+			t.Errorf("parseLocaltime(%q) = %q, want %q", c.target, got, c.want)
+		}
+	}
+}
+
+// The fragment is assembled with Sprintf and runs as root inside a seat, so a
+// quoting mistake in it is a mistake nobody sees until provisioning stops half
+// way. sh itself is the only honest judge of that.
+func TestTimezoneScriptParses(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("SKIPPED: no sh, so the fragment is unverified here")
+	}
+
+	cmd := exec.Command(sh, "-n")
+	cmd.Stdin = strings.NewReader(timezoneScript("Europe/Berlin"))
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("the fragment does not parse: %v\n%s", err, out)
+	}
+}
+
+// And it has to name the zone in both places a seat is read from, because
+// systemd answers from the symlink and a handful of tools still read the file.
+func TestTimezoneScriptWritesBothPlaces(t *testing.T) {
+	script := timezoneScript("Europe/Berlin")
+
+	for _, want := range []string{"/usr/share/zoneinfo/Europe/Berlin", "/etc/localtime", "/etc/timezone"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the fragment never mentions %q:\n%s", want, script)
+		}
+	}
+}
