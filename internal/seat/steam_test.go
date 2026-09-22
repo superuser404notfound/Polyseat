@@ -67,7 +67,19 @@ func runSteamScriptWith(t *testing.T, steamOutside, gamescopeRunning, gamescopeS
 func runSteamScriptArg(t *testing.T, arg string, steamOutside, gamescopeRunning, gamescopeSurvives bool) (started, said string) {
 	t.Helper()
 
-	home := t.TempDir()
+	// Not t.TempDir(), and that is not a preference. The script backgrounds
+	// gamescope on purpose and returns before it is finished, so the stubs
+	// keep writing here for a moment after the test has its answer. t.TempDir
+	// treats a directory that grows while it is being removed as a failure,
+	// which turned this into a test that passed or failed depending on the
+	// machine's mood - once in CI, on a commit that had passed on the tag.
+	// Removing it ourselves keeps the tidying and drops the verdict.
+	home, err := os.MkdirTemp("", "polyseat-steam")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
 
 	script := filepath.Join(home, "polyseat-steam")
 	if err := os.WriteFile(script, asset("assets/steam.sh"), 0o755); err != nil {
