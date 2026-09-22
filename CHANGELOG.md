@@ -10,6 +10,34 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.31.5
+
+**Closing Big Picture takes gamescope and Steam with it.** Big Picture is
+gamescope's only window, so closing it ends gamescope, and gamescope takes its
+child with it. gamescope says so itself:
+
+    Error: xdg_backend: Failed to dispatch input thread queue: protocol error
+    reaper: Parent of gamescopereaper was killed. Killing children.
+
+Everything that closed Big Picture therefore left an empty workspace behind. A
+player who picked Desktop and then Steam Big Picture switched to a black screen
+and waited for the whole stack to be built - which is what was reported, twice,
+as "I do not see Big Picture at all any more" and "the delay is still there".
+
+So nothing closes Big Picture any more. The Desktop entry restarts the pair
+instead, deliberately and in the background, through `polyseat-steam refresh`:
+Steam is shut down, gamescope is waited out, and the pair is built again with
+Big Picture open. It takes half a minute and the player spends it on the
+desktop, where they just asked to be. That is still the way out of the "switch
+to desktop" screen that Steam offers and cannot carry out.
+
+**What a connection looks like now**, measured in a seat with the disconnected
+state restored first and then the commands run in Sunshine's own order: 17 ms
+for the commands, and one second later gamescope is on screen at the client's
+2560x1440 with Big Picture already built.
+
+**Seats have to be provisioned again**, generation 55.
+
 ## 0.31.4
 
 **Picking Steam Big Picture put three to five seconds of the desktop on the
