@@ -10,6 +10,50 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.31.7
+
+**Big Picture is built when somebody asks for it, not at session start.** Steam
+still starts with the session, because that is the part that takes fifteen to
+twenty-five seconds and nobody should spend them after picking a game. The
+window is not, because an idle seat was holding it for nothing.
+
+Measured in seat vince, the same Steam on both sides of the question and ninety
+seconds of settling each time:
+
+| | memory | video memory |
+|---|---|---|
+| still | 1386 MB | 493 MB |
+| Big Picture open | 1411 MB | 711 MB |
+
+The window is 25 MB of memory, which is nothing, and 218 MB of video memory,
+which is not: two seats here share one card, and a game wants every megabyte an
+empty menu is holding. Building it on a warm Steam took 522, 616 and 607
+milliseconds in three runs made in Sunshine's own command order, against 30 ms
+for finding one already there. So the seat keeps the video memory and spends the
+half second.
+
+`polyseat-steam` starts the pair and stops. `polyseat-steam bigpicture` is what
+Moonlight's Steam entry runs and the only thing that asks for a window. Picking
+Desktop leaves the seat silent as well, so the video memory comes straight back.
+
+**gamescope was not always being told which compositor to nest in.** It is
+started with `--backend wayland`, and without `WAYLAND_DISPLAY` it does not
+stop: it falls back to X11 and comes up on the session's own X server, where
+sway sees an Xwayland window with a class and no `app_id`. Every rule the
+session has for gamescope matches on `app_id`, so that window is never assigned
+to workspace 2, never made fullscreen, and never found by the wait for Big
+Picture. One line in gamescope's log is all it says:
+
+    Error: xdg_backend: Couldn't connect to Wayland display.
+
+The session's own runs inherit the variable and were fine. The daemon's runs do
+not - it starts the script through `incus exec`, where nothing of the session
+arrives - so every Steam the daemon put back after closing an idle one came up
+in the wrong place. The script now looks the display up the way it already
+looked up sway's socket.
+
+Seats have to be built again for this: recipe generation 57.
+
 ## 0.31.6
 
 **The autostart was being lost before anybody clicked anything.** Picking Steam
