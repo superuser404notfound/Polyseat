@@ -10,6 +10,28 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.31.3
+
+**Big Picture is built at session start, not when somebody asks for it.** A
+Steam that is running is not a Big Picture that is ready: with `-silent` there
+is no window at all until the first request, and building it is a few seconds
+with the player already watching. That was the last of the wait the autostart
+was supposed to remove, and it was reported as exactly that - "Steam is open
+already, so why does this take a moment".
+
+So `polyseat-steam` now ends with Big Picture open, at session start and every
+other time it runs. Picking Steam Big Picture in Moonlight is then a workspace
+switch and a raise. Verified after a session restart: gamescope up, Steam up and
+the window already titled Big-Picture-Modus, with nobody having asked.
+
+It costs memory, and the number is known: 1316 MB summed PSS with Big Picture
+open against 732 MB without, measured in this seat. On a machine with 32 GB that
+is a trade worth making for a seat whose purpose is to be picked up and used.
+
+**Seats have to be provisioned again**, generation 53. An application list that
+still says `polyseat-steam bigpicture` keeps working in the meantime; the
+argument is accepted and ignored.
+
 ## 0.31.2
 
 **The Moonlight entry could start a Steam of its own, and the one it started was
