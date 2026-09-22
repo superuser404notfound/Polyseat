@@ -341,7 +341,9 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 			// Picture. What used to stand here was polyseat-bigpicture, which
 			// fought Steam's window into fullscreen and corrected the one
 			// scaling question Steam asks; inside gamescope neither is needed,
-			// because gamescope hands Steam a screen of exactly the right size.
+			// because gamescope hands Steam a screen of exactly the right
+			// size. That script has been deleted, and what it knew is written
+			// down in docs/architecture.md.
 			//
 			// The undo closes Big Picture again, see closeBigPicture for the
 			// screen that made that necessary.

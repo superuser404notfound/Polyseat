@@ -2792,7 +2792,6 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		{cappedPath, asset("assets/capped.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-boxart", asset("assets/boxart.py"), 0o755, 0},
 		{"/usr/local/bin/polyseat-icons", asset("assets/icons.py"), 0o755, 0},
-		{"/usr/local/bin/polyseat-bigpicture", asset("assets/bigpicture.sh"), 0o755, 0},
 		{steamScriptPath, asset("assets/steam.sh"), 0o755, 0},
 		{workspacePath, asset("assets/workspace.sh"), 0o755, 0},
 		{"/usr/local/bin/polyseat-pad-pointer", asset("assets/pad-pointer.py"), 0o755, 0},
@@ -2806,6 +2805,23 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 	}
 
 	if err := p.tidyLauncher(); err != nil {
+		return err
+	}
+
+	// polyseat-bigpicture is gone, and a seat built before that still has it.
+	//
+	// It fought Steam's window into fullscreen and corrected the one scaling
+	// question Steam asks. Inside gamescope neither is needed, because
+	// gamescope hands Steam a screen of exactly the right size, so nothing has
+	// started it since 0.31.2 and the application list stopped naming it.
+	//
+	// Removed here rather than by raising Generation, because there is nothing
+	// for a seat to gain by being rebuilt for this: the file is inert, and a
+	// rebuild would not delete it either, since provisioning writes files and
+	// does not take any away. So the seats that are rebuilt for some later
+	// reason come back clean, and the rest carry a script nobody runs.
+	if _, _, err := p.Client.Try(ctx, p.name(), "rm", "-f",
+		"/usr/local/bin/polyseat-bigpicture"); err != nil {
 		return err
 	}
 
