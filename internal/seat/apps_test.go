@@ -732,7 +732,11 @@ func TestBigPictureCanBeLeftAndComeBack(t *testing.T) {
 	opens := false
 
 	for _, d := range steam.Detached {
-		if strings.Contains(d, "polyseat-steam") {
+		// With the argument, because the bare script only starts Steam now. The
+		// session leaves it silent so that an idle seat does not hold Big
+		// Picture's 218 MB of video memory, which makes this entry the one place
+		// that asks for the window.
+		if strings.Contains(d, "polyseat-steam bigpicture") {
 			opens = true
 		}
 

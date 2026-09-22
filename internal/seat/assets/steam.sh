@@ -42,11 +42,29 @@
 #
 # ---------------------------------------------------------------------- silent
 #
-# Summed PSS in two seats here: a client with no Big Picture open is 16
-# processes and 732 MB, with it open 18 and 1324 MB. In gamescope Steam comes up
-# in Big Picture by design, so that is what a seat pays; what is saved is the
-# wait, because a cold Steam takes 15 to 25 seconds before it shows anything and
-# those seconds used to be spent in front of somebody who had just picked a game.
+# The session starts the pair and stops there. Big Picture is built when
+# somebody asks for it, which is what picking Steam in Moonlight does.
+#
+# Both halves of that are deliberate. Starting Steam early is what takes the
+# cold start out of the evening: a Steam that has never run needs fifteen to
+# twenty-five seconds to be able to answer anything at all, and those seconds
+# used to be spent in front of somebody who had just picked a game.
+#
+# Leaving Big Picture closed is what keeps an idle seat cheap, and the price of
+# it is small. Measured in seat vince on 2026-09-22, the same Steam throughout
+# and ninety seconds of settling on each side:
+#
+#     still         1386 MB of memory, 493 MB of video memory
+#     Big Picture   1411 MB of memory, 711 MB of video memory
+#
+# So the window costs 25 MB of memory and 218 MB of video memory. The memory is
+# nothing, and the video memory is not: two seats share one card here, and a
+# game wants every megabyte of it that an empty menu is holding.
+#
+# What it costs to build on a Steam that is already warm was measured three
+# times in Sunshine's own command order: 522, 616 and 607 milliseconds. On a
+# Steam that is not running at all it is the whole cold start, which is the
+# thing the early start exists to have done already.
 #
 # Never fails. It is an exec line in a session that has other things to start,
 # and a Steam that cannot start is a seat that still streams.
@@ -70,12 +88,53 @@ say() { echo "polyseat-steam: $*" >&2; }
 LOG=$HOME/.local/share/polyseat/gamescope.log
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
 
+# Whether the caller wants a window or only a Steam.
+#
+# The session wants only a Steam: the window is 218 MB of video memory in a seat
+# nobody is sitting at, and about six hundred milliseconds to build once Steam
+# is warm. Moonlight's Steam entry wants the window, because that is what the
+# player just asked for.
+want_window=0
+[ "$1" = bigpicture ] && want_window=1
+
 # The session's socket, resolved here rather than inherited, because the daemon
 # runs this script through incus exec, where there is no session environment to
 # inherit one from. Everything below asks sway something, so this comes first.
 if [ -z "$SWAYSOCK" ] || [ ! -S "$SWAYSOCK" ]; then
     SWAYSOCK=$(ls -t "$XDG_RUNTIME_DIR"/sway-ipc.* 2>/dev/null | head -1)
     export SWAYSOCK
+fi
+
+# And the display itself, for the same reason and with a far worse failure.
+#
+# gamescope is started with --backend wayland and needs this to find the
+# compositor it nests in. Without it, it does not stop: it falls back to X11 and
+# comes up on the session's own X server, where sway sees an Xwayland window
+# with a class and no app_id. Every rule this session has for gamescope matches
+# on app_id, so that window is never assigned to its workspace, never made
+# fullscreen, and never seen by the check that waits for Big Picture. One line
+# in gamescope's log is all it says about it:
+#
+#     Error: xdg_backend: Couldn't connect to Wayland display.
+#
+# Measured in seat vince on 2026-09-22, in a run started the way the daemon
+# starts one: through incus exec, where nothing of the session's environment
+# arrives. The session's own runs inherit the variable and were never affected,
+# which is how this went out unnoticed.
+if [ -z "$WAYLAND_DISPLAY" ] || [ ! -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
+    # The newest socket, the way SWAYSOCK is found above. The digits are spelled
+    # out rather than globbed with a star so that the lock file the compositor
+    # keeps beside each socket is not a candidate. The variable holds the name,
+    # not the path.
+    WAYLAND_DISPLAY=$(ls -t "$XDG_RUNTIME_DIR"/wayland-[0-9] \
+        "$XDG_RUNTIME_DIR"/wayland-[0-9][0-9] 2>/dev/null | head -1)
+    WAYLAND_DISPLAY=${WAYLAND_DISPLAY##*/}
+    export WAYLAND_DISPLAY
+fi
+
+if [ -z "$WAYLAND_DISPLAY" ]; then
+    say "! no Wayland display found. gamescope will come up on X11, and sway"
+    say "  will not recognise the window it makes"
 fi
 
 # This script always ends with Big Picture open, and that is the point of it.
@@ -93,10 +152,14 @@ fi
 # autostart was supposed to remove. A player picking Steam Big Picture in
 # Moonlight should find it, not start it.
 #
-#   polyseat-steam           make sure the seat has its Steam, in gamescope,
-#                            with Big Picture open
-#   polyseat-steam refresh    the same, after throwing the current Big Picture
-#                            away
+#   polyseat-steam              make sure the seat has its Steam, running
+#                               silently in gamescope. What the session runs,
+#                               and what the daemon runs after closing an idle
+#                               one
+#   polyseat-steam bigpicture   the same, and then Big Picture on the screen.
+#                               What picking Steam in Moonlight runs
+#   polyseat-steam refresh      the same as the first, after throwing the
+#                               current Big Picture away
 #
 # refresh is what the Desktop entry runs, and it exists for one screen: Steam
 # offers "switch to desktop" under gamescope, has no implementation of it
@@ -109,9 +172,8 @@ fi
 # So it is closed and opened again, while the player is on the other workspace
 # and cannot see either.
 #
-# Any other argument is accepted and ignored, so that a seat whose application
-# list still says `polyseat-steam bigpicture` keeps working until it is
-# provisioned again.
+# Any other argument is accepted and treated as the first, so that a seat whose
+# application list is one version behind keeps starting Steam.
 open_bigpicture() {
     setsid steam steam://open/bigpicture >/dev/null 2>&1 </dev/null &
 }
@@ -283,17 +345,25 @@ fi
 # exactly that. So gamescope answers, and a Steam without one is not a Steam to
 # keep.
 if ours; then
-    # And if sway can already see its window, there is nothing to ask for
-    # either: that window is Big Picture, or the game somebody is playing in it,
-    # and a url would take a player out of one of them. This is the path a
-    # Moonlight entry takes, and it is why picking Steam there is immediate.
-    if mapped; then
-        say "gamescope is already running and on screen, so nothing was done"
+    if [ "$want_window" = 0 ]; then
+        say "Steam is already running in gamescope, so nothing was started"
 
         exit 0
     fi
 
-    say "gamescope is already running; asking it for Big Picture"
+    # And if sway can already see a window, there is nothing to ask for either:
+    # that window is Big Picture, or the game somebody is playing in it, and a
+    # url would take a player out of one of them.
+    if mapped; then
+        say "Big Picture is already on the screen, so nothing was done"
+
+        exit 0
+    fi
+
+    # This is the ordinary path, and the one the whole arrangement is built
+    # around: Steam has been warm since the seat started, so what is left is
+    # Big Picture drawing itself.
+    say "Steam is running; asking it for Big Picture"
     show_bigpicture
 
     exit 0
@@ -353,7 +423,7 @@ if pgrep -x steam >/dev/null 2>&1; then
         # to put a window in and nothing for show_bigpicture to look for. It is
         # the best this state can do: a Big Picture outside gamescope, which is
         # better than none while somebody is sitting there.
-        open_bigpicture
+        [ "$want_window" = 1 ] && open_bigpicture
 
         exit 0
     fi
@@ -485,6 +555,16 @@ if ! ours; then
     start "$w" "$h" "$r"
 fi
 
-show_bigpicture
+if [ "$want_window" = 1 ]; then
+    show_bigpicture
+
+    exit 0
+fi
+
+# And otherwise it is left exactly here: a Steam that is warm, in gamescope,
+# with no window anywhere. gamescope with a silent Steam presents nothing, so
+# sway has no window either and the workspace stays empty until somebody picks
+# Steam. That is the state a seat waits in.
+say "Steam is up and silent; Big Picture is built when somebody asks for it"
 
 exit 0

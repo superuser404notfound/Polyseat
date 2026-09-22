@@ -350,10 +350,16 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 			// steam://open/bigpicture` does not only open Big Picture: with no
 			// Steam running it starts one, outside gamescope, which is the
 			// single arrangement where the in-game overlay does not work. The
-			// script makes sure the pair is up and ends with Big Picture open,
-			// and it can be called when both already are - which is the
-			// ordinary case, because the session opened it at startup.
-			Detached: []string{"setsid " + steamScriptPath},
+			// script makes sure the pair is up first and only then asks.
+			//
+			// This is the one entry that asks for the window. The session
+			// starts Steam silently and leaves it that way, because an open Big
+			// Picture holds 218 MB of video memory in a seat nobody is sitting
+			// at; building it here took 522, 616 and 607 milliseconds in three
+			// measurements, because Steam itself has been warm since the seat
+			// started. The script waits until sway can see the window rather
+			// than assuming the request arrived.
+			Detached: []string{"setsid " + steamScriptPath + " bigpicture"},
 			PrepCmd: []prep{
 				// The switch first, for the same reason as above: everything
 				// before it is time spent looking at the desktop instead of at

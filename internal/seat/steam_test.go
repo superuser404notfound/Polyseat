@@ -1,6 +1,7 @@
 package seat
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,7 +54,7 @@ type seatState struct {
 // up - never before, because `steam steam://open/bigpicture` with no Steam
 // running starts one outside gamescope.
 func TestBigPictureIsOpenedAfterThePairIsUp(t *testing.T) {
-	_, said := runSteamScript(t, seatState{})
+	_, said := runSteamScript(t, seatState{arg: "bigpicture"})
 
 	if !strings.Contains(said, "starting Steam in gamescope") {
 		t.Errorf("the pair was not started first: %q", said)
@@ -67,9 +68,9 @@ func TestBigPictureIsOpenedAfterThePairIsUp(t *testing.T) {
 // And when gamescope is already there, asking for the window is the whole of
 // the work, which is what makes picking it in Moonlight immediate.
 func TestBigPictureIsOpenedEvenWhenNothingHadToStart(t *testing.T) {
-	_, said := runSteamScript(t, seatState{gamescopeRunning: true})
+	_, said := runSteamScript(t, seatState{arg: "bigpicture", gamescopeRunning: true})
 
-	if !strings.Contains(said, "already running") {
+	if !strings.Contains(said, "Steam is running") {
 		t.Errorf("something was started although gamescope was there: %q", said)
 	}
 
@@ -236,8 +237,11 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 
 	// gamescope writes down how it was called and then runs what came after
 	// the separator, so that the whole chain is exercised rather than just its
-	// first link.
-	stub("gamescope", "#!/bin/sh\n"+record+
+	// first link. The display it was handed goes down separately: gamescope
+	// without one does not fail, it falls back to X11, and that is invisible
+	// from the arguments.
+	stub("gamescope", "#!/bin/sh\n"+
+		"echo \"$WAYLAND_DISPLAY\" > "+filepath.Join(home, "display")+"\n"+record+
 		"for a in \"$@\"; do shift; [ \"$a\" = -- ] && break; done\n"+
 		"exec \"$@\"\n")
 
@@ -271,6 +275,22 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		t.Fatal(err)
 	}
 
+	// A runtime directory with a Wayland socket in it, and no WAYLAND_DISPLAY in
+	// the environment. That is how the daemon starts this script: through incus
+	// exec, where nothing of the session arrives, so the script has to find the
+	// display itself.
+	run := filepath.Join(home, "run")
+	if err := os.MkdirAll(run, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("unix", filepath.Join(run, "wayland-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = ln.Close() })
+
 	argv := []string{script}
 	if state.arg != "" {
 		argv = append(argv, state.arg)
@@ -279,6 +299,10 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 	cmd := exec.Command("/bin/sh", argv...)
 	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"),
 		"POLYSEAT_CAPPED="+capped,
+		"XDG_RUNTIME_DIR="+run,
+		// Emptied rather than left alone, because the machine running the tests
+		// has one of its own and the script would inherit it.
+		"WAYLAND_DISPLAY=",
 		// The waits are what a seat needs and what a test has no patience
 		// for. One round of each is enough to drive every branch.
 		"POLYSEAT_SESSION_WAIT=2",
@@ -315,6 +339,12 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		gamescopeArgs = ""
 	}
 
+	gamescopeDisplay = ""
+
+	if b, err := os.ReadFile(filepath.Join(home, "display")); err == nil {
+		gamescopeDisplay = strings.TrimSpace(string(b))
+	}
+
 	requests = nil
 
 	if b, err := os.ReadFile(filepath.Join(home, "requests")); err == nil {
@@ -328,6 +358,10 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 // rather than a third return, because only two of the tests below look at it
 // and the rest read better without it.
 var gamescopeArgs string
+
+// gamescopeDisplay is the Wayland display the last run handed gamescope. Empty
+// means it was handed none, which is not a failure gamescope reports.
+var gamescopeDisplay string
 
 // requests is every url the last run asked Steam for. Counted because asking
 // once and hoping is the bug this file now holds the script to.
@@ -549,7 +583,7 @@ func TestTheLeftoverGamescopeIsTakenAway(t *testing.T) {
 //
 // So it asks again until sway shows the window.
 func TestBigPictureIsAskedForAgainWhenTheFirstRequestIsLost(t *testing.T) {
-	_, said := runSteamScript(t, seatState{dropsFirstRequest: true})
+	_, said := runSteamScript(t, seatState{arg: "bigpicture", dropsFirstRequest: true})
 
 	if len(requests) < 2 {
 		t.Errorf("asked %d times and gave up, so the seat has no Big Picture", len(requests))
@@ -568,13 +602,74 @@ func TestBigPictureIsAskedForAgainWhenTheFirstRequestIsLost(t *testing.T) {
 // away from somebody who is playing: a game under gamescope is that same
 // window, and asking for Big Picture over it would take them out of the game.
 func TestNothingIsAskedForWhenBigPictureIsAlreadyOnTheScreen(t *testing.T) {
-	_, said := runSteamScript(t, seatState{gamescopeRunning: true, bigPictureUp: true})
+	_, said := runSteamScript(t, seatState{
+		arg: "bigpicture", gamescopeRunning: true, bigPictureUp: true,
+	})
 
 	if len(requests) != 0 {
 		t.Errorf("asked for %v although the window was already there", requests)
 	}
 
-	if !strings.Contains(said, "already running and on screen") {
+	if !strings.Contains(said, "already on the screen") {
 		t.Errorf("said %q, which does not say why nothing was done", said)
+	}
+}
+
+// The session starts a Steam and stops there.
+//
+// An open Big Picture holds 218 MB of video memory, measured in a seat with the
+// same Steam on both sides of the question, and a seat nobody has picked Steam
+// in should not be paying it while two seats share one card. What the early
+// start buys is Steam itself being warm, because that is the part that takes
+// fifteen to twenty-five seconds; the window is about six hundred milliseconds
+// on top of a warm one, and Moonlight's Steam entry is what asks for it.
+func TestTheSessionStartsSteamWithoutBuildingBigPicture(t *testing.T) {
+	started, said := runSteamScript(t, seatState{})
+
+	if !strings.HasPrefix(started, "-silent") {
+		t.Errorf("started steam %q, want -silent", started)
+	}
+
+	if len(requests) != 0 {
+		t.Errorf("the session asked for %v, so the seat pays for a window nobody asked to see", requests)
+	}
+
+	if !strings.Contains(said, "silent") {
+		t.Errorf("said %q, which does not say what state the seat was left in", said)
+	}
+}
+
+// And a session that finds its Steam already running leaves it alone, rather
+// than putting a window on a screen nobody is looking at. This is the daemon's
+// path too: it runs the same script after closing an idle Steam.
+func TestAStartThatFindsSteamAsksForNoWindow(t *testing.T) {
+	runSteamScript(t, seatState{gamescopeRunning: true})
+
+	if len(requests) != 0 {
+		t.Errorf("asked for %v although nobody had picked Steam", requests)
+	}
+}
+
+// gamescope has to be told which compositor to nest in, and being told nothing
+// is the expensive case.
+//
+// It is started with --backend wayland. Without a display it does not stop: it
+// falls back to X11 and comes up on the session's own X server, where sway sees
+// an Xwayland window with a class and no app_id. Every rule the session has for
+// gamescope matches on app_id, so that window is never assigned to its
+// workspace, never made fullscreen, and never found by the wait for Big
+// Picture. gamescope says one line about it and carries on:
+//
+//	Error: xdg_backend: Couldn't connect to Wayland display.
+//
+// The session's own runs inherit the variable, which is why this survived. The
+// daemon's runs arrive through incus exec with nothing in the environment at
+// all, so the script looks the display up the way it looks up sway's socket.
+func TestGamescopeIsToldWhichCompositorToNestIn(t *testing.T) {
+	runSteamScript(t, seatState{})
+
+	if gamescopeDisplay != "wayland-1" {
+		t.Errorf("gamescope was started with WAYLAND_DISPLAY=%q, so it comes up on X11 "+
+			"and sway cannot place its window", gamescopeDisplay)
 	}
 }
