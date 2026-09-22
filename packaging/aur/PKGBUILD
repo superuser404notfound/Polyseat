@@ -48,7 +48,7 @@ optdepends=(
 install=polyseat.install
 
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('e47d128f81b72eaf7f5fbc4169bff3e5efa676a0db50a0ee1d41f9dd56b9ce33')
+sha256sums=('f0bcd8ba5607b01959b72ec0456e66868a8cbba36138982bb659149461a8693c')
 
 _src="Polyseat-$pkgver"
 
