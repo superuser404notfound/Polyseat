@@ -48,14 +48,35 @@
 # wait, because a cold Steam takes 15 to 25 seconds before it shows anything and
 # those seconds used to be spent in front of somebody who had just picked a game.
 #
-# Never fails, and never waits. It is an exec line in a session that has other
-# things to start, and a Steam that cannot start is a seat that still streams.
+# Never fails. It is an exec line in a session that has other things to start,
+# and a Steam that cannot start is a seat that still streams.
+#
+# It does wait, and the waiting is the point: it sits there until sway can see
+# Big Picture, so that the player who picks Steam in Moonlight finds a window
+# rather than starting one. Nobody is watching while it does, which is the whole
+# reason it happens at session start.
 
 : "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
 : "${DISPLAY:=:0}"
 export XDG_RUNTIME_DIR DISPLAY
 
 say() { echo "polyseat-steam: $*" >&2; }
+
+# gamescope's own output is kept, overwritten on every start. It is the only log
+# in this chain that belongs to us, and a gamescope that does not survive the
+# session start is invisible without it - which is exactly what happened, twice,
+# before this line existed. Named up here because everything below may have to
+# point somebody at it.
+LOG=$HOME/.local/share/polyseat/gamescope.log
+mkdir -p "$(dirname "$LOG")" 2>/dev/null
+
+# The session's socket, resolved here rather than inherited, because the daemon
+# runs this script through incus exec, where there is no session environment to
+# inherit one from. Everything below asks sway something, so this comes first.
+if [ -z "$SWAYSOCK" ] || [ ! -S "$SWAYSOCK" ]; then
+    SWAYSOCK=$(ls -t "$XDG_RUNTIME_DIR"/sway-ipc.* 2>/dev/null | head -1)
+    export SWAYSOCK
+fi
 
 # This script always ends with Big Picture open, and that is the point of it.
 #
@@ -92,24 +113,136 @@ say() { echo "polyseat-steam: $*" >&2; }
 # list still says `polyseat-steam bigpicture` keeps working until it is
 # provisioned again.
 open_bigpicture() {
-    say "opening Big Picture"
-
     setsid steam steam://open/bigpicture >/dev/null 2>&1 </dev/null &
 }
 
-# What decides is gamescope, not Steam, and getting that the wrong way round
-# cost a morning.
+# Asked for, then looked at, then asked again.
 #
-# gamescope is started with setsid, so it has a session of its own and does not
-# die with sway - but its Wayland connection does, so a session restart leaves
-# gamescope gone and **Steam still running**, detached and talking to whatever X
-# server it can find. A guard that asks "is Steam running" then says yes and
-# does nothing, and what is left is the arrangement this file exists to avoid:
-# Steam outside gamescope, no in-game overlay, Big Picture back in the corner.
-# Reported from a television as exactly that.
+# Readiness is not a process. `steam steam://open/bigpicture` writes into a pipe
+# in the home directory, and a Steam that is not listening on it yet does not
+# queue the request, it drops it: steam-runtime-steam-remote says "Steam is not
+# running" and the request is gone. A cold Steam takes fifteen to twenty-five
+# seconds to get that far, and Big Picture itself is slower still.
 #
-# So gamescope answers whether there is anything to do, and a Steam without one
-# is not a Steam to keep.
+# Asking once after a wait chosen to be about right is what left a seat with a
+# Steam running and no Big Picture. The log said "opening Big Picture" twenty
+# seconds in and Steam's own log had nothing about any url, so the player picked
+# Steam in Moonlight and watched Big Picture being built in front of them -
+# which is the twenty to thirty seconds that were reported, and which the
+# autostart was supposed to have spent already. Measured in both seats on
+# 2026-09-22.
+#
+# So the window is the answer, not the request. Big Picture is gamescope's only
+# window, so sway seeing one is proof that it is up; while sway sees none, the
+# request is made again every five seconds. By the time anybody picks Steam in
+# Moonlight this has finished, and the entry finds a window rather than building
+# one.
+#
+# Overridable for a test, which has no patience and no Steam. A seat never sets
+# it.
+: "${POLYSEAT_BIGPICTURE_WAIT:=90}"
+
+show_bigpicture() {
+    said_it=0
+    waited=0
+
+    while [ "$waited" -lt "$POLYSEAT_BIGPICTURE_WAIT" ]; do
+        if mapped; then
+            say "Big Picture is up"
+
+            return 0
+        fi
+
+        if [ $((waited % 5)) -eq 0 ]; then
+            [ "$said_it" = 1 ] || say "opening Big Picture"
+
+            said_it=1
+
+            open_bigpicture
+        fi
+
+        waited=$((waited + 1))
+
+        sleep 1
+    done
+
+    say "! Big Picture did not open. gamescope's log is at $LOG"
+
+    return 1
+}
+
+# When a process started, in clock ticks since the machine came up.
+#
+# Read out of /proc rather than asked of ps, because the field ps offers is
+# whole seconds and the two processes compared below are started within the same
+# second of each other. A process name can contain spaces and brackets, so
+# everything up to its closing bracket goes first; starttime is then the
+# twentieth field of what is left.
+started() {
+    sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20
+}
+
+# gamescopes tells this session's gamescope apart from one left behind by a
+# session that is gone, and getting that wrong is what made the autostart
+# useless.
+#
+# gamescope is started with setsid so that it keeps its own session, but its
+# Wayland connection still dies with sway, and it follows a few seconds later.
+# Those few seconds are the trap. A session restart runs this script as one of
+# sway's first exec lines, `pgrep -x gamescope-wl` finds the previous session's
+# gamescope still breathing, and the script decides there is nothing to do. The
+# leftover then dies, the seat has no Steam at all, and whatever the player
+# picks first in Moonlight pays the cold start - which is what was reported as
+# twenty to thirty seconds after clicking Steam.
+#
+# The same mistake made the retry below believe it had succeeded. In seat joser
+# on 2026-09-22: sway at 07:33:18, "starting Steam in gamescope" in the same
+# second, and twenty seconds later "opening Big Picture" rather than "did not
+# come up" - while the gamescope actually running was the old one, and the one
+# this script had started was already gone. Both seats, same morning.
+#
+# Age is what says which is which, and it says it exactly: a gamescope that
+# already existed before this sway did cannot be nested in it. Nothing else
+# about the process carries the answer.
+gamescopes() {
+    since=0
+
+    sway=$(pgrep -x sway 2>/dev/null | head -1)
+    if [ -n "$sway" ]; then
+        since=$(started "$sway")
+    fi
+
+    # No sway to compare against means no session at all, and this script will
+    # say so further down. Until then everything counts as this session's, so
+    # that a run which cannot tell takes nothing away.
+    [ -n "$since" ] || since=0
+
+    for pid in $(pgrep -x gamescope-wl 2>/dev/null); do
+        at=$(started "$pid")
+        [ -n "$at" ] || continue
+
+        if [ "$at" -ge "$since" ]; then
+            echo "ours $pid"
+        else
+            echo "stale $pid"
+        fi
+    done
+}
+
+# Whether this session has a gamescope of its own, which is the only question
+# the guard below is allowed to ask.
+ours() {
+    gamescopes | grep -q '^ours '
+}
+
+# And whether sway can see its window yet, which is the positive proof that
+# gamescope came up and is nested in this session. Used to decide how long to
+# wait, not whether to retry: a false negative here would start a second
+# gamescope, and `ours` cannot have one.
+mapped() {
+    swaymsg -t get_tree 2>/dev/null | grep -q '"app_id" *: *"gamescope"'
+}
+
 # refresh means starting the pair over, and it has to: closing Big Picture on
 # its own is not survivable. It is gamescope's only window, so closing it ends
 # gamescope, which takes Steam with it - measured, with gamescope saying so:
@@ -135,17 +268,64 @@ if [ "$1" = refresh ] && pgrep -x steam >/dev/null 2>&1; then
     # gamescope goes when its child does, but not instantly, and a gamescope
     # that is still there when the check below runs would look like success.
     for _ in 1 2 3 4 5 6 7 8 9 10; do
-        pgrep -x gamescope-wl >/dev/null 2>&1 || break
+        ours || break
 
         sleep 1
     done
 fi
 
-if pgrep -x gamescope-wl >/dev/null 2>&1; then
-    say "gamescope is already running, so nothing was started"
-    open_bigpicture
+# What decides is gamescope, not Steam, and getting that the wrong way round
+# cost a morning: a session restart leaves gamescope gone and Steam still
+# running, detached and talking to whatever X server it can find, and a guard
+# that asks "is Steam running" says yes and does nothing. What is left is the
+# arrangement this file exists to avoid - Steam outside gamescope, no in-game
+# overlay, Big Picture in the corner - and it was reported from a television as
+# exactly that. So gamescope answers, and a Steam without one is not a Steam to
+# keep.
+if ours; then
+    # And if sway can already see its window, there is nothing to ask for
+    # either: that window is Big Picture, or the game somebody is playing in it,
+    # and a url would take a player out of one of them. This is the path a
+    # Moonlight entry takes, and it is why picking Steam there is immediate.
+    if mapped; then
+        say "gamescope is already running and on screen, so nothing was done"
+
+        exit 0
+    fi
+
+    say "gamescope is already running; asking it for Big Picture"
+    show_bigpicture
 
     exit 0
+fi
+
+# A gamescope that is not this session's is not a gamescope, it is a process
+# that has not noticed yet. It cannot be drawn into and it cannot be handed a
+# window, so it is taken away rather than waited for: leaving it there is what
+# defeated the guard above, and the second or two spent here is what buys the
+# autostart back.
+if pgrep -x gamescope-wl >/dev/null 2>&1; then
+    say "a gamescope from a session that is gone is still here; taking it away"
+
+    # Its Steam first, and politely, because that Steam owns the library this
+    # seat shares with the other one.
+    steam -shutdown >/dev/null 2>&1
+
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+        pgrep -x steam >/dev/null 2>&1 || break
+
+        sleep 1
+    done
+
+    for pid in $(gamescopes | sed -n 's/^stale //p'); do
+        kill "$pid" 2>/dev/null
+    done
+
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        pgrep -x gamescope-wl >/dev/null 2>&1 || break
+
+        sleep 1
+    done
 fi
 
 if pgrep -x steam >/dev/null 2>&1; then
@@ -168,15 +348,15 @@ if pgrep -x steam >/dev/null 2>&1; then
 
     if [ "$gone" = 0 ]; then
         say "! Steam would not close, so gamescope was not started"
+
+        # Asked for once and not waited on, because there is no gamescope here
+        # to put a window in and nothing for show_bigpicture to look for. It is
+        # the best this state can do: a Big Picture outside gamescope, which is
+        # better than none while somebody is sitting there.
         open_bigpicture
 
         exit 0
     fi
-fi
-
-if [ -z "$SWAYSOCK" ] || [ ! -S "$SWAYSOCK" ]; then
-    SWAYSOCK=$(ls -t "$XDG_RUNTIME_DIR"/sway-ipc.* 2>/dev/null | head -1)
-    export SWAYSOCK
 fi
 
 # The session has to be up before gamescope is started, and at session start
@@ -271,13 +451,6 @@ export STEAM_MULTIPLE_XWAYLANDS
 # because of gamescope, not because of that flag. Big Picture is opened the way
 # it always was, by the application entry, and the two workspaces are what a
 # player switches between.
-# gamescope's own output is kept, overwritten on every start. It is the only log
-# in this chain that belongs to us, and a gamescope that does not survive the
-# session start is invisible without it - which is exactly what happened, twice,
-# before this line existed.
-LOG=$HOME/.local/share/polyseat/gamescope.log
-mkdir -p "$(dirname "$LOG")" 2>/dev/null
-
 start() {
     setsid gamescope --backend wayland -W "$1" -H "$2" -r "$3" -f -e \
         --xwayland-count 2 -- "$CAPPED" steam -silent >"$LOG" 2>&1 </dev/null &
@@ -285,14 +458,24 @@ start() {
 
 start "$w" "$h" "$r"
 
-# And checked, because the failure is silent and expensive. gamescope takes a
-# few seconds to have a process of its own; if it is gone after that, the
-# session was not as ready as the output claimed, and one more attempt costs
-# nothing. Steam is shut down first so that the second gamescope is not handed
-# a client that is already running somewhere else.
+# And checked, because the failure is silent and expensive: a gamescope that did
+# not come up leaves Steam running on the session's own X server instead, where
+# the overlay does not work and Big Picture sits in the corner.
+#
+# Waited out flat rather than polled, and that is not laziness. A gamescope that
+# fails here does not fail at once, it comes up and dies a few seconds later
+# when it turns out the session was not ready, so a check that stopped at the
+# first sighting would miss exactly the case it exists for. The seconds are free:
+# a Steam this cold cannot answer a url yet either, and the loop that waits for
+# it starts straight afterwards.
 sleep "$POLYSEAT_GAMESCOPE_SETTLE"
 
-if ! pgrep -x gamescope-wl >/dev/null 2>&1; then
+# Whether to try again is decided by this session's gamescope and not by any
+# gamescope, which is what the old check asked. A leftover from a session that
+# is gone answered that question for twenty seconds and made the retry believe
+# it had succeeded. Steam is shut down first so that the second gamescope is not
+# handed a client that is already running somewhere else.
+if ! ours; then
     say "gamescope did not come up, trying once more"
     say "  its log is at $LOG"
 
@@ -302,15 +485,6 @@ if ! pgrep -x gamescope-wl >/dev/null 2>&1; then
     start "$w" "$h" "$r"
 fi
 
-# Steam needs a moment inside gamescope before it answers a url, and a request
-# that arrives too early is the very thing this script exists to prevent: the
-# `steam` command would start one of its own.
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
-    pgrep -x steam >/dev/null 2>&1 && break
-
-    sleep 1
-done
-
-open_bigpicture
+show_bigpicture
 
 exit 0
