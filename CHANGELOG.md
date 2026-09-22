@@ -10,6 +10,58 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.31.6
+
+**The autostart was being lost before anybody clicked anything.** Picking Steam
+in Moonlight took twenty to thirty seconds for the first Big Picture of the day,
+although Steam had been started at session start for exactly that reason. Two
+things went wrong, and both are in the seats' own logs.
+
+A gamescope from the session before answers for this one. gamescope keeps its
+own session so that it does not die with sway, but its Wayland connection dies
+anyway and it follows a few seconds later. In those few seconds the session
+restarts, `polyseat-steam` runs as one of sway's first exec lines, `pgrep -x
+gamescope-wl` finds the leftover still breathing, and the script decides there is
+nothing to do. The leftover then dies and the seat has no Steam at all, so
+whatever is picked first pays for building the pair. Seat vince, 07:33:49:
+"gamescope is already running, so nothing was started", and the gamescope
+actually running afterwards started at 07:35:55, when a client connected.
+
+The same mistake made the retry believe it had succeeded. Seat joser, 07:33:18:
+sway starts, "starting Steam in gamescope" in the same second, and twenty
+seconds later "opening Big Picture" rather than "did not come up" - while the
+gamescope in the process table was the old one and ours was already gone.
+
+Age tells them apart, and it tells them apart exactly: a gamescope that existed
+before this sway did cannot be nested in it. The guard now asks about this
+session's gamescope, a leftover is taken away rather than waited for, and the
+retry asks the same question.
+
+**And the Big Picture request was dropped without anybody looking.** `steam
+steam://open/bigpicture` writes into a pipe in the home directory, and a Steam
+that is not listening on it yet does not queue what arrives, it loses it. The
+script waited a fixed twenty seconds, asked once, and said "opening Big Picture"
+whether or not anything had heard it; Steam's own log has nothing about that url.
+So a seat sat there with Steam running, no window, and a log claiming success -
+and the player watched Big Picture being built in front of them.
+
+The window is the answer now, not the request. Big Picture is gamescope's only
+window, so sway seeing one is proof it is up, and while sway sees none the
+request is made again every five seconds. A run that finds a window already there
+asks for nothing at all, which also keeps a url away from somebody who is
+playing: a game under gamescope is that same window.
+
+**What a seat start looks like now**, measured in seat vince with no client
+connected: session start at 08:00:10, "starting Steam in gamescope at
+1920x1080@60" at 08:00:11, "opening Big Picture" at 08:00:31, "Big Picture is up"
+at 08:00:40. The screen was then changed to 2560x1440 underneath it, the way a
+connecting client changes it, and the window and its contents followed - both
+ways. Picking Steam in Moonlight, with the three commands run in Sunshine's own
+order, took 30 ms and said "gamescope is already running and on screen, so
+nothing was done".
+
+Seats have to be built again for this: recipe generation 56.
+
 ## 0.31.5
 
 **Closing Big Picture takes gamescope and Steam with it.** Big Picture is
