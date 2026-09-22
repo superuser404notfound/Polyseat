@@ -10,6 +10,28 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.31.0
+
+**A seat takes the host's clock, the way it already takes its language and its
+keyboard.** A plain Arch image has no `/etc/localtime` at all, so every seat has
+run on UTC since the first one. On a machine two hours off that shows: the clock
+in the corner of Big Picture is simply wrong, so is every timestamp a game or a
+log in the seat writes, and reading a seat's log against the host's clock cost
+an evening once.
+
+Read from the `/etc/localtime` symlink, which is where timedatectl and every
+distribution's installer put the answer, and written into the seat as the same
+symlink plus `/etc/timezone` for the handful of tools that still read the file.
+UTC is not copied, because that is what a seat already has. Confirmed in a seat:
+the clock in Big Picture read 05:48 against the host's 05:48, where it had read
+03:48 before.
+
+glibc reads the zone once per process, so what is already running keeps the old
+one. The session is restarted at the end of provisioning, which is what the
+clock hangs off.
+
+**Seats have to be provisioned again**, generation 50.
+
 ## 0.30.1
 
 **Big Picture can be left again.** gamescope's Steam integration makes Steam
