@@ -723,7 +723,7 @@ func TestBigPictureCanBeLeftAndComeBack(t *testing.T) {
 	opens := false
 
 	for _, d := range steam.Detached {
-		if strings.Contains(d, "polyseat-steam bigpicture") {
+		if strings.Contains(d, "polyseat-steam") {
 			opens = true
 		}
 

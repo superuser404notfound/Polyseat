@@ -21,13 +21,13 @@ func runSteamScript(t *testing.T, steamOutside bool) (started, said string) {
 	return runSteamScriptWith(t, steamOutside, false, true)
 }
 
-// The Moonlight entry runs the script with this argument, and what it must not
-// do is reach `steam steam://open/bigpicture` while there is no Steam: that
-// command starts one, outside gamescope, where the overlay does not work. So
-// the url has to come after the pair is up, and it has to come even when there
-// was nothing to start.
-func TestBigPictureIsAskedForAfterTheePairIsUp(t *testing.T) {
-	_, said := runSteamScriptArg(t, "bigpicture", false, false, true)
+// A Steam that is running is not a Big Picture that is ready: with -silent
+// there is no window until somebody asks, and building it is the wait the
+// autostart exists to remove. So the script opens it itself, after the pair is
+// up - never before, because `steam steam://open/bigpicture` with no Steam
+// running starts one outside gamescope.
+func TestBigPictureIsOpenedAfterThePairIsUp(t *testing.T) {
+	_, said := runSteamScriptArg(t, "", false, false, true)
 
 	if !strings.Contains(said, "starting Steam in gamescope") {
 		t.Errorf("the pair was not started first: %q", said)
@@ -38,9 +38,10 @@ func TestBigPictureIsAskedForAfterTheePairIsUp(t *testing.T) {
 	}
 }
 
-// And when gamescope is already there, the argument is the whole of the work.
-func TestBigPictureIsAskedForEvenWhenNothingHadToStart(t *testing.T) {
-	_, said := runSteamScriptArg(t, "bigpicture", false, true, true)
+// And when gamescope is already there, asking for the window is the whole of
+// the work, which is what makes picking it in Moonlight immediate.
+func TestBigPictureIsOpenedEvenWhenNothingHadToStart(t *testing.T) {
+	_, said := runSteamScriptArg(t, "", false, true, true)
 
 	if !strings.Contains(said, "already running") {
 		t.Errorf("something was started although gamescope was there: %q", said)
@@ -136,8 +137,12 @@ func runSteamScriptArg(t *testing.T, arg string, steamOutside, gamescopeRunning,
 	// What Steam was started with, whether the cap came with it, and a
 	// -shutdown that actually stops answering pgrep afterwards.
 	stub("steam", "#!/bin/sh\n"+
-		"case \"$1\" in -shutdown) rm -f "+steamMarker+"; exit 0 ;; esac\n"+
-		"echo \"$* mangohud=$MANGOHUD\" > "+filepath.Join(home, "started")+"\n")
+		"case \"$1\" in\n"+
+		"-shutdown) rm -f "+steamMarker+"; exit 0 ;;\n"+
+		"steam://*) echo \"$1\" > "+filepath.Join(home, "url")+"; exit 0 ;;\n"+
+		"esac\n"+
+		"echo \"$* mangohud=$MANGOHUD\" > "+filepath.Join(home, "started")+"\n"+
+		"touch "+steamMarker+"\n")
 
 	// The real wrapper rather than a stub of it, because the thing being
 	// checked is that these two files still agree about how a capped process

@@ -340,9 +340,10 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 			// steam://open/bigpicture` does not only open Big Picture: with no
 			// Steam running it starts one, outside gamescope, which is the
 			// single arrangement where the in-game overlay does not work. The
-			// script makes sure the pair is up first and can be called when it
-			// already is.
-			Detached: []string{"setsid " + steamScriptPath + " bigpicture"},
+			// script makes sure the pair is up and ends with Big Picture open,
+			// and it can be called when both already are - which is the
+			// ordinary case, because the session opened it at startup.
+			Detached: []string{"setsid " + steamScriptPath},
 			PrepCmd: []prep{
 				// The stream ending does not close Big Picture any more.
 				// Closing it takes Steam and gamescope with it, so the next

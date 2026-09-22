@@ -57,29 +57,25 @@ export XDG_RUNTIME_DIR DISPLAY
 
 say() { echo "polyseat-steam: $*" >&2; }
 
-# polyseat-steam            make sure the seat has its Steam, in gamescope
-# polyseat-steam bigpicture the same, and then ask it for Big Picture
+# This script always ends with Big Picture open, and that is the point of it.
 #
-# The second form is what the Moonlight entry runs, and it exists because the
-# entry used to run `steam steam://open/bigpicture` directly. That command does
-# not only open Big Picture: with no Steam running it starts one, and the one it
-# starts is outside gamescope, which is the single arrangement where the in-game
-# overlay does not work. Closing Big Picture when a stream ends took Steam and
-# gamescope with it, so the next connection hit exactly that - a cold Steam in
-# the wrong place, Big Picture in the corner, no overlay. Reported from a
-# television twice before the log showed `steam.sh` as the parent.
+# The Moonlight entry runs it too, rather than `steam steam://open/bigpicture`.
+# That command does not only open Big Picture: with no Steam running it starts
+# one, and the one it starts is outside gamescope, which is the single
+# arrangement where the in-game overlay does not work. Reported from a
+# television twice before the log showed steam.sh as the parent of the Steam
+# that was running.
 #
-# Now the entry cannot start Steam at all. It asks for the pair and then for
-# the window.
-want_bigpicture=0
-
-if [ "$1" = bigpicture ]; then
-    want_bigpicture=1
-fi
-
+# Opened here at session start as well, and not left to the entry, because a
+# Steam that is running is not a Big Picture that is ready: with -silent there
+# is no window at all until somebody asks, and building it is the wait the
+# autostart was supposed to remove. A player picking Steam Big Picture in
+# Moonlight should find it, not start it.
+#
+# An argument is accepted and ignored, so that a seat whose application list
+# still says `polyseat-steam bigpicture` keeps working until it is provisioned
+# again.
 open_bigpicture() {
-    [ "$want_bigpicture" = 1 ] || return 0
-
     say "opening Big Picture"
 
     setsid steam steam://open/bigpicture >/dev/null 2>&1 </dev/null &
@@ -262,14 +258,12 @@ fi
 # Steam needs a moment inside gamescope before it answers a url, and a request
 # that arrives too early is the very thing this script exists to prevent: the
 # `steam` command would start one of its own.
-if [ "$want_bigpicture" = 1 ]; then
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
-        pgrep -x steam >/dev/null 2>&1 && break
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+    pgrep -x steam >/dev/null 2>&1 && break
 
-        sleep 1
-    done
+    sleep 1
+done
 
-    open_bigpicture
-fi
+open_bigpicture
 
 exit 0
