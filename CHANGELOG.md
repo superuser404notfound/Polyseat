@@ -10,6 +10,55 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.31.9
+
+**The documentation says what the code does again.** It had stopped at 0.28
+while the code went to 0.31.8, and the largest hole was the whole session
+model. docs/architecture.md now carries it: Steam started with the session
+inside gamescope, why the in-game overlay needs that and what it does without
+it, Big Picture built when somebody asks and what the 218 MB buys, the two
+workspaces, why picking Desktop restarts the pair and stands down for a running
+game, the lock on a file descriptor, and telling this session's gamescope from
+a dead one by age.
+
+**Four subsystems had no entry anywhere:** the language, keyboard layout and
+clock a seat takes from the host, the NGX half of the driver that DLSS needs,
+the priority inversion that left Sunshine underneath every process it has to
+keep pace with, and why the seat's Sunshine is a pin rather than the newest
+release. docs/security.md gains the input device rename that came with
+libvirtualhid and the file capabilities the packaged Sunshine carries, which is
+what the pin is for.
+
+**And some of it was simply wrong**, which is worse than missing: gamescope
+described as optional and per game, an idle seat at 400 MB, three daemon flags
+where there are five, the client's name said to be unavailable when Sunshine
+has been supplying it since the pinned version, and a pointer speed two
+changes out of date.
+
+**The pointer slider could not reach the speeds the daemon allows.** 0.10 to
+1.50 is the range, and the control in the interface ran from 0.15 to 1.20, so
+neither end could be asked for from the page. Found by writing the sentence
+that names the range.
+
+**polyseat-bigpicture is gone.** It fought Steam's window into fullscreen and
+corrected the one scaling question Steam asks; inside gamescope neither is
+needed, so nothing has started it since 0.31.2, and it was still written into
+every seat. What it knew is in docs/architecture.md now.
+polyseat-bigpicture-watch stays, because a game going fullscreen still
+dethrones Big Picture and something has to give it back.
+
+**Seats do not have to be provisioned again.** The recipe generation is
+unchanged on purpose: a seat has nothing to gain by being rebuilt for a script
+nothing runs, and a rebuild would not have deleted it either. Provisioning
+removes that one path outright, so a seat rebuilt for any later reason comes
+back clean.
+
+**M9 is in the repository.** It was measured on 2026-09-19 and left in a
+directory outside the checkout. It answers what M8 was left with: after wlroots
+merge request 5443, the only thing missing for HDR out of a seat is that the
+capture client cannot say which colour it wants, and that is forty lines in one
+file. spike/m8-hdr/README.md now also records why HDR is still not shipped.
+
 ## 0.31.8
 
 **A running game was ended by asking for the desktop.** Picking Desktop in
