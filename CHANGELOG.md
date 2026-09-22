@@ -10,6 +10,37 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.31.1
+
+**A session restart left Steam outside gamescope, which is the one place the
+in-game overlay does not work.** gamescope is started with `setsid`, so it has a
+session of its own and does not die with sway - but its Wayland connection does.
+A session restart therefore took gamescope with it and left Steam behind,
+detached, talking to whatever X server it could find. The guard in
+`polyseat-steam` then asked "is Steam running", found one, and did nothing:
+
+    polyseat-steam: Steam is already running, so nothing was started
+
+What was left is exactly the arrangement 0.30.0 exists to avoid. Reported from a
+television as the two old symptoms at once, Big Picture in the corner and a
+stuttering overlay, which is what they always were.
+
+So gamescope decides now, not Steam. A gamescope that is there means there is
+nothing to do; a Steam without one is closed and started again inside one.
+Verified across three session restarts in a row.
+
+Two things came with it. The script waits for the session to have an output
+before starting gamescope, because a gamescope started too early dies and leaves
+that same silent mess behind. And it looks again twenty seconds later: if
+gamescope is not there, it says so, names its log and tries once more.
+
+**gamescope's own output is kept**, overwritten on every start, at
+`~/.local/share/polyseat/gamescope.log` in the seat. It is the only log in this
+chain that belongs to us, and its absence cost two rounds of guessing in one
+morning.
+
+**Seats have to be provisioned again**, generation 51.
+
 ## 0.31.0
 
 **A seat takes the host's clock, the way it already takes its language and its
