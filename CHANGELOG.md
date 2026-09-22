@@ -10,6 +10,29 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.30.1
+
+**Big Picture can be left again.** gamescope's Steam integration makes Steam
+believe it sits in a session, so Big Picture offers "switch to desktop". Steam
+answers that with `CSteamOSManager_SwitchToDesktop_Request`, and its own client
+carries the string `Method SwitchToDesktop() not implemented.` - on anything
+that is not SteamOS the request is never answered and the interface waits on
+that screen for ever. Leaving it took a seat restart.
+
+So picking "Desktop" in Moonlight now closes Big Picture, and picking "Steam Big
+Picture" opens it again. That pair of buttons is what somebody stuck on that
+screen reaches for anyway, and it was confirmed against a stuck one: the close
+still gets through and what comes back is clean. The stream ending closes it
+too, so a screen somebody got stuck on never survives into the next session.
+
+The price is that returning to Big Picture rebuilds it, five to ten seconds with
+a warm Steam, where 0.30.0 left it open and instant. A screen nobody can leave
+is worse than a wait everybody can see.
+
+**Seats do not have to be provisioned again.** The application list is written
+by the daemon on its own, so restarting it is the whole of it, and updating from
+the interface does that. The recipe is still at generation 49.
+
 ## 0.30.0
 
 **Steam runs in gamescope, and the in-game overlay works.**
