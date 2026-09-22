@@ -10,6 +10,45 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.31.8
+
+**A running game was ended by asking for the desktop.** Picking Desktop in
+Moonlight runs a refresh, refresh shuts Steam down, and under gamescope that
+takes the running game with it. It had been that way since refresh existed and
+nothing anywhere said so. The script now asks whether Steam has a game running -
+the reaper Steam starts every game through carries the app id - and leaves
+everything alone if it has.
+
+**Two runs could overtake each other.** Picking Desktop starts a refresh that
+takes half a minute; picking Steam a second later found no gamescope, started a
+second one, and handed it a Steam the first was already building. A lock makes
+the second wait and then ask its questions again. Proven in a seat: a refresh
+and a Big Picture started a second apart, the second waited 30 seconds and then
+opened, one gamescope.
+
+**The gamepad pointer was sluggish.** 0.45 screens per second is two and a
+quarter seconds to cross the screen. The two reports that lowered it in the
+first place were about small movements, and what answered those was the curve
+that gives most of the stick's travel to slow movement, not the ceiling. The
+default is now 0.90, a screen in just over a second, and the slider still covers
+0.10 to 1.50. A running seat takes the new value within a couple of seconds.
+
+**Big Picture cannot be closed to save the memory, and the measurements are
+now in the code** so that nobody spends another morning on it. An open Big
+Picture holds 218 MB of video memory, and in seat vince:
+
+| | result |
+|---|---|
+| `steam://close/bigpicture` | Steam shows its desktop window instead, 791 MB against 711 |
+| closing the window from outside | screen empty, renderer keeps its surface, 221 MB of it |
+| `SteamClient.UI.ExitBigPictureMode` | frees it, 557 MB against 760, and Big Picture will not open again |
+| `steam://close/steam` | quits Steam |
+
+The memory belongs to the renderer that drew the page, not to the window, so
+only a restart returns it. Picking Desktop already does that.
+
+Seats have to be built again for this: recipe generation 58.
+
 ## 0.31.7
 
 **Big Picture is built when somebody asks for it, not at session start.** Steam
