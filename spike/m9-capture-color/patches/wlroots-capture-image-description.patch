@@ -1,0 +1,144 @@
+diff --git a/include/wlr/types/wlr_ext_image_capture_source_v1.h b/include/wlr/types/wlr_ext_image_capture_source_v1.h
+index 9903d091..12eeab83 100644
+--- a/include/wlr/types/wlr_ext_image_capture_source_v1.h
++++ b/include/wlr/types/wlr_ext_image_capture_source_v1.h
+@@ -18,6 +18,7 @@ struct wlr_scene_node;
+ struct wlr_allocator;
+ struct wlr_renderer;
+ struct wlr_output_layout;
++struct wlr_output_image_description;
+ 
+ /**
+  * A screen capture source.
+@@ -197,6 +198,25 @@ struct wlr_ext_image_capture_source_v1 *wlr_ext_image_capture_source_v1_create_w
+  * or NULL if the image capture source is not managed by
+  * wlr_ext_output_image_capture_source_manager_v1.
+  */
++/**
++ * Ask a capture source to hand out frames in a given colour.
++ *
++ * Only works for a source created with
++ * wlr_ext_image_capture_source_v1_create_with_scene_output() or
++ * wlr_ext_image_capture_source_v1_create_with_scene_node(), which composite
++ * the scene again into a private output and can therefore convert. Returns
++ * false for any other source, and for a colour the source cannot present.
++ *
++ * Pass NULL to go back to the default, which is sRGB.
++ *
++ * render_format may be DRM_FORMAT_INVALID, in which case a format wide enough
++ * for the transfer function is chosen.
++ */
++bool wlr_ext_image_capture_source_v1_set_image_description(
++	struct wlr_ext_image_capture_source_v1 *source,
++	const struct wlr_output_image_description *image_desc,
++	uint32_t render_format);
++
+ struct wlr_output *wlr_output_try_from_ext_image_capture_source_v1(struct wlr_ext_image_capture_source_v1 *source);
+ 
+ #endif
+diff --git a/types/ext_image_capture_source_v1/scene.c b/types/ext_image_capture_source_v1/scene.c
+index c960d4ba..d9e036ab 100644
+--- a/types/ext_image_capture_source_v1/scene.c
++++ b/types/ext_image_capture_source_v1/scene.c
+@@ -1,3 +1,4 @@
++#include <drm_fourcc.h>
+ #include <assert.h>
+ #include <limits.h>
+ #include <stdio.h>
+@@ -15,6 +16,11 @@
+ struct scene_source_interface;
+ 
+ struct scene_source {
++	// Set through wlr_ext_image_capture_source_v1_set_image_description().
++	// Without it the capture renders the way it always has, into sRGB.
++	bool has_image_description;
++	struct wlr_output_image_description image_description;
++	uint32_t render_format;
+ 	struct wlr_ext_image_capture_source_v1 base;
+ 
+ 	const struct scene_source_interface *impl;
+@@ -104,6 +110,12 @@ static void source_render(struct scene_source *source) {
+ 	wlr_output_state_set_enabled(&state, true);
+ 	wlr_output_state_set_scale(&state, source->scale);
+ 	wlr_output_state_set_custom_mode(&state, buffer_width, buffer_height, 0);
++	if (source->has_image_description) {
++		// The format goes with the colour and not beside it: eight bits a
++		// channel cannot carry PQ without banding that no client can undo.
++		wlr_output_state_set_render_format(&state, source->render_format);
++		wlr_output_state_set_image_description(&state, &source->image_description);
++	}
+ 	bool ok = wlr_scene_output_build_state(scene_output, &state, NULL) &&
+ 		wlr_output_commit_state(scene_output->output, &state);
+ 	wlr_output_state_finish(&state);
+@@ -199,7 +211,9 @@ static bool output_test(struct wlr_output *output, const struct wlr_output_state
+ 		WLR_OUTPUT_STATE_BACKEND_OPTIONAL |
+ 		WLR_OUTPUT_STATE_BUFFER |
+ 		WLR_OUTPUT_STATE_ENABLED |
+-		WLR_OUTPUT_STATE_MODE;
++		WLR_OUTPUT_STATE_MODE |
++		WLR_OUTPUT_STATE_RENDER_FORMAT |
++		WLR_OUTPUT_STATE_IMAGE_DESCRIPTION;
+ 	if ((state->committed & ~supported) != 0) {
+ 		return false;
+ 	}
+@@ -308,6 +322,40 @@ static void source_handle_output_frame(struct wl_listener *listener, void *data)
+ 	wlr_scene_output_send_frame_done(source->scene_output, &now);
+ }
+ 
++bool wlr_ext_image_capture_source_v1_set_image_description(
++		struct wlr_ext_image_capture_source_v1 *base,
++		const struct wlr_output_image_description *image_desc,
++		uint32_t render_format) {
++	if (base->impl != &source_impl) {
++		// Only a source that composites the scene again can honour this. The
++		// raw output source hands out the output's own buffer and has nothing
++		// to convert with.
++		return false;
++	}
++
++	struct scene_source *source = wl_container_of(base, source, base);
++
++	if (image_desc == NULL) {
++		source->has_image_description = false;
++		return true;
++	}
++
++	if (!(source->output.supported_primaries & image_desc->primaries) ||
++			!(source->output.supported_transfer_functions & image_desc->transfer_function)) {
++		return false;
++	}
++
++	if (render_format == DRM_FORMAT_INVALID) {
++		render_format = image_desc->transfer_function == WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ ?
++			DRM_FORMAT_XRGB2101010 : DRM_FORMAT_XRGB8888;
++	}
++
++	source->image_description = *image_desc;
++	source->render_format = render_format;
++	source->has_image_description = true;
++	return true;
++}
++
+ static void source_init(struct scene_source *source, struct wlr_scene *scene,
+ 		struct wl_event_loop *event_loop, struct wlr_allocator *allocator,
+ 		struct wlr_renderer *renderer) {
+@@ -329,6 +377,19 @@ static void source_init(struct scene_source *source, struct wlr_scene *scene,
+ 
+ 	source->scale = 1;
+ 
++	// What this private output presents, rather than what any panel behind it
++	// could show. There is no panel: this output exists only to be captured,
++	// and its single consumer is the client that asked for the capture and
++	// said which colour it wants. Advertising these here is therefore a
++	// statement about the frames handed out, not a claim about hardware.
++	source->output.supported_primaries =
++		WLR_COLOR_NAMED_PRIMARIES_SRGB |
++		WLR_COLOR_NAMED_PRIMARIES_BT2020;
++	source->output.supported_transfer_functions =
++		WLR_COLOR_TRANSFER_FUNCTION_SRGB |
++		WLR_COLOR_TRANSFER_FUNCTION_GAMMA22 |
++		WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ;
++
+ 	source->scene_output_destroy.notify = source_handle_scene_output_destroy;
+ 	wl_signal_add(&source->scene_output->events.destroy, &source->scene_output_destroy);
+ 
