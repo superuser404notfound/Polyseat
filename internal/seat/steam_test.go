@@ -15,7 +15,17 @@ import (
 // The script is four decisions long and every one of them is about the process
 // table, so it is run rather than transcribed: a Go copy of "does pgrep find
 // one" would only prove the copy agrees with itself.
-func runSteamScript(t *testing.T, alreadyRunning bool) (started, said string) {
+func runSteamScript(t *testing.T, steamOutside bool) (started, said string) {
+	t.Helper()
+
+	return runSteamScriptWith(t, steamOutside, false, true)
+}
+
+// runSteamScriptWith drives the script through the three states a seat can be
+// in: nothing running, a Steam running outside gamescope, and a gamescope
+// already there. The last argument is whether the gamescope it starts survives,
+// which is the difference between the ordinary run and the retry.
+func runSteamScriptWith(t *testing.T, steamOutside, gamescopeRunning, gamescopeSurvives bool) (started, said string) {
 	t.Helper()
 
 	home := t.TempDir()
@@ -38,13 +48,32 @@ func runSteamScript(t *testing.T, alreadyRunning bool) (started, said string) {
 		}
 	}
 
-	// The one question the script asks about the world.
-	code := "1"
-	if alreadyRunning {
-		code = "0"
+	// Two files stand in for the process table, because the script asks about
+	// two different processes and acts on the difference. A Steam outside
+	// gamescope has to be closed; a gamescope that is there means there is
+	// nothing to do at all.
+	gsMarker := filepath.Join(home, "gamescope")
+	steamMarker := filepath.Join(home, "steam-running")
+
+	if gamescopeRunning {
+		if err := os.WriteFile(gsMarker, []byte("running\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	stub("pgrep", "#!/bin/sh\nexit "+code+"\n")
+	if steamOutside {
+		if err := os.WriteFile(steamMarker, []byte("running\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stub("pgrep", "#!/bin/sh\n"+
+		"case \"$*\" in\n"+
+		"*gamescope*) [ -f "+gsMarker+" ] && exit 0 || exit 1 ;;\n"+
+		"*steam*) [ -f "+steamMarker+" ] && exit 0 || exit 1 ;;\n"+
+		"esac\n"+
+		"exit 1\n")
+
 	stub("setsid", "#!/bin/sh\nexec \"$@\"\n")
 
 	// A screen to read the starting size off, in sway's own shape.
@@ -52,17 +81,25 @@ func runSteamScript(t *testing.T, alreadyRunning bool) (started, said string) {
 		`[{"name":"HEADLESS-1","current_mode":{"width":2560,"height":1440,"refresh":60000}}]`+
 		"\nJSON\n")
 
+	record := "echo \"$*\" > " + gsMarker + "\n"
+	if !gamescopeSurvives {
+		// Written somewhere pgrep does not look, so the script sees a
+		// gamescope that is gone and has to decide what to do about it.
+		record = "echo \"$*\" >> " + filepath.Join(home, "attempts") + "\n"
+	}
+
 	// gamescope writes down how it was called and then runs what came after
 	// the separator, so that the whole chain is exercised rather than just its
 	// first link.
-	stub("gamescope", "#!/bin/sh\n"+
-		"echo \"$*\" > "+filepath.Join(home, "gamescope")+"\n"+
+	stub("gamescope", "#!/bin/sh\n"+record+
 		"for a in \"$@\"; do shift; [ \"$a\" = -- ] && break; done\n"+
 		"exec \"$@\"\n")
 
-	// What Steam was started with, and whether the cap came with it.
-	stub("steam", "#!/bin/sh\necho \"$* mangohud=$MANGOHUD\" > "+
-		filepath.Join(home, "started")+"\n")
+	// What Steam was started with, whether the cap came with it, and a
+	// -shutdown that actually stops answering pgrep afterwards.
+	stub("steam", "#!/bin/sh\n"+
+		"case \"$1\" in -shutdown) rm -f "+steamMarker+"; exit 0 ;; esac\n"+
+		"echo \"$* mangohud=$MANGOHUD\" > "+filepath.Join(home, "started")+"\n")
 
 	// The real wrapper rather than a stub of it, because the thing being
 	// checked is that these two files still agree about how a capped process
@@ -74,7 +111,11 @@ func runSteamScript(t *testing.T, alreadyRunning bool) (started, said string) {
 
 	cmd := exec.Command("/bin/sh", script)
 	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"),
-		"POLYSEAT_CAPPED="+capped)
+		"POLYSEAT_CAPPED="+capped,
+		// The waits are what a seat needs and what a test has no patience
+		// for. One round of each is enough to drive every branch.
+		"POLYSEAT_SESSION_WAIT=2",
+		"POLYSEAT_GAMESCOPE_SETTLE=0")
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -97,7 +138,7 @@ func runSteamScript(t *testing.T, alreadyRunning bool) (started, said string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	if b, err := os.ReadFile(filepath.Join(home, "gamescope")); err == nil {
+	if b, err := os.ReadFile(gsMarker); err == nil {
 		gamescopeArgs = strings.TrimSpace(string(b))
 	} else {
 		gamescopeArgs = ""
@@ -168,8 +209,8 @@ func TestSteamIsStartedBehindTheCap(t *testing.T) {
 // Those two can overlap on a seat that is provisioned while it is running, and
 // a second client against the same home directory does not come up as a second
 // Steam: it hands the first one the arguments and leaves.
-func TestSteamIsNotStartedTwice(t *testing.T) {
-	started, said := runSteamScript(t, true)
+func TestNothingIsStartedWhenGamescopeIsAlreadyThere(t *testing.T) {
+	started, said := runSteamScriptWith(t, false, true, true)
 
 	if started != "" {
 		t.Errorf("started a second steam with %q", started)
@@ -177,6 +218,28 @@ func TestSteamIsNotStartedTwice(t *testing.T) {
 
 	if !strings.Contains(said, "already running") {
 		t.Errorf("said %q, which does not say why nothing was started", said)
+	}
+}
+
+// And a Steam without a gamescope is the state that cost a morning. gamescope
+// is started with setsid, so a session restart takes gamescope with it and
+// leaves Steam behind, detached and talking to whatever X server it can find.
+// A guard that asks about Steam then finds one and does nothing, and what is
+// left is Steam outside gamescope: no in-game overlay, Big Picture in the
+// corner. So this one has to be closed rather than counted as success.
+func TestSteamOutsideGamescopeIsClosedAndStartedAgainInside(t *testing.T) {
+	started, said := runSteamScript(t, true)
+
+	if !strings.Contains(said, "outside gamescope") {
+		t.Errorf("said %q, which does not say what was wrong", said)
+	}
+
+	if gamescopeArgs == "" {
+		t.Error("gamescope was never started, so Steam stayed where it was")
+	}
+
+	if !strings.HasPrefix(started, "-silent") {
+		t.Errorf("started steam %q, want -silent inside gamescope", started)
 	}
 }
 
@@ -210,5 +273,22 @@ func TestTheSessionHidesAPointerNobodyIsUsing(t *testing.T) {
 
 	if !strings.Contains(string(out), "hide_cursor") {
 		t.Errorf("the session never hides the pointer:\n%s", out)
+	}
+}
+
+// A gamescope that does not survive the session start is the expensive failure,
+// because what it leaves behind looks like success: Steam is running, so nothing
+// retries, and it is running on the session's own X server instead of inside
+// gamescope. No overlay, and Big Picture back in the corner. It happened once
+// on a television, which is why the script now looks again.
+func TestGamescopeIsTriedAgainWhenItDoesNotComeUp(t *testing.T) {
+	_, said := runSteamScriptWith(t, false, false, false)
+
+	if !strings.Contains(said, "did not come up") {
+		t.Errorf("the script did not notice a gamescope that never started: %q", said)
+	}
+
+	if !strings.Contains(said, "trying once more") {
+		t.Errorf("the script noticed but did not try again: %q", said)
 	}
 }

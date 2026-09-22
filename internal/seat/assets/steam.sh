@@ -57,18 +57,90 @@ export XDG_RUNTIME_DIR DISPLAY
 
 say() { echo "polyseat-steam: $*" >&2; }
 
-# Asked rather than assumed, because the daemon calls this after it has closed
-# one and the session calls it at startup. Either process being there means the
-# seat already has its Steam.
-if pgrep -x steam >/dev/null 2>&1 || pgrep -x gamescope-wl >/dev/null 2>&1; then
-    say "Steam is already running, so nothing was started"
+# What decides is gamescope, not Steam, and getting that the wrong way round
+# cost a morning.
+#
+# gamescope is started with setsid, so it has a session of its own and does not
+# die with sway - but its Wayland connection does, so a session restart leaves
+# gamescope gone and **Steam still running**, detached and talking to whatever X
+# server it can find. A guard that asks "is Steam running" then says yes and
+# does nothing, and what is left is the arrangement this file exists to avoid:
+# Steam outside gamescope, no in-game overlay, Big Picture back in the corner.
+# Reported from a television as exactly that.
+#
+# So gamescope answers whether there is anything to do, and a Steam without one
+# is not a Steam to keep.
+if pgrep -x gamescope-wl >/dev/null 2>&1; then
+    say "gamescope is already running, so nothing was started"
 
     exit 0
+fi
+
+if pgrep -x steam >/dev/null 2>&1; then
+    say "Steam is running outside gamescope, where the overlay does not work;"
+    say "  closing it so that it can be started inside one"
+
+    steam -shutdown >/dev/null 2>&1
+
+    gone=0
+
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+        if ! pgrep -x steam >/dev/null 2>&1; then
+            gone=1
+
+            break
+        fi
+
+        sleep 1
+    done
+
+    if [ "$gone" = 0 ]; then
+        say "! Steam would not close, so gamescope was not started"
+
+        exit 0
+    fi
 fi
 
 if [ -z "$SWAYSOCK" ] || [ ! -S "$SWAYSOCK" ]; then
     SWAYSOCK=$(ls -t "$XDG_RUNTIME_DIR"/sway-ipc.* 2>/dev/null | head -1)
     export SWAYSOCK
+fi
+
+# The session has to be up before gamescope is started, and at session start
+# this script is one of the first things sway runs.
+#
+# It matters because a gamescope that starts too early dies, and what is left
+# behind looks like success: Steam is running, so nothing retries, and it is
+# running on the session's own X server rather than inside gamescope. Which
+# means no overlay and Big Picture back in the corner - the two bugs this whole
+# arrangement exists to fix, reported from a television before it was
+# understood. Waiting for the output to have a mode is the cheapest proof that
+# sway is ready to be nested in.
+# Both waits are overridable so that a test can drive the whole script,
+# including the retry, without sitting out half a minute. A seat never sets
+# either.
+: "${POLYSEAT_SESSION_WAIT:=15}"
+: "${POLYSEAT_GAMESCOPE_SETTLE:=20}"
+
+ready=0
+tries=0
+
+while [ "$tries" -lt "$POLYSEAT_SESSION_WAIT" ]; do
+    tries=$((tries + 1))
+
+    if swaymsg -t get_outputs 2>/dev/null | grep -q '"current_mode"'; then
+        ready=1
+
+        break
+    fi
+
+    sleep 1
+done
+
+if [ "$ready" = 0 ]; then
+    say "the session never came up, so Steam was not started"
+
+    exit 0
 fi
 
 # The screen as it is right now. Only the starting size: gamescope follows the
@@ -120,7 +192,35 @@ export STEAM_MULTIPLE_XWAYLANDS
 # because of gamescope, not because of that flag. Big Picture is opened the way
 # it always was, by the application entry, and the two workspaces are what a
 # player switches between.
-setsid gamescope --backend wayland -W "$1" -H "$2" -r "$3" -f -e --xwayland-count 2 \
-    -- "$CAPPED" steam -silent >/dev/null 2>&1 </dev/null &
+# gamescope's own output is kept, overwritten on every start. It is the only log
+# in this chain that belongs to us, and a gamescope that does not survive the
+# session start is invisible without it - which is exactly what happened, twice,
+# before this line existed.
+LOG=$HOME/.local/share/polyseat/gamescope.log
+mkdir -p "$(dirname "$LOG")" 2>/dev/null
+
+start() {
+    setsid gamescope --backend wayland -W "$1" -H "$2" -r "$3" -f -e \
+        --xwayland-count 2 -- "$CAPPED" steam -silent >"$LOG" 2>&1 </dev/null &
+}
+
+start "$1" "$2" "$3"
+
+# And checked, because the failure is silent and expensive. gamescope takes a
+# few seconds to have a process of its own; if it is gone after that, the
+# session was not as ready as the output claimed, and one more attempt costs
+# nothing. Steam is shut down first so that the second gamescope is not handed
+# a client that is already running somewhere else.
+sleep "$POLYSEAT_GAMESCOPE_SETTLE"
+
+if ! pgrep -x gamescope-wl >/dev/null 2>&1; then
+    say "gamescope did not come up, trying once more"
+    say "  its log is at $LOG"
+
+    steam -shutdown >/dev/null 2>&1
+    sleep 6
+    mv -f "$LOG" "$LOG.first" 2>/dev/null
+    start "$1" "$2" "$3"
+fi
 
 exit 0
