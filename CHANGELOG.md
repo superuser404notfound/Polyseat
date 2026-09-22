@@ -10,6 +10,37 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.31.2
+
+**The Moonlight entry could start a Steam of its own, and the one it started was
+outside gamescope.** `steam steam://open/bigpicture` does not only open Big
+Picture: with no Steam running it starts one. Together with 0.30.1, which closed
+Big Picture when a stream ended and took Steam and gamescope down with it, every
+connection went like this:
+
+    Undo:     setsid steam steam://close/bigpicture     <- Steam and gamescope gone
+    Do:       polyseat-workspace 2
+    Spawning: setsid steam steam://open/bigpicture      <- a cold Steam, outside gamescope
+
+What arrives on the television is the pair of symptoms this release series
+exists to remove: a wait, because Big Picture has to be built from nothing, and
+Big Picture in the corner, because outside gamescope the old scaling race is
+back. It was reported twice as exactly that before the log named `steam.sh` as
+the parent of the Steam that was running.
+
+So the entry cannot start Steam any more. It runs `polyseat-steam bigpicture`,
+which makes sure the pair is up - starting it, or closing a Steam that is in the
+wrong place first - and only then asks for the window. Confirmed against a seat
+in the broken state: Steam outside, no gamescope, one call, and Big Picture came
+back filling a 2560x1440 screen.
+
+**And a stream ending no longer closes Big Picture.** That was 0.30.1's way out
+of a screen nobody can leave, and it cost more than it bought. The way out is
+still the Desktop entry, which closes it, and picking Steam Big Picture
+afterwards now puts the whole arrangement back rather than half of it.
+
+**Seats have to be provisioned again**, generation 52.
+
 ## 0.31.1
 
 **A session restart left Steam outside gamescope, which is the one place the
