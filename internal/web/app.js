@@ -2922,7 +2922,7 @@ function describeHostAccess() {
 // The default the daemon uses for a seat that has never been given a number of
 // its own. Repeated here rather than fetched, because the slider has to show
 // something before anything has been saved.
-const DEFAULT_POINTER_SPEED = 0.45;
+const DEFAULT_POINTER_SPEED = 0.90;
 
 // Says what the number means. A slider from 0.15 to 1.2 tells somebody nothing
 // on its own, and the honest translation is a time: how long the pointer takes

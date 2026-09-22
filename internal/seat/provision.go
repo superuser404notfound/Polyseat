@@ -32,7 +32,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 57
+const Generation = 58
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -3130,13 +3130,24 @@ func (p *Provisioner) WriteSunshineConfig(ctx context.Context) ([]string, error)
 
 // The gamepad pointer's speed, in screens per second at full deflection.
 //
-// The default came from use: 1100 pixels per second was reported as too fast,
-// and tying it to the screen instead of to a pixel count was reported as still
-// too sensitive on a 1440p phone. The bounds are there because both ends are
-// useless, and the fast end is worse: a pointer that crosses the screen in a
-// tenth of a second cannot be corrected with the stick that sent it there.
+// The default came from use, and it has moved twice. 1100 pixels per second was
+// reported as too fast, and tying it to the screen rather than to a pixel count
+// was reported as still too sensitive on a 1440p phone. Both of those were
+// about small movements, and what answered them was the curve in
+// polyseat-pad-pointer rather than the ceiling here: it gives most of the
+// stick's travel to slow movement, so a lower ceiling was never what made
+// aiming possible.
+//
+// With that curve in place the ceiling was only in the way, and 0.45 - two and
+// a quarter seconds to cross the screen - was reported as sluggish on a
+// television. Doubled, which is a screen in just over a second and still slow
+// enough to stop on something.
+//
+// The bounds are there because both ends are useless, and the fast end is
+// worse: a pointer that crosses the screen in a tenth of a second cannot be
+// corrected with the stick that sent it there.
 const (
-	DefaultPointerSpeed = 0.45
+	DefaultPointerSpeed = 0.90
 	MinPointerSpeed     = 0.10
 	MaxPointerSpeed     = 1.50
 )

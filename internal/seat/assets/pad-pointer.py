@@ -98,7 +98,7 @@ DEADZONE = 0.18
 # that answers "too sensitive": a 1440p stream on a phone shows targets a few
 # millimetres across, and hitting one needs resolution near the centre rather
 # than a lower ceiling.
-SPEED = 0.45
+SPEED = 0.90
 CURVE = 2.5
 
 # What to assume when the compositor cannot be asked. 1080p is the resolution a

@@ -66,6 +66,25 @@
 # Steam that is not running at all it is the whole cold start, which is the
 # thing the early start exists to have done already.
 #
+# Going back the other way is not possible, which is worth writing down because
+# it looks like it should be. Once Big Picture has been drawn, those 218 MB
+# belong to the renderer and not to the window, and closing the window does not
+# return them. Measured in seat vince on 2026-09-22:
+#
+#     steam://close/bigpicture      Steam shows its desktop window instead and
+#                                   the seat holds 791 MB, more than before
+#     closing the window from
+#     outside, as a window manager
+#     would                         the screen is empty, the renderer keeps its
+#                                   surface, 221 MB of it
+#     SteamClient.UI.ExitBigPictureMode
+#     through the debugging port    frees it, and leaves a Steam that will not
+#                                   open Big Picture again
+#     steam://close/steam           quits Steam
+#
+# So the only way back to a cheap seat is a restart, which is what refresh does
+# and what picking Desktop in Moonlight already runs.
+#
 # Never fails. It is an exec line in a session that has other things to start,
 # and a Steam that cannot start is a seat that still streams.
 #
@@ -87,6 +106,34 @@ say() { echo "polyseat-steam: $*" >&2; }
 # point somebody at it.
 LOG=$HOME/.local/share/polyseat/gamescope.log
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
+
+# And one of these at a time, whatever starts them.
+#
+# The entries overlap in ordinary use: picking Desktop starts a refresh that
+# takes half a minute, and picking Steam a second later used to find no
+# gamescope, start a second one, and hand it a Steam the first was already
+# building. The lock makes the second run wait for the first and then ask its
+# questions again, by which time they have different answers.
+#
+# Held on a file descriptor this script owns rather than by handing the whole
+# script to flock, and that is not style. A lock lives on the open file, so
+# every process that inherits the descriptor holds it too - and this script's
+# whole purpose is to start a gamescope that outlives it. The first version did
+# hand itself to flock, and gamescope inherited the lock and kept it for as long
+# as it ran, so the next run of this script waited for ever. Measured rather
+# than reasoned about: a second run sat there for seven minutes with nothing in
+# its log. The two commands that outlive this script therefore close the
+# descriptor on their way out, which is what 9>&- says.
+#
+# The wait is bounded for the same reason. A lock that somehow never comes free
+# must not turn picking Steam in Moonlight into a button that does nothing at
+# all; two minutes is longer than the slowest thing this script does.
+if command -v flock >/dev/null 2>&1 && [ -w "$XDG_RUNTIME_DIR" ]; then
+    exec 9>"$XDG_RUNTIME_DIR/polyseat-steam.lock"
+
+    flock -w 120 9 ||
+        say "! another polyseat-steam held the lock for two minutes; going ahead"
+fi
 
 # Whether the caller wants a window or only a Steam.
 #
@@ -175,7 +222,7 @@ fi
 # Any other argument is accepted and treated as the first, so that a seat whose
 # application list is one version behind keeps starting Steam.
 open_bigpicture() {
-    setsid steam steam://open/bigpicture >/dev/null 2>&1 </dev/null &
+    setsid steam steam://open/bigpicture >/dev/null 2>&1 </dev/null 9>&- &
 }
 
 # Asked for, then looked at, then asked again.
@@ -297,6 +344,21 @@ ours() {
     gamescopes | grep -q '^ours '
 }
 
+# Whether somebody is playing something.
+#
+# Everything below that restarts Steam takes a running game with it, and a
+# player whose evening ends because the stream dropped and an undo command fired
+# would have no idea why. Steam starts every game through its own reaper, whose
+# command line carries the app id, so this is a question the process table can
+# answer exactly rather than by guessing. The bare name is asked as well,
+# because that is the same process under a shorter description and costs
+# nothing to check.
+playing() {
+    pgrep -f "SteamLaunch AppId=" >/dev/null 2>&1 && return 0
+
+    pgrep -x reaper >/dev/null 2>&1
+}
+
 # And whether sway can see its window yet, which is the positive proof that
 # gamescope came up and is nested in this session. Used to decide how long to
 # wait, not whether to retry: a false negative here would start a second
@@ -304,6 +366,18 @@ ours() {
 mapped() {
     swaymsg -t get_tree 2>/dev/null | grep -q '"app_id" *: *"gamescope"'
 }
+
+# Not while somebody is playing, and this one is a bug that was there from the
+# first day refresh existed.
+#
+# Picking Desktop in Moonlight runs a refresh, and refresh shuts Steam down.
+# Under gamescope that takes the running game with it, so a player who left a
+# game to look at the desktop for a moment ended it. Nothing said so anywhere.
+if [ "$1" = refresh ] && playing; then
+    say "a game is running, so Steam was left exactly as it is"
+
+    exit 0
+fi
 
 # refresh means starting the pair over, and it has to: closing Big Picture on
 # its own is not survivable. It is gamescope's only window, so closing it ends
@@ -523,7 +597,8 @@ export STEAM_MULTIPLE_XWAYLANDS
 # player switches between.
 start() {
     setsid gamescope --backend wayland -W "$1" -H "$2" -r "$3" -f -e \
-        --xwayland-count 2 -- "$CAPPED" steam -silent >"$LOG" 2>&1 </dev/null &
+        --xwayland-count 2 -- "$CAPPED" steam -silent \
+        >"$LOG" 2>&1 </dev/null 9>&- &
 }
 
 start "$w" "$h" "$r"

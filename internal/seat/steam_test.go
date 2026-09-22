@@ -46,6 +46,10 @@ type seatState struct {
 	// pipe. It does not queue a url that arrives then, it loses it, and asking
 	// once is what left seats with a Steam and no Big Picture.
 	dropsFirstRequest bool
+
+	// gameRunning is somebody playing something. Steam starts a game through
+	// its own reaper, and everything that restarts Steam takes that with it.
+	gameRunning bool
 }
 
 // A Steam that is running is not a Big Picture that is ready: with -silent
@@ -127,9 +131,15 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 	gsMarker := filepath.Join(home, "gamescope")
 	steamMarker := filepath.Join(home, "steam-running")
 
+	// A gamescope that is running has a Steam inside it. Not a convenience: the
+	// two cannot be separated in a seat, because gamescope's reaper takes its
+	// child with it and the child's exit takes gamescope. A state with one and
+	// not the other is one no seat can be in.
 	if state.gamescopeRunning {
-		if err := os.WriteFile(gsMarker, []byte("running\n"), 0o644); err != nil {
-			t.Fatal(err)
+		for _, m := range []string{gsMarker, steamMarker} {
+			if err := os.WriteFile(m, []byte("running\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 
@@ -186,8 +196,17 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 	// with a pid younger than sway's; a leftover answers with an older one, and
 	// only for as long as it is actually alive, so that the script's kill is
 	// what makes it stop answering.
+	game := filepath.Join(home, "game")
+
+	if state.gameRunning {
+		if err := os.WriteFile(game, []byte("playing\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	stub("pgrep", "#!/bin/sh\n"+
 		"case \"$*\" in\n"+
+		"*SteamLaunch*|*reaper*) [ -f "+game+" ] && exit 0 || exit 1 ;;\n"+
 		"*gamescope*)\n"+
 		"  [ -f "+gsMarker+" ] && { echo "+gamescope+"; exit 0; }\n"+
 		"  [ -n \""+stale+"\" ] && kill -0 "+stale+" 2>/dev/null && { echo "+stale+"; exit 0; }\n"+
@@ -257,7 +276,10 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 
 	stub("steam", "#!/bin/sh\n"+
 		"case \"$1\" in\n"+
-		"-shutdown) rm -f "+steamMarker+"; exit 0 ;;\n"+
+		// Taking gamescope and the window with it, because that is what
+		// happens in a seat: the reaper ends when its child does, and the
+		// window was the child's.
+		"-shutdown) rm -f "+steamMarker+" "+gsMarker+" "+url+"; exit 0 ;;\n"+
 		"steam://*)\n"+
 		"  echo \"$1\" >> "+filepath.Join(home, "requests")+"\n"+
 		"  [ \"$(wc -l < "+filepath.Join(home, "requests")+")\" -ge "+strconv.Itoa(answers)+" ] &&\n"+
@@ -671,5 +693,34 @@ func TestGamescopeIsToldWhichCompositorToNestIn(t *testing.T) {
 	if gamescopeDisplay != "wayland-1" {
 		t.Errorf("gamescope was started with WAYLAND_DISPLAY=%q, so it comes up on X11 "+
 			"and sway cannot place its window", gamescopeDisplay)
+	}
+}
+
+// startedGamescope says whether the last run started one, rather than found the
+// one the state had put there. The marker a running gamescope is faked with
+// does not look like a command line, which is what makes the two tellable
+// apart.
+func startedGamescope() bool {
+	return strings.Contains(gamescopeArgs, "--backend")
+}
+
+// A game is ended by the thing that was meant to rescue a stuck screen, and
+// that was the bug.
+//
+// Picking Desktop in Moonlight runs a refresh, and refresh shuts Steam down.
+// Under gamescope that takes the running game with it, so a player who left a
+// game to look at the desktop for a moment ended it, with nothing anywhere
+// saying why.
+func TestARunningGameIsNotEndedByAskingForTheDesktop(t *testing.T) {
+	_, said := runSteamScript(t, seatState{
+		arg: "refresh", gamescopeRunning: true, bigPictureUp: true, gameRunning: true,
+	})
+
+	if startedGamescope() {
+		t.Error("Steam was restarted under a running game")
+	}
+
+	if !strings.Contains(said, "game is running") {
+		t.Errorf("said %q, which does not say why nothing was done", said)
 	}
 }

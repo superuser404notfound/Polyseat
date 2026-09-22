@@ -366,12 +366,24 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 				// Steam.
 				{Do: toGamescope, Undo: toDesktop},
 
-				// The stream ending does not close Big Picture any more.
-				// Closing it takes Steam and gamescope with it, so the next
-				// connection found neither and started a cold Steam in the
-				// wrong place. The way out of a stuck screen is the Desktop
-				// entry, which still closes it, and picking Steam Big Picture
-				// afterwards puts the pair back.
+				// Nothing is undone when the stream ends, and that was asked
+				// and answered rather than left alone.
+				//
+				// An open Big Picture holds 218 MB of video memory, so giving
+				// it back at the end of a stream looks obvious. It cannot be
+				// done by closing the window. Measured in seat vince on
+				// 2026-09-22: `steam steam://close/bigpicture` leaves Steam
+				// showing its desktop window and frees nothing; closing that
+				// window the way a window manager does empties the screen but
+				// the renderer keeps its surface, 221 MB of it; and
+				// SteamClient.UI.ExitBigPictureMode, through Steam's debugging
+				// port, does free it and leaves a Steam that will not open Big
+				// Picture again.
+				//
+				// What is left is restarting Steam, which is half a minute and
+				// what picking Desktop already does. Somebody who wants the
+				// memory back picks Desktop; a stream that merely ended does
+				// not decide that for them.
 				{Do: hideLauncher},
 			},
 			ImagePath: "steam.png",
