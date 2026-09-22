@@ -10,6 +10,21 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.31.4
+
+**Picking Steam Big Picture put three to five seconds of the desktop on the
+screen first.** Sunshine runs an entry's preparation commands in order, and the
+stream is already running while it does. The switch to the workspace gamescope
+is on stood last in that list, behind the resize, the framerate cap and the
+launcher, so the player watched somebody else's desktop until it finally came
+round.
+
+The switch is now the first thing each of the two entries does. Everything that
+follows is invisible, because it happens on the screen the player is already
+looking at.
+
+**Seats have to be provisioned again**, generation 54.
+
 ## 0.31.3
 
 **Big Picture is built at session start, not when somebody asks for it.** A
