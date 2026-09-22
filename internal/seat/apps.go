@@ -287,8 +287,8 @@ const (
 // workspacePath is where the seat keeps the switch.
 const workspacePath = "/usr/local/bin/polyseat-workspace"
 
-// closeBigPicture is how a player gets out of a Big Picture that cannot get out
-// of itself.
+// refreshBigPicture is how a player gets out of a Big Picture that cannot get
+// out of itself.
 //
 // gamescope's Steam integration makes Steam believe it sits in a session, so Big
 // Picture offers "switch to desktop". Steam answers that with
@@ -303,10 +303,12 @@ const workspacePath = "/usr/local/bin/polyseat-workspace"
 // that screen would reach for anyway. Confirmed against a stuck one: the close
 // still gets through, and what comes back is clean.
 //
-// The price is that returning to Big Picture rebuilds it, five to ten seconds
-// with a warm Steam, where it used to be instant. A screen nobody can leave is
-// worse than a wait everybody can see.
-const closeBigPicture = "setsid steam steam://close/bigpicture"
+// Closed and opened again rather than just closed, and the difference is a
+// black screen. Big Picture is gamescope's only window, so closing it and
+// leaving it closed empties the workspace: the next player switches to nothing
+// and then waits for Big Picture to be built. Refreshing it while they are on
+// the desktop costs them nothing, because they are not looking at it.
+const refreshBigPicture = "setsid " + steamScriptPath + " refresh"
 
 // polyseatApps builds every entry Polyseat owns, and the names in order.
 //
@@ -325,7 +327,10 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 			// comes before it is time the player spends looking at the wrong
 			// workspace. Three to five seconds of somebody else's desktop,
 			// reported from a television.
-			PrepCmd:   []prep{{Do: toDesktop}, {Do: showLauncher}, {Do: closeBigPicture}},
+			PrepCmd: []prep{{Do: toDesktop}, {Do: showLauncher}},
+			// Not a prep command: it takes seconds and a prep command holds the
+			// stream up while it runs.
+			Detached:  []string{refreshBigPicture},
 			ImagePath: "desktop.png",
 			Polyseat:  true,
 		},

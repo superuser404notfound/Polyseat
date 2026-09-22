@@ -700,16 +700,25 @@ func TestBigPictureCanBeLeftAndComeBack(t *testing.T) {
 		}
 	}
 
-	closes := false
+	refreshes := false
 
-	for _, c := range desktop.PrepCmd {
-		if strings.Contains(c.Do, "close/bigpicture") {
-			closes = true
+	for _, d := range desktop.Detached {
+		if strings.Contains(d, "polyseat-steam refresh") {
+			refreshes = true
 		}
 	}
 
-	if !closes {
-		t.Error("picking Desktop leaves Big Picture open, so a stuck screen stays stuck")
+	if !refreshes {
+		t.Error("picking Desktop does not refresh Big Picture, so a stuck screen stays stuck")
+	}
+
+	// And it may not simply close it: Big Picture is gamescope's only window,
+	// so a closed one leaves the workspace empty and the next player switches
+	// to a black screen and then waits for it to be built.
+	for _, c := range desktop.PrepCmd {
+		if strings.Contains(c.Do, "close/bigpicture") {
+			t.Errorf("Desktop closes Big Picture without opening it again: %q", c.Do)
+		}
 	}
 
 	for _, c := range steam.PrepCmd {

@@ -72,9 +72,25 @@ say() { echo "polyseat-steam: $*" >&2; }
 # autostart was supposed to remove. A player picking Steam Big Picture in
 # Moonlight should find it, not start it.
 #
-# An argument is accepted and ignored, so that a seat whose application list
-# still says `polyseat-steam bigpicture` keeps working until it is provisioned
-# again.
+#   polyseat-steam           make sure the seat has its Steam, in gamescope,
+#                            with Big Picture open
+#   polyseat-steam refresh    the same, after throwing the current Big Picture
+#                            away
+#
+# refresh is what the Desktop entry runs, and it exists for one screen: Steam
+# offers "switch to desktop" under gamescope, has no implementation of it
+# outside SteamOS, and waits on that screen for ever. Closing Big Picture is the
+# way out of it - but closing it and leaving it closed takes gamescope's only
+# window with it, so the workspace is empty and the next player switches to a
+# black screen and then waits for Big Picture to be built. Which is exactly what
+# was reported.
+#
+# So it is closed and opened again, while the player is on the other workspace
+# and cannot see either.
+#
+# Any other argument is accepted and ignored, so that a seat whose application
+# list still says `polyseat-steam bigpicture` keeps working until it is
+# provisioned again.
 open_bigpicture() {
     say "opening Big Picture"
 
@@ -94,6 +110,37 @@ open_bigpicture() {
 #
 # So gamescope answers whether there is anything to do, and a Steam without one
 # is not a Steam to keep.
+# refresh means starting the pair over, and it has to: closing Big Picture on
+# its own is not survivable. It is gamescope's only window, so closing it ends
+# gamescope, which takes Steam with it - measured, with gamescope saying so:
+#
+#     Error: xdg_backend: Failed to dispatch input thread queue: protocol error
+#     reaper: Parent of gamescopereaper was killed. Killing children.
+#
+# What is left is an empty workspace and nothing to open Big Picture in. So the
+# shutdown is done deliberately and waited out, and the rest of this script then
+# builds the pair again from nothing. It takes half a minute and the player
+# spends it on the desktop, which is where they just asked to be.
+if [ "$1" = refresh ] && pgrep -x steam >/dev/null 2>&1; then
+    say "restarting Steam, so that the next Big Picture is a fresh one"
+
+    steam -shutdown >/dev/null 2>&1
+
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+        pgrep -x steam >/dev/null 2>&1 || break
+
+        sleep 1
+    done
+
+    # gamescope goes when its child does, but not instantly, and a gamescope
+    # that is still there when the check below runs would look like success.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        pgrep -x gamescope-wl >/dev/null 2>&1 || break
+
+        sleep 1
+    done
+fi
+
 if pgrep -x gamescope-wl >/dev/null 2>&1; then
     say "gamescope is already running, so nothing was started"
     open_bigpicture
