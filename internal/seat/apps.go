@@ -287,6 +287,27 @@ const (
 // workspacePath is where the seat keeps the switch.
 const workspacePath = "/usr/local/bin/polyseat-workspace"
 
+// closeBigPicture is how a player gets out of a Big Picture that cannot get out
+// of itself.
+//
+// gamescope's Steam integration makes Steam believe it sits in a session, so Big
+// Picture offers "switch to desktop". Steam answers that with
+// CSteamOSManager_SwitchToDesktop_Request, and its own client carries the string
+// "Method SwitchToDesktop() not implemented." - on anything that is not SteamOS
+// the request is never answered and the interface waits on that screen for ever.
+// It cost a seat restart to leave, until this.
+//
+// So the desktop entry closes Big Picture on the way out and the Steam entry
+// opens it again. Picking Desktop and then Steam Big Picture in Moonlight is
+// therefore the way back, which is the same pair of buttons somebody stuck on
+// that screen would reach for anyway. Confirmed against a stuck one: the close
+// still gets through, and what comes back is clean.
+//
+// The price is that returning to Big Picture rebuilds it, five to ten seconds
+// with a warm Steam, where it used to be instant. A screen nobody can leave is
+// worse than a wait everybody can see.
+const closeBigPicture = "setsid steam steam://close/bigpicture"
+
 // polyseatApps builds every entry Polyseat owns, and the names in order.
 //
 // A function of its arguments rather than part of the writer, because the one
@@ -299,7 +320,7 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 	ours := []app{
 		{
 			Name:      "Desktop",
-			PrepCmd:   []prep{{Do: showLauncher}, {Do: toDesktop}},
+			PrepCmd:   []prep{{Do: showLauncher}, {Do: toDesktop}, {Do: closeBigPicture}},
 			ImagePath: "desktop.png",
 			Polyseat:  true,
 		},
@@ -312,11 +333,19 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 			// scaling question Steam asks; inside gamescope neither is needed,
 			// because gamescope hands Steam a screen of exactly the right size.
 			//
-			// The undo no longer closes Big Picture either. Reopening it is
-			// free once Steam is warm, and leaving it open means the next
-			// player lands in it rather than watching it build itself.
-			Detached:  []string{"setsid steam steam://open/bigpicture"},
-			PrepCmd:   []prep{{Do: hideLauncher}, {Do: toGamescope, Undo: toDesktop}},
+			// The undo closes Big Picture again, see closeBigPicture for the
+			// screen that made that necessary.
+			Detached: []string{"setsid steam steam://open/bigpicture"},
+			PrepCmd: []prep{
+				// The undo closes Big Picture when the stream ends, so that a
+				// screen somebody got stuck on never survives into the next
+				// session. Hung on this entry rather than one of its own,
+				// because Sunshine runs every `do` it is given and an entry
+				// with an empty one is not worth finding out about on
+				// somebody's television.
+				{Do: hideLauncher, Undo: closeBigPicture},
+				{Do: toGamescope, Undo: toDesktop},
+			},
 			ImagePath: "steam.png",
 			Polyseat:  true,
 		},

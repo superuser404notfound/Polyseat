@@ -675,3 +675,53 @@ func TestLaunchTargetIsSomethingSpecificOrNothing(t *testing.T) {
 		}
 	}
 }
+
+// A Big Picture that cannot be left is worse than one that has to be rebuilt.
+// gamescope makes Steam offer "switch to desktop", Steam has no implementation
+// of it outside SteamOS, and the interface then waits on that screen for ever.
+// The way back is the pair of entries below, so both halves have to be there.
+func TestBigPictureCanBeLeftAgain(t *testing.T) {
+	apps, _ := polyseatApps(nil, nil)
+
+	var desktop, steam app
+
+	for _, a := range apps {
+		switch a.Name {
+		case "Desktop":
+			desktop = a
+		case "Steam Big Picture":
+			steam = a
+		}
+	}
+
+	closes := func(a app) bool {
+		for _, c := range a.PrepCmd {
+			if strings.Contains(c.Do, "close/bigpicture") ||
+				strings.Contains(c.Undo, "close/bigpicture") {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	if !closes(desktop) {
+		t.Error("picking Desktop leaves Big Picture open, so a stuck screen stays stuck")
+	}
+
+	if !closes(steam) {
+		t.Error("the stream ending leaves Big Picture open, so a stuck screen survives it")
+	}
+
+	opens := false
+
+	for _, d := range steam.Detached {
+		if strings.Contains(d, "open/bigpicture") {
+			opens = true
+		}
+	}
+
+	if !opens {
+		t.Error("nothing opens Big Picture again, so closing it is a one way trip")
+	}
+}
