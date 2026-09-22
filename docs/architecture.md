@@ -18,10 +18,19 @@ Almost everything else follows from these:
   it, in udev and logind, which every desktop shares. Developed on KDE/Wayland.
 - **Fixed seats per person.** No dynamic pool: Anna has her seat, it always has
   the same address, she sets up Moonlight once.
-- **Seats run permanently** (idle ≈ 400 MB). On-demand start is a later feature,
-  not a design constraint.
+- **Seats run permanently.** On-demand start is a later feature, not a design
+  constraint. Idle was 400 MB when this was written and a seat was sway with a
+  terminal in it; a seat today starts Steam with the session and sits at
+  1386 MB of memory and 493 MB of video memory, measured in seat vince on
+  2026-09-22. What that buys, and why Big Picture is not part of it, is under
+  "Steam is started with the session".
 - **SDR**, no HDR. On Linux/wlroots/NVIDIA, HDR is the most expensive wish on
-  the list and buys nothing for the start.
+  the list and buys nothing for the start. This one has since been tested to
+  destruction rather than left as an assumption: HDR out of a headless seat was
+  built and measured end to end in [`spike/m8-hdr/`](../spike/m8-hdr/), and the
+  decision on 2026-09-19 was still not to ship it, because the price is a
+  forked compositor pinned to one wlroots release. The constraint stands, and
+  now it stands on numbers.
 - **N seats**, not a fixed two. Realistically the hardware caps this at 2-3
   actively playing seats (see Capacity).
 
@@ -156,12 +165,19 @@ without uhid, keyboard and mouse appear normally but a pad never does.
  (each: headless Sway + Sunshine + PipeWire + Steam)
 ```
 
-Per seat: headless Sway (`WLR_BACKENDS=headless`, `LIBSEAT_BACKEND=noop`) as the
-session shell, because Sunshine can capture there via
+Per seat: headless Sway (`WLR_BACKENDS=headless,libinput`,
+`WLR_LIBINPUT_NO_DEVICES=1` because `/dev/input` is empty until a client
+connects, `WLR_RENDERER=gles2`, `LIBSEAT_BACKEND=noop`) as the session shell,
+because Sunshine can capture there via
 `wlr-screencopy`/`export-dmabuf` - KMS capture is dead on the proprietary NVIDIA
-driver, and on AMD it wants `cap_sys_admin` on the Sunshine binary, which is not
-something a container is going to be given. Same setting on both vendors, for
-two different reasons. Optionally gamescope nested per game for scaling and FPS caps.
+driver, and on AMD it wants `cap_sys_admin` and, more to the point, DRM master,
+which is held per device: on a machine with one card exactly one seat could
+capture that way. Same setting on both vendors, for two different reasons. gamescope is nested inside that, permanently rather than
+per game: Steam runs in it so that the in-game overlay works at all, and games
+started from Steam inherit it. The framerate cap is not gamescope's either, it
+rides on MangoHud, which is the one route that reaches a native game, a game
+under Proton, a flatpak and an emulator alike. Both are spelled out under "What
+a seat looks like from the inside".
 
 **Split frame encoding is turned on rather than left to the driver.** Cards from
 the RTX 4080 up carry two NVENC units and Sunshine can spread one frame across
@@ -202,8 +218,12 @@ work until somebody ticked a box. And the seat's
 Sunshine password is **generated once and kept**, because paired devices are
 stored against it and a rebuilt container has to come back with the same one.
 
-There is no CLI at all, not even a thin one. The daemon takes three flags and
-none of them operate anything: `-config`, `-listen`, `-version`. A second way in
+There is no CLI at all, not even a thin one. The daemon takes five flags and
+none of them operate anything: `-config`, `-listen` and `-version`, plus
+`-report`, which describes the installation on stdout for a bug report, and
+`-uplink`, which prints the interface the seats hang off and why it was picked.
+The last two read and print and then exit; neither creates, starts or changes
+anything. A second way in
 would mean a second author for the generated files, which is exactly what the
 next section forbids. When the interface will not start, the thing to read is
 `journalctl -u polyseatd`.
@@ -882,6 +902,260 @@ is built around having it, and without it Proton falls back to esync and fsync.
 Optional like the other host devices: a kernel too old to have it should cost a
 seat its fastest synchronisation, not its ability to start.
 
+**A seat takes the machine's language, its keyboard layout and its clock**,
+because it has no business having any of the three of its own. A seat is a
+screen attached to this machine. A plain Arch image has none of them: systemd
+falls back to C.UTF-8, xkb to a US layout, and there is no `/etc/localtime` at
+all, so a seat came up in English with y and z swapped and a clock two hours
+out from the host beside it - which cost an evening once, reading a seat's log
+against the host's time.
+
+The language reaches further than the menus. wine asks the Unix locale what
+`GetUserDefaultUILanguage` should answer, so a Windows game that ships fifteen
+translations picks by that alone, and a seat on C.UTF-8 plays every one of them
+in English. The layout is the difference between signing in to a store and
+hunting for y and z on a phone's on-screen keyboard.
+
+All three are read off the host's own files rather than asked of `localectl` or
+taken from the daemon's environment, because polyseatd is a system service: its
+`LANG` is whatever systemd started it with and it has no bus of its own.
+`/etc/locale.conf` gives the locale, `/etc/vconsole.conf` the xkb settings, and
+the `/etc/localtime` symlink the zone, which is the one place every
+distribution agrees on - `/etc/timezone` is a Debian habit and is not written
+on Arch. `C`, `POSIX` and `C.*` are read as the absence of a choice and copied
+nowhere. `KEYMAP` from that second file is deliberately ignored, being the
+console keymap rather than the graphical one, and the xkb values land in an
+`input *` block in the seat's sway configuration. Each value is checked against
+a pattern before it goes anywhere, because these are the one place in
+provisioning where something read off the host's disk reaches a shell or a
+configuration file that is parsed line by line.
+
+**DLSS needs two things the driver injection does not bring.** `libnvidia-ngx.so`
+is the native half of NGX and is not among the libraries
+`nvidia-container-toolkit` mirrors into a container; the wine DLLs Proton looks
+for, `nvngx.dll` and `_nvngx.dll`, ship with the host's driver and have to be
+put where that particular Proton expects them, which is asked of the seat
+rather than assumed. Without them nothing fails and nothing is logged: the game
+starts, runs, and simply does not offer DLSS in its settings, so the person in
+the seat has no way at all to find out why. A host whose driver has neither is
+said so in the log, once, rather than left to be discovered from inside a game.
+
+**Sunshine is allowed to lower its own priority**, which is one line of
+container configuration and was worth a stutter nobody could explain. Sunshine
+asks for nice -10 on the threads that take the frame off the compositor and
+-15 on the ones that hand it to NVENC, at the start of every stream, and in a
+seat every one of those requests was refused: `RLIMIT_NICE` defaults to 0, and
+that limit is expressed upside down, the floor being 20 - rlim_cur, so 0 means
+never negative at all. `limits.kernel.nice` is set to 40, the other end, and
+what to do with it is left to Sunshine because Sunshine is what knows which of
+its threads belongs where.
+
+What made that matter rather than merely untidy is that the priorities around
+it are not neutral. ananicy-cpp on the host matches processes by name and does
+not stop at the container boundary - a seat's processes are ordinary host PIDs
+to it - so on a CachyOS host a seat came out ordered like this:
+
+    sway         -12   LowLatency_RT
+    wineserver   -12   LowLatency_RT
+    the game      -5   Game
+    sunshine       0   no rule exists
+
+The encoder sat underneath every single thing it has to keep pace with,
+including the compositor it captures from. While the machine has headroom
+nothing shows; when a scene turns expensive the capture threads lose the CPU to
+a game seven steps above them, frames leave late, and the client sees a few
+seconds of stutter that no frametime graph inside the seat will ever explain,
+because the game really was fine. A rule on the host fixes it too and is worth
+having, but a seat must not depend on one: the machine that grows the next seat
+may have no ananicy at all.
+
+**Sunshine itself is pinned to one release rather than following the
+repository.** A seat is built from that tag's own Arch package, and moving the
+pin is a deliberate act with a reason written down each time. Two of those
+reasons are worth repeating here. The current pin, 2026.914.233613, closes
+GHSA-fp6g-27w5-489j, where the packaged binary carries `cap_sys_admin` and
+`cap_sys_nice` as file capabilities and the tray initialised GUI libraries
+while honouring the module loader variables it found in the environment; that
+environment in a seat belongs to the player, so the party it let over the line
+is exactly the party a seat exists to keep on the other side of it. And a
+pre-release must never be the pin, because it can be withdrawn under one: a
+withdrawn tag is a 404 at provisioning time and no new seat can be built at
+all, while the seats that already carry it notice nothing.
+
+## Steam is started with the session
+
+For most of this project's life a seat came up as a desktop and waited. Steam
+was something the player started, from Moonlight or from the grid, and what
+they spent the first minute of the evening looking at was Steam starting. Two
+separate complaints from a television turned out to have one shape: the seat
+was doing at the worst possible moment work it could have done while nobody
+was watching.
+
+**So the session starts Steam, and it starts it inside gamescope.** sway's
+first exec lines run `polyseat-steam`, which waits for the output to have a
+mode and then starts
+
+    gamescope --backend wayland -W <width> -H <height> -r <refresh> -f -e \
+        --xwayland-count 2 -- polyseat-capped steam -silent
+
+and stops there. No window is drawn, nothing is on the screen, and the seat
+sits at 1386 MB of memory and 493 MB of video memory, measured in seat vince
+on 2026-09-22.
+
+**gamescope is not a preference, and this is the reason.** Steam hands the
+in-game overlay to a game through a compositor of its own. That compositor
+needs `GLX_EXT_texture_from_pixmap`, NVIDIA's GLX client does not offer that
+extension against an X server it did not write, and Xwayland is exactly such a
+server. Steam says so itself and then falls back:
+
+    Error: ThreadInit: GLX_EXT_texture_from_pixmap extension unavailable
+    Error: Run: failed to initialize GL thread
+    SP BPM_uid0: Failed to create output window. Falling back to system composer
+
+The fallback pushes a screen sized texture through main memory once per frame.
+Measured on 2026-09-21 by reading the overlay's own page through Steam's CEF
+debugging port: the page renders at 60 fps and the player sees one or two,
+while the game behind it holds 16.7 ms per frame with no outlier. Nothing about
+the cap, the present mode or the resolution was ever the cause, and all three
+were tried. Inside gamescope that path does not exist, and this is not a
+workaround either: gamescope is what a Steam Deck runs, so Steam and its
+overlay inside it is the one arrangement Valve actually tests.
+
+Three details of that command line each cost something to learn. `-e` is what
+turns the Steam integration on, and without it the overlay does not appear at
+all. `--xwayland-count 2` with `STEAM_MULTIPLE_XWAYLANDS=1` is what Valve's own
+session does and what lets a keyboard and a mouse work in game mode. And
+`--backend wayland` is not the default: with `DISPLAY` set, gamescope picks
+X11, its window in the session is an Xwayland window with a class and no
+`app_id`, and every rule this session has for gamescope matches on `app_id`. So
+the window is never assigned to its workspace, never made fullscreen and never
+seen by the check that waits for it, and the only trace is one line in
+gamescope's log. That log is kept, at
+`~/.local/share/polyseat/gamescope.log`, overwritten on every start: it is the
+one log in this chain that belongs to us, and a gamescope that does not survive
+its first seconds is invisible without it.
+
+**Not `-gamepadui`**, which looks like the flag for this and is a trap. It puts
+Steam into the Deck's session mode, where "switch to desktop" sends
+`CSteamOSManager_SwitchToDesktop_Request` to a SteamOS service that does not
+exist here. The request is never answered and Big Picture waits on that screen
+for ever. The overlay works because of gamescope, not because of that flag.
+
+**Big Picture is built when somebody asks for it, not at session start**, and
+both halves of that are deliberate. Starting Steam early is what takes the cold
+start out of the evening: a Steam that has never run needs fifteen to
+twenty-five seconds before it can answer anything at all. Leaving the window
+closed is what keeps an idle seat cheap. Measured in seat vince on 2026-09-22,
+the same Steam throughout and ninety seconds of settling on each side:
+
+    still         1386 MB of memory, 493 MB of video memory
+    Big Picture   1411 MB of memory, 711 MB of video memory
+
+The 25 MB of memory is nothing. The 218 MB of video memory is not: two seats
+share one card here, and a game wants every megabyte an empty menu is holding.
+Building the window on a Steam that is already warm was measured three times in
+Sunshine's own command order at 522, 616 and 607 milliseconds, which is the
+price of asking for it instead.
+
+**Going back the other way is not possible**, and that is worth writing down
+because it looks as though it should be. Once Big Picture has been drawn those
+218 MB belong to the renderer rather than to the window. Measured, in the order
+somebody would try them: `steam://close/bigpicture` leaves Steam showing its
+desktop window and the seat holding more than before; closing the window the
+way a window manager does empties the screen while the renderer keeps its
+surface, 221 MB of it; and `SteamClient.UI.ExitBigPictureMode` through the
+debugging port does free it and leaves a Steam that will not open Big Picture
+again. So the only way back to a cheap seat is a restart, which is what picking
+Desktop already does, and a stream that merely ended does not decide that for
+the player.
+
+**The seat has two workspaces**, and the Moonlight entries switch between them:
+1 is the desktop with the terminal and the grid, 2 is gamescope and therefore
+Steam. `polyseat-workspace` does the switching as a prep command, and it is the
+first one in each entry rather than the last, because everything before it is
+time the player spends looking at the other workspace - three to five seconds
+of somebody else's desktop, reported from a television.
+
+**Picking Desktop restarts the pair**, which is a stranger answer than it
+looks. Under gamescope Steam believes it sits in a session, so Big Picture
+offers "switch to desktop", and Steam's own client carries the string "Method
+SwitchToDesktop() not implemented." On anything that is not SteamOS that
+request is never answered and the interface waits on that screen for ever; it
+cost a seat restart to leave. Closing Big Picture is the way out - but closing
+it and leaving it closed takes gamescope's only window with it, so the
+workspace is empty and the next player switches to a black screen and then
+waits for Big Picture to be built. So Desktop runs `polyseat-steam refresh`,
+which shuts Steam down and builds the pair again from nothing, while the player
+is on the other workspace and cannot see any of it. It is detached rather than
+a prep command, because half a minute of prep command is half a minute of
+stream that has not started.
+
+**Except while somebody is playing.** That refresh takes a running game with
+it, so a player who left a game to look at the desktop for a moment ended it,
+with nothing anywhere saying why. Steam starts every game through its own
+reaper and the command line carries the app id, so the process table answers
+the question exactly rather than by guessing, and a refresh that finds a game
+leaves Steam exactly as it is.
+
+**One of these at a time.** The entries overlap in ordinary use: picking
+Desktop starts a refresh that takes half a minute, and picking Steam a second
+later used to find no gamescope, start a second one, and hand it a Steam the
+first was already building. A lock serialises them, held on a file descriptor
+the script owns rather than by handing the whole script to `flock`. That is not
+style. A lock lives on the open file, so every process inheriting the
+descriptor holds it too, and this script's whole purpose is to start a gamescope
+that outlives it: the first version handed itself to `flock`, gamescope
+inherited the lock, and the next run waited seven minutes with nothing in its
+log. The two commands that outlive the script close the descriptor on their way
+out, and the wait is bounded at two minutes so that a lock which never comes
+free cannot turn picking Steam into a button that does nothing.
+
+**What decides is gamescope, not Steam**, and having that the wrong way round
+cost a morning. A session restart leaves gamescope gone and Steam still
+running, detached, talking to whatever X server it can find; a guard that asks
+"is Steam running" says yes and does nothing, and what is left is precisely the
+arrangement this exists to avoid. Worse, a gamescope whose sway is gone does not
+die at once - it follows a few seconds later - so `pgrep` during those seconds
+finds the previous session's gamescope and the script decides there is nothing
+to do. Age is what tells them apart: a gamescope older than the session's sway
+belongs to a session that is over, and it is taken away rather than waited for.
+
+**And readiness is the window, not the request.**
+`steam steam://open/bigpicture` writes into a pipe in the home directory, and a
+Steam that is not listening yet does not queue the request, it drops it. Asking
+once after a wait chosen to be about right is what left a seat with a Steam
+running and no Big Picture, which the player then watched being built. So the
+request is repeated every five seconds until sway can see gamescope's window,
+for up to ninety, and the window is proof because Big Picture is gamescope's
+only one.
+
+**The environment has to be found rather than inherited.** This script runs
+from three places - sway's exec, a Sunshine prep command and `incus exec` from
+the daemon - and the last of them arrives with no session environment at all.
+`SWAYSOCK` and `WAYLAND_DISPLAY` are therefore looked up from
+`$XDG_RUNTIME_DIR`, newest socket first, the same way `polyseat-resize` and
+`polyseat-launcher` do it. Newest first because a socket left behind by a
+previous sway is still lying there after a restart and picking it is
+indistinguishable from picking the live one until something tries to draw.
+
+**What this left behind is worth recording**, since the script it describes
+has been deleted and this is now the only account of it. Before gamescope, Big
+Picture was fought into place by `polyseat-bigpicture`: sway made the window fullscreen and
+the script then insisted, because fullscreen is not the same as a picture that
+fills the screen. Big Picture is a fixed 1280x800 interface that Steam scales
+to whatever its window happens to be, it asks how big that window is exactly
+once, and on a cold start it asks before sway's rule has fired. The witness was
+Steam's own log line, `ThreadSetForceDeviceScaleFactors 1.000000 * 1.423025`,
+rather than a screenshot - version 0.22.0 photographed the screen instead and
+was silently wrong twice in one seat. Inside gamescope none of that happens,
+because gamescope hands Steam a screen of exactly the right size. What is still
+needed is `polyseat-bigpicture-watch`, for a different bug with the same
+appearance: sway allows one fullscreen container per workspace, so a game going
+fullscreen dethrones Big Picture and nothing gives it back when the game exits.
+The watcher reads sway's `fullscreen_mode` and `close` events rather than any
+window title, since Steam translates the title and a German seat calls that
+window "Big-Picture-Modus".
+
 ## The client with no keyboard and no mouse
 
 Which is most of them. A seat streams to an Apple TV, a phone, a television,
@@ -963,19 +1237,28 @@ it against what the helper actually does.
 **How fast it moves is a fraction of the screen, not a number of pixels.** A
 seat's output becomes whatever size the connected client asked for, so a fixed
 1100 pixels per second, which is what this started with, threw the pointer
-across a phone streaming 720p and crawled on a 4K television. It now crosses the
-screen height in a second and two thirds whatever the resolution: measured by
-feeding a synthetic gamepad in at full deflection and summing the relative
-motion coming out of the pointer device, 647 pixels per second at 1080p, 433 at
-720p and 1289 at 2160p. The number itself came from the first person to use it
-saying it was too fast.
+across a phone streaming 720p and crawled on a 4K television. It crosses the
+screen height in the same time on all of them instead, measured by feeding a
+synthetic gamepad in at full deflection and summing the relative motion coming
+out of the pointer device.
+
+**There are two numbers and they answer different complaints**, which took a
+round trip to learn. The ceiling was lowered twice, to 0.60 screens a second
+and then to 0.45, on reports that said "too fast" and then "still too
+sensitive" - and the second of those was not about the ceiling at all. A 1440p
+stream on a phone shows targets a few millimetres across, and hitting one needs
+resolution near the middle of the stick rather than a lower top speed. So the
+curve does that work now: `CURVE = 2.5` gives most of the stick's travel to
+slow movement, and the ceiling went back up to `SPEED = 0.90`, a screen in just
+over a second, where 0.45 was two and a quarter seconds to cross it.
 
 **And it is a per seat setting**, because it is a matter of whose hand is on the
 stick: the number that suits somebody on a television is too much for somebody on
 a phone, and two people can be playing at once. The daemon writes it into
 `~/.config/polyseat/pointer.conf` and the helper rereads that file when it
 changes, so moving the slider is felt within a couple of seconds without
-restarting the session or provisioning again. That mattered enough to build:
+restarting the session or provisioning again. The slider covers 0.10 to 1.50
+screens a second, and 0.90 is where it sits until somebody moves it. That mattered enough to build:
 this is a setting somebody adjusts while holding the controller and watching the
 result, and one that needed a second, unnamed step would look like it did
 nothing. A value the helper cannot use is ignored rather than argued with, since
@@ -1209,13 +1492,19 @@ and again when it ends, with the client's size, framerate and HDR in their
 environment and the name of the application it asked for, and `polyseat-session`
 puts that in a file for as long as the stream lasts.
 
-The address comes from the connection: Sunshine's control channel is a TCP
-connection that lives exactly as long as the stream, so the peer on port 47989 or
-48010 is the machine somebody is sitting at. Not a name, because Moonlight only
-gives its name while pairing and Sunshine keeps that against a certificate rather
-than against an address. The paired names are listed a few rows below on the same
-card, which is as close as this gets without Sunshine's help. Reading that peer
-cost one mistake worth recording: `ss` leaves out the state column when it has
+**The name comes from Sunshine now**, and this document said for a long time
+that it could not. Since 2026.906.222525 Sunshine puts the paired name of the
+client it has just verified into the environment of these commands, as
+`SUNSHINE_CLIENT_NAME`, beside the size and the framerate. That is the version
+a seat is pinned to, so the card says who rather than only where.
+
+The address is still read, and not merely as a fallback for a seat on an older
+build. It answers a different question - which machine, not which pairing - and
+a name is chosen by whoever set the client up, so two of them can be the same.
+It comes from the connection: Sunshine's control channel is a TCP connection
+that lives exactly as long as the stream, so the peer on port 47989 or 48010 is
+the machine somebody is sitting at. Reading that peer cost one mistake worth
+recording: `ss` leaves out the state column when it has
 been asked for a single state, so the address is the fourth field there and the
 fifth without the filter, and counting from the left returned nothing and looked
 exactly like nobody being connected.
@@ -1317,7 +1606,9 @@ Reference machine: RTX 4080 (16 GB), 24 cores, **31 GB RAM**, btrfs.
 
 RAM is the bottleneck, not the GPU. An AAA seat wants 8-16 GB - five
 simultaneously playing seats do not fit; realistically 2-3 plus a few light
-ones. NVENC and CPU have plenty of headroom; VRAM gets tight with three modern
+ones. An idle seat is no longer free either, since it holds a warm Steam:
+1386 MB of memory and 493 MB of video memory, measured in seat vince on
+2026-09-22. NVENC and CPU have plenty of headroom; VRAM gets tight with three modern
 titles. The software is built for N, the hardware sets the cap.
 
 ## Alternative approaches to input isolation
@@ -1377,3 +1668,27 @@ reconsidering for that reason and not for the old one.
 - **One VM per seat.** One GPU, not divisible.
 - **One user, several compositor instances.** Solves neither the Steam lock nor
   input.
+- **A compositor other than sway**, looked at on 2026-09-19 because HDR would
+  be easier somewhere else. It would not: KWin's virtual backend refuses HDR
+  outright, Mutter's `meta-output-virtual.c` never sets a supported EOTF,
+  aquamarine's headless backend reports no capabilities at all, Smithay's
+  colour management is a draft, and cosmic-comp has no headless backend and
+  wants DRM master, which a seat may not hold. Read in the sources rather than
+  in announcements. The switching cost would be paid whatever the answer: six
+  files here speak sway's IPC in 21 places, and three protocols a replacement
+  does not simply bring - `wlr-layer-shell` for waybar, squeekboard and the
+  grid, `wlr-screencopy` for Sunshine's `capture = wlr`, and XWayland for
+  Steam. The lesson written down at the time still holds: the compositor is not
+  the bottleneck, the capture protocol is.
+- **Windows seats**, worked through on 2026-09-20 in four shapes and dropped.
+  Hyper-V GPU-P has no Vulkan in the guest, costs ten to twenty percent, and
+  needs a guest driver matched to the host's after every host update; Windows
+  Sandbox is ephemeral and effectively single instance; ASTER is native and
+  commercial but brings neither provisioning nor isolation; and Windows VMs as
+  seats on a Linux host, which is the only serious candidate of the four, gives
+  up shared RAM and disk, breaks the library pool, and needs the private saves
+  solved again for `%APPDATA%` and Steam's `userdata`, with a licence per seat
+  and no GPU hotplug. What it would have bought is games that do not start
+  under Proton, and not the online shooters people ask about, since anti-cheat
+  still sees a VM. If it ever comes back it is a second class of seat beside
+  the containers, not a parameter on one.

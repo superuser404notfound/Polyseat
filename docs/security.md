@@ -3,7 +3,9 @@
 What this setup actually guarantees, what it deliberately does not, and why.
 Everything here was measured on the running two-seat rig rather than reasoned
 about: on 2026-07-28, for what M7 added on 2026-07-29, and for the bridged
-uplink and the per seat isolation on 2026-07-31.
+uplink and the per seat isolation on 2026-07-31. What was added after that
+carries its own date where it is described, the most recent being the renamed
+input devices of 2026-09-05.
 
 ## The threat model
 
@@ -176,6 +178,28 @@ window to zero for everything already known, and the broker closes the case of
 everything else within one poll interval. The residual exposure is that half
 second, for a device nobody has named in the rule, on a machine where the
 threat model is people in the same house.
+
+**Sunshine then renamed all of it, and that was the test of the design above.**
+Newer builds move the virtual input to a library called libvirtualhid, so
+`Mouse passthrough (vince)` becomes `libvirtualhid Mouse`, and with it the seat
+tag disappears: Sunshine used to read `XDG_SEAT` and append the seat's name,
+and the newer source references `XDG_SEAT` nowhere, so every seat's devices now
+carry identical names. Measured on 2026-09-05 with two seats side by side, one
+on the packaged build and one on a newer one, and it was seen doing what the
+paragraph above predicts - the fast path stopped firing and a client's mouse
+reached the host desktop for a poll interval.
+
+Both halves landed where the design said they would. `libvirtualhid*` is in the
+rule now, which restores the fast path, and the missing tag costs almost
+nothing because the broker does not decide by name where it can avoid it: these
+are uinput devices, so they are traced to the cgroup of the process holding the
+creating descriptor, which is per container and untouched by any rename.
+Gamepads are the exception, `/dev/uhid` having no ioctl to ask with, and they
+depend on the uhid observer having seen the kernel create them; that is the one
+place a missing tag is felt, and the broker checks a tag only where a name
+carries one rather than requiring one. What this says about the design is the
+point of writing it down: a rename upstream cost a fast path and an entry in a
+list, and not the attribution itself.
 
 **The daemon's interface demands a password and speaks only TLS.** It listens on
 all interfaces, so this is the wall. Measured against the running daemon:
@@ -442,6 +466,38 @@ is the smaller thing to own.
 
 `security.nesting` is set explicitly on every seat, as it was when it was
 `false`.
+
+### The seat's Sunshine carries file capabilities, and is pinned
+
+`getcap /usr/bin/sunshine` in a seat answers `cap_sys_admin,cap_sys_nice=p`.
+That is how LizardByte's own Arch package ships, and it is why the release a
+seat installs is a pin in `internal/seat` rather than whatever is newest.
+
+It has already mattered once. GHSA-fp6g-27w5-489j, high severity and Linux
+only, is exactly that pair of capabilities meeting a Qt tray that initialised
+GUI libraries while honouring the module loader variables it found in its
+environment - so whoever controlled that environment could have native code
+loaded with them. Every release from v0.19.0 to the one before the current pin
+is affected, and the pin, 2026.914.233613, is the fix: the variables are
+dropped before Qt is touched and both capabilities come off the main thread at
+startup, with `cap_sys_nice` kept on the one EGL thread that needs it.
+
+Bounded, and worth being exact about the bound. The environment in a seat
+belongs to the player, since Sunshine is that player's own systemd unit, so the
+party this let over the line is the party a seat is built to keep on the other
+side of it - the player has no sudo by design. What holds it there is that the
+container is unprivileged: those capabilities are the container's own, and
+container root is host uid 1000000. A seat, not this machine.
+
+The pin is a security property rather than a convenience, and it cuts both
+ways: it is what keeps a seat off a build nobody has looked at, and it is what
+would keep a seat on a vulnerable one if nobody moved it. So a seat reports the
+version it has against the pin, and reports separately what upstream has
+published, which is the number that says an evening's work is due.
+
+**And a pre-release is never the pin.** It can be withdrawn under one, and then
+provisioning answers `404` and no new seat can be built at all, while the seats
+that already carry it notice nothing. A stable release stays.
 
 ### A seat can install its own software
 

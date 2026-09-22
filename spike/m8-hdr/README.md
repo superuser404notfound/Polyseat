@@ -244,6 +244,77 @@ of this feature and upstream is the only thing that removes it.
 wlroots one is worth reading before writing anything long on a fresh
 freedesktop.org account.
 
+### What became of them, and the decision that followed
+
+**The wlroots merge request was turned down on the merits, on 2026-09-17**, and
+the reasoning is worth keeping because it is better than the patch. A headless
+output does have consumers - screencopy paths hang off
+`wlr_output.events.commit` and take exactly this buffer - and they are handed
+an image description they never asked about. On DRM that description is not a
+fabrication, because it is negotiated with the sink over the cable; headless
+has no such negotiation. And
+[work item 4108](https://gitlab.freedesktop.org/wlroots/wlroots/-/work_items/4108)
+removes the premise entirely by giving output capture its own render pass,
+precisely because today's behaviour hands HDR content unchanged to clients
+expecting SDR. After that lands, this Sunshine path gets SDR whatever the
+output says.
+
+The accepted route is
+[wayland-protocols merge request 448](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/merge_requests/448),
+`ext-image-capture-color-management-v1`, where the capture client asks for the
+colour it wants and the source attaches the image description to the frame.
+
+**Measured on 2026-09-19: the patch was in the wrong place rather than wrong**,
+and [`../m9-capture-color/`](../m9-capture-color/) is where that was taken
+apart. One output further in, the argument holds. The scene based capture source
+creates a private output of its own, renders the scene into it a second time,
+and hands the result to exactly one consumer, the client that asked. A forty
+line patch lets that output be told what colour to present, and a probe took a
+ten bit PQ encoded frame out of an output standing in plain SDR - mid grey read
+back as 438 where 512 means nothing was applied and 219 means linear light.
+Two traps came with it: the Vulkan renderer is not optional, since
+`features.output_color_transform` is false on gles2 and pixman, so on gles2 a
+broken HDR path looks right in every log; and the card owns which ten bit
+format works, this RTX 4080 listing XR30 over EGL and then refusing it at
+`gbm_bo_create`.
+
+**The decision on 2026-09-19 was to wait rather than to build**, and the
+question it answered was whether HDR could go into the product properly, with
+SDR and HDR chosen by what the client asks for. The price of doing it today,
+heaviest first:
+
+- The Sunshine patch is written against `4cb15e9` while the pin is
+  2026.914.233613, and that release rebuilt the wlroots buffer export and
+  filters `DRM_FORMAT_MOD_INVALID` out of the advertised modifiers, which is
+  exactly the case of a headless output. That is a rewrite, not a rebase.
+- An HDR seat would have to hold sway and wlroots at a version, since the patch
+  is against 0.20.2, so that seat's compositor would age separately from
+  everything else in it.
+- It could not be built inside a seat at provisioning time: half an hour and
+  several gigabytes of toolchain per seat, so it would have to become two more
+  packages in `packaging/`.
+- Work item 4108 puts a date on the whole arrangement anyway.
+
+**Two findings that will save work next time.** The automatic part depends on
+nothing the protocol has not settled: Sunshine already puts
+`SUNSHINE_CLIENT_HDR` into the environment of `global_prep_cmd`, beside the
+values `polyseat-resize` and `polyseat-session` already read, and the capture
+side reads the image description per encode session, after those commands run.
+A `polyseat-hdr` in the same shape, always exiting zero, is the whole of it.
+What is left to measure there is one thing: whether Sunshine's startup probe
+fixes the capability at `is_hdr()` for the life of the process, in which case
+the session comes up in HDR and the first prep command puts an idle seat back
+to SDR.
+
+And gamescope is not in the way, which this document earlier implies it is.
+Games here start through `polyseat-capped` or through Steam, never through
+gamescope, so the four colour management features sway does not advertise do
+not matter on that path. What would be needed for games is `VK_hdr_layer` with
+`ENABLE_HDR_WSI=1`, plus `PROTON_ENABLE_WAYLAND=1` and `PROTON_ENABLE_HDR=1`
+per title, because XWayland has no per window colour management. The Steam
+interface itself would stay SDR. No real game has done this; only a generated
+PQ clip in mpv.
+
 ## Content is a separate problem
 
 The transport is HDR. Putting HDR **into** it is a different question, and on
@@ -427,6 +498,17 @@ Cheap to fix, and worth fixing before it arrives: add `libvirtualhid*` to the
 name list in the udev rule, and find out whether the seat tag can be restored -
 if libvirtualhid takes a name, Sunshine may need to be told to pass one, which
 would be a third upstream conversation.
+
+**Half of that was done on the way to the current pin.** `libvirtualhid*` is in
+both name lists in `host/72-polyseat-hide.rules` now, so the fast path fires
+again and the window is back to zero for these devices. The seat tag is still
+gone and is not coming back by itself: the newer source references `XDG_SEAT`
+nowhere. What makes that survivable is that the broker attributes a uinput
+device by the cgroup of the process holding the creating descriptor, which no
+rename touches. Gamepads remain the exception, since `/dev/uhid` has no ioctl
+to ask with, and they lean on the uhid observer having watched the kernel make
+them; the broker checks a tag only where a name carries one rather than
+requiring one. `docs/security.md` carries the measurement.
 
 ## The two patches are not optional halves
 

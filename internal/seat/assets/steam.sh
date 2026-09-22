@@ -184,20 +184,24 @@ if [ -z "$WAYLAND_DISPLAY" ]; then
     say "  will not recognise the window it makes"
 fi
 
-# This script always ends with Big Picture open, and that is the point of it.
+# What this script ends with depends on who asked, and only one caller asks for
+# a window.
 #
-# The Moonlight entry runs it too, rather than `steam steam://open/bigpicture`.
+# The Moonlight entry runs this rather than `steam steam://open/bigpicture`.
 # That command does not only open Big Picture: with no Steam running it starts
 # one, and the one it starts is outside gamescope, which is the single
 # arrangement where the in-game overlay does not work. Reported from a
 # television twice before the log showed steam.sh as the parent of the Steam
 # that was running.
 #
-# Opened here at session start as well, and not left to the entry, because a
-# Steam that is running is not a Big Picture that is ready: with -silent there
-# is no window at all until somebody asks, and building it is the wait the
-# autostart was supposed to remove. A player picking Steam Big Picture in
-# Moonlight should find it, not start it.
+# The session does not ask for the window. It was opened at session start for
+# two versions, on the reasoning that a Steam which is running is not a Big
+# Picture that is ready, and the measurements above are what ended that: the
+# window is 218 MB of video memory held by a seat nobody is sitting at, and
+# building it on a warm Steam costs about six hundred milliseconds when
+# somebody finally picks it. So the wait the autostart exists to remove is the
+# cold start, which the silent Steam has already spent, and the window is left
+# to the entry that wants it.
 #
 #   polyseat-steam              make sure the seat has its Steam, running
 #                               silently in gamescope. What the session runs,
@@ -243,9 +247,10 @@ open_bigpicture() {
 #
 # So the window is the answer, not the request. Big Picture is gamescope's only
 # window, so sway seeing one is proof that it is up; while sway sees none, the
-# request is made again every five seconds. By the time anybody picks Steam in
-# Moonlight this has finished, and the entry finds a window rather than building
-# one.
+# request is made again every five seconds. This runs for the entry that asked
+# for the window, which is where the waiting belongs: the player has just
+# picked Steam and the alternative is a script that reports success while
+# nothing is on the screen.
 #
 # Overridable for a test, which has no patience and no Steam. A seat never sets
 # it.

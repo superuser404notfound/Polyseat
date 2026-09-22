@@ -256,6 +256,13 @@ machine's 69 GB library into the pool took 0.8 seconds and 432 KB. It keeps
 working after a game updates, and a seat that is behind is brought forward as
 soon as nothing in it is using the files.
 
+**The machine itself is a member of that pool, not only its source.** A game
+somebody installed in a seat can be played on the host's own desktop without
+being downloaded a second time, which is the direction that used to be missing:
+before, the only way back was to fetch it again on the machine it was already
+on. Folder games join the same way, and the switch for them is a directory:
+`mkdir -p ~/Games/shared` on the host turns it on, removing it turns it off.
+
 **Launchers other than Steam work too.** Each seat has a `shared/` directory
 where one folder is one game, and a seat's Lutris already installs there, so a
 game installed the ordinary way appears in the other seats by itself. Heroic and
@@ -272,11 +279,31 @@ progress.
 keeping itself up to date, and waiting for a seat that is neither streaming nor
 using the files before it replaces anything.
 
+**Steam is already running before anybody connects, and it runs inside
+gamescope.** A Steam that has never started needs fifteen to twenty-five
+seconds before it can answer anything, and those seconds used to be spent in
+front of somebody who had just picked a game, so the session starts it and
+leaves it silent. Picking *Steam Big Picture* in Moonlight builds that window
+on a Steam which is already warm, measured three times at 522, 616 and 607
+milliseconds. Leaving it closed until somebody asks is what keeps 218 MB of
+video memory free for the seat that is playing.
+
+**The Steam overlay works, which is the reason for gamescope.** Steam hands the
+overlay to a game through a compositor of its own, that compositor needs
+`GLX_EXT_texture_from_pixmap`, and NVIDIA's GLX does not offer it against an X
+server it did not write, which is what Xwayland is. Steam then falls back to
+pushing a screen sized texture through main memory once a frame: measured in a
+seat, the overlay's own page renders at 60 fps and the player sees one or two,
+while the game behind it is untouched. Inside gamescope that path does not
+exist, and gamescope is also not a workaround, since Steam in gamescope is what
+a Steam Deck runs.
+
 **A seat can share the network with the host, or stay behind a line.** Local
 multiplayer between the host and a seat needs the first, which is a button in
 the interface under "The uplink", or `sudo polyseat-lan-bridge` at a terminal;
-whether a particular seat takes part is a checkbox on its card. Turned off, the seat reaches the gateway and the other
-seats, but not this machine, and this machine not it.
+whether a particular seat takes part is a checkbox on its card. Turned off, the
+seat reaches the gateway and the other seats, but not this machine, and this
+machine not it.
 
 **A seat is something you can sit down in front of.** Connecting lands on a
 desktop with a launcher, a bar and a file manager, not on a bare terminal.
@@ -289,6 +316,15 @@ too**, which matters because many emulators are published that way and no other:
 paste the address into the web interface, or drop the file in `~/Downloads`
 inside the seat, and it appears in both menus by itself.
 
+**A seat speaks the machine's language, uses its keyboard and keeps its time.**
+A plain Arch image has none of the three: systemd falls back to C.UTF-8, xkb to
+a US layout, and there is no `/etc/localtime` at all, so a seat used to come up
+in English with y and z swapped and a clock hours out from the machine it is
+attached to. All three are taken from the host now, and the first of them
+reaches further than it looks: wine reads the Unix locale to answer
+`GetUserDefaultUILanguage`, so a Windows game that ships fifteen translations
+picks the right one by that alone.
+
 **Files go in the same way.** A save, a set of mods, keys, a ROM, an emulator
 somebody already downloaded: drop the file or the whole folder on the seat's
 card in the web interface and it lands in the player's `~/Downloads` inside the
@@ -298,6 +334,12 @@ or a trip through somebody's cloud, for files sitting on the same disk as the
 daemon. From `~/Downloads` the player moves them where they belong with the file
 manager the seat already has, and an AppImage does not even need that.
 
+**DLSS works in a seat.** The native half of NGX and the wine DLLs Proton looks
+for are carried in from the host's driver, because `nvidia-container-toolkit`
+does not bring them. Without them nothing fails and nothing is logged: a game
+simply does not offer DLSS in its settings, and there is no way from inside it
+to find out why.
+
 **Every client gets the picture it asked for.** The seat's screen is virtual, so
 it simply becomes the size and refresh rate the client wants. The framerate is
 capped from outside rather than by turning vsync on, so games stay uncapped and
@@ -305,16 +347,28 @@ pay no vsync latency, and one setting covers native games, Proton, flatpaks and
 emulators alike. Measured in a seat: 14866 fps uncapped becomes 60.00 fps with a
 60 Hz client, at 0.03 ms of frametime jitter against 0.40 ms for vsync alone.
 
+**The sound follows the client as well, 5.1 included**, and there is nothing to
+set for it in a seat. A container has no sound card, so Sunshine builds the
+sink the stream asked for, makes it the default and records its monitor: a
+client set to 5.1 produces `sink-sunshine-surround51` and `Opus initialized:
+48 kHz, 6 channels` in the seat's log, which is where this was confirmed. The
+number of channels is a Moonlight setting and nothing else. 7.1 is only half
+checked: an eight channel sink comes up in a seat, and no client has ever
+asked for one here.
+
 **A controller is enough.** Streaming from an Apple TV or a phone means no
 keyboard and no mouse, so the seat carries both: an on-screen keyboard, and a
 pointer driven by the gamepad, left stick to move and right stick to scroll. It
 turns itself on when the desktop is in front and hands the controller back to a
 fullscreen game; holding two of Select, Start and Guide for a second overrides
-that by hand, and the pad buzzes to say it took.
+that by hand, and the pad buzzes to say it took. How fast it moves is a slider
+on the seat's card, because a 4K screen and a phone want different numbers.
 
 Everything above was confirmed on real hardware, on one machine: an Arch host
-with an RTX 4080, most recently on 2026-07-31. The logs of each step live in
-[`spike/`](spike/). Whether any of it holds on a machine that is not that one is
+with an RTX 4080, most recently on 2026-09-22. The logs of the milestones live
+in [`spike/`](spike/), and what was measured after them is written down in
+[`CHANGELOG.md`](CHANGELOG.md), release by release, with the numbers it was
+measured with. Whether any of it holds on a machine that is not that one is
 the open question this project would most like answered, and there are now three
 places it is open: an AMD card ([docs/amd.md](docs/amd.md)), a Debian host and a
 Fedora host. The last two are new in 0.9.0 and, like the first, are reasoned
@@ -404,7 +458,18 @@ and what is already known and deliberately accepted:
 | **M5** | Daemon + GUI: create, start, pair and monitor seats | ✅ |
 | **M6** | Shared game library: install once, play in every seat | ✅ |
 | **M7** | A usable seat: desktop, app list, software, resolution and framerate per client | ✅ |
-| **M8** | HDR from a seat with no monitor behind it | [spike](spike/m8-hdr/) ✅, upstream pending, not in the daemon |
+| **M8** | HDR from a seat with no monitor behind it | [spike](spike/m8-hdr/) ✅, deliberately not in the daemon, see below |
+
+**M8 works and is still not shipped**, which is a decision rather than an
+omission. A Moonlight client did stream Rec. 2020 PQ at ten bits from a
+headless seat, on 2026-09-05, carried by two patches of this project's own. One
+of them was turned down upstream on reasoning this project agrees with, and the
+route that was accepted instead, `ext-image-capture-color-management-v1`, is
+not merged yet. Shipping the patches in the meantime would mean a forked
+compositor pinned to one wlroots release, held back from every update, built
+into two more packages, for a feature a later wlroots change is going to break
+anyway. So it waits. What was measured, what it would cost and what is left to
+do when the protocol lands are all in [`spike/m8-hdr/`](spike/m8-hdr/).
 
 ## License
 

@@ -279,7 +279,7 @@ sensible way to rerun it.
 
 ### What the host tools are called
 
-Three of the scripts in `host/` are not development aids and ship as commands,
+Four of the scripts in `host/` are not development aids and ship as commands,
 because somebody who installed the package has no checkout to find them in:
 
 | in the repository | installed as |
@@ -630,6 +630,17 @@ watches, on a six hour timer:
   seat;
 * a `pacman -Sy` inside each running seat against a **separate** database, then
   `pacman -Qu` against the seat's real one.
+
+**What a seat is measured against is the pin, not that published version**, and
+the distinction was worth making. `SunshinePin` in `internal/seat` is the
+release Polyseat installs and has paired and streamed against; comparing a seat
+to whatever LizardByte published an hour ago made the pair say "a newer
+Sunshine exists" and turned the update button into "take it, untested". So the
+seat's version is compared to the pin, which is a claim an update can settle,
+and what upstream has published is carried beside it and reported rather than
+acted on. That second number is the one that says a release is worth an
+evening: somebody has to install it into a seat, pair against it and watch
+where the input goes before the pin moves.
 
 The separate database is not a detail. A plain `pacman -Sy` here would leave the
 seat with a sync database newer than its installed packages, which is the

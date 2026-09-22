@@ -43,10 +43,13 @@ update cannot break an AMD seat.**
 | Host driver update | seats must be provisioned again | nothing to do |
 
 Capture stays `wlr` on both. On NVIDIA that is because KMS capture does not
-work with the proprietary driver; on AMD KMS capture does work in general but
-wants `cap_sys_admin` on the Sunshine binary, which is not something a seat is
-going to be given. So the same setting is right for both, for different
-reasons.
+work with the proprietary driver; on AMD it works in general and still cannot
+be used here, for a reason that is about seats rather than about AMD. KMS
+capture wants `cap_sys_admin`, and the capability is the smaller half of it:
+DRM master is held per device, so on a machine with one card exactly one seat
+could ever capture that way and the others would have nothing. `wlr` capture
+asks the seat's own compositor instead, which is per seat by construction. So
+the same setting is right for both vendors, for different reasons.
 
 VA-API is the only hardware encoder AMD has on Linux. AMF is a Windows library,
 and Sunshine's `amf` option cannot be reached from here at all.

@@ -32,8 +32,9 @@ under `/usr/local`. The daemon looks in `/usr/local` and in `/usr` and prefers
 the local one, the way a shell does, so a checkout install takes precedence over
 a package on the same machine. Run it again after any change; it undoes nothing.
 
-**Testing a particular release rather than `main`** is `--branch v0.18.0` on the
-clone, or `git checkout v0.18.0` in one you have. `main` is where the next
+**Testing a particular release rather than `main`** is `--branch v0.31.8` on
+the clone, or `git checkout v0.31.8` in one you have, with whichever tag you
+mean in place of that one. `main` is where the next
 version is being written, so a machine other people stream from should be on a
 tag. That is also what a hardware report should say it was running.
 
@@ -44,10 +45,13 @@ again and leaves the seats alone; `--purge` takes the seats too and asks first.
 Both of those hand over to `host/uninstall.sh`, which is also installed as
 `polyseat-uninstall` and is what the button in the interface runs.
 
-A checkout install places `polyseat-prepare` and `polyseat-uninstall` in
-`/usr/local/bin` as well, because the daemon looks for those two by name and a
-binary built from a checkout has no way to find the checkout it came from.
-Without them the two buttons under *Host* have nothing to run and say so.
+A checkout install places `polyseat-prepare`, `polyseat-uninstall` and
+`polyseat-lan-bridge` in `/usr/local/bin` as well, because the daemon looks for
+those three by name and a binary built from a checkout has no way to find the
+checkout it came from. Without them the buttons under *Host* and the one that
+bridges the uplink have nothing to run and say so. A script goes in there when
+something looks for it by name, which is why `polyseat-check-hardening`, which
+the package does ship, does not: whoever has a checkout has it under `host/`.
 
 The daemon installed this way is **not** updated by the button in the web
 interface, and the interface says so: there is no package for this host's
@@ -115,8 +119,12 @@ Two habits follow from that:
 
 ## Pull requests
 
-CI has to pass: build, vet, `gofmt`, tests, `bash -n` and
-`shellcheck --severity=warning` over the shell scripts.
+CI has to pass: build, vet, `gofmt`, tests, `node --check` over the interface's
+JavaScript, and `bash -n` plus `shellcheck --severity=warning` over the shell.
+That last pair covers more than `host/`: the scripts a seat carries in
+`internal/seat/assets/`, the packaging scripts, and the spike scripts as well,
+because a seat's shell is shipped code and a broken line in it surfaces on
+somebody's television rather than in a build.
 
 Small and self-contained gets read quickly. A large change is more welcome as an
 issue first, describing what you want to do, because the answer may be that it
