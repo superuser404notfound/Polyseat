@@ -319,8 +319,13 @@ const closeBigPicture = "setsid steam steam://close/bigpicture"
 func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 	ours := []app{
 		{
-			Name:      "Desktop",
-			PrepCmd:   []prep{{Do: showLauncher}, {Do: toDesktop}, {Do: closeBigPicture}},
+			Name: "Desktop",
+			// The switch goes first, and that is not tidiness. Sunshine runs
+			// these in order while the stream is already running, so whatever
+			// comes before it is time the player spends looking at the wrong
+			// workspace. Three to five seconds of somebody else's desktop,
+			// reported from a television.
+			PrepCmd:   []prep{{Do: toDesktop}, {Do: showLauncher}, {Do: closeBigPicture}},
 			ImagePath: "desktop.png",
 			Polyseat:  true,
 		},
@@ -345,6 +350,11 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 			// ordinary case, because the session opened it at startup.
 			Detached: []string{"setsid " + steamScriptPath},
 			PrepCmd: []prep{
+				// The switch first, for the same reason as above: everything
+				// before it is time spent looking at the desktop instead of at
+				// Steam.
+				{Do: toGamescope, Undo: toDesktop},
+
 				// The stream ending does not close Big Picture any more.
 				// Closing it takes Steam and gamescope with it, so the next
 				// connection found neither and started a cold Steam in the
@@ -352,7 +362,6 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 				// entry, which still closes it, and picking Steam Big Picture
 				// afterwards puts the pair back.
 				{Do: hideLauncher},
-				{Do: toGamescope, Undo: toDesktop},
 			},
 			ImagePath: "steam.png",
 			Polyseat:  true,

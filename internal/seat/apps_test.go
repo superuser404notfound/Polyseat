@@ -736,3 +736,28 @@ func TestBigPictureCanBeLeftAndComeBack(t *testing.T) {
 		t.Error("nothing asks for Big Picture, so picking it does nothing")
 	}
 }
+
+// The switch between the two workspaces has to be the first thing each entry
+// does. Sunshine runs these in order while the stream is already running, so
+// anything before it is time the player spends looking at the wrong screen -
+// three to five seconds of the desktop when Steam was what they picked.
+func TestTheWorkspaceSwitchComesFirst(t *testing.T) {
+	apps, _ := polyseatApps(nil, nil)
+
+	for _, a := range apps {
+		if a.Name != "Desktop" && a.Name != "Steam Big Picture" {
+			continue
+		}
+
+		if len(a.PrepCmd) == 0 {
+			t.Errorf("%s has no prep commands at all", a.Name)
+
+			continue
+		}
+
+		if !strings.Contains(a.PrepCmd[0].Do, "polyseat-workspace") {
+			t.Errorf("%s does something before it switches workspace: %q",
+				a.Name, a.PrepCmd[0].Do)
+		}
+	}
+}
