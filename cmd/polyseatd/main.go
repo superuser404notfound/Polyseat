@@ -100,6 +100,17 @@ func main() {
 	}
 }
 
+// idleTimeout is how long a kept-alive connection may sit between requests.
+//
+// Unset, and with no ReadTimeout for it to fall back to, there was none: the
+// header timeout only starts once the first byte of the next request has
+// arrived, so a connection that finished a request and then went quiet was
+// kept for ever, and opening such connections cost nothing. Closing one costs
+// a page a new handshake and nothing more, and the event stream is not idle
+// in this sense: it is a request in progress, with a keepalive every twenty
+// seconds.
+const idleTimeout = 2 * time.Minute
+
 func run(configPath, listenOverride string, logger *slog.Logger) error {
 	// Root is not optional and saying so plainly beats failing later on a
 	// permission denied from the Incus socket. The daemon creates containers,
@@ -200,11 +211,14 @@ func run(configPath, listenOverride string, logger *slog.Logger) error {
 		Addr:              cfg.Listen,
 		Handler:           api.New(manager, credentials, updates, preparer, logger),
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       idleTimeout,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{certificate},
 			MinVersion:   tls.VersionTLS12,
 		},
 	}
+
+	api.EndStreamsOnShutdown(server)
 
 	serverDone := make(chan error, 1)
 
@@ -292,6 +306,7 @@ func serveSetup(ctx context.Context, cfg config.Config, certificate tls.Certific
 		Addr:              cfg.Listen,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       idleTimeout,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{certificate},
 			MinVersion:   tls.VersionTLS12,

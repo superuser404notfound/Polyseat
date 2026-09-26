@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -803,6 +804,47 @@ func (s *Server) warnings() []string {
 
 // ------------------------------------------------------------------- events
 
+// stoppingKey carries, in every request's context, a channel that closes when
+// the server starts shutting down. See EndStreamsOnShutdown.
+type stoppingKey struct{}
+
+// EndStreamsOnShutdown makes the event streams of a server end when it starts
+// shutting down.
+//
+// Shutdown waits for every request to finish, and an event stream is a
+// request that never does on its own: every open page held the daemon's stop
+// for the full ten seconds it gives Shutdown, on every restart and every
+// update, before it was cut off anyway. Cancelling every request's context
+// instead would have ended the streams and also whatever else was in flight,
+// an upload halfway into a seat among them, which is exactly what the wait
+// is for. So the streams get a signal of their own and nothing else does.
+func EndStreamsOnShutdown(server *http.Server) {
+	stopping := make(chan struct{})
+
+	base := server.BaseContext
+
+	server.BaseContext = func(l net.Listener) context.Context {
+		ctx := context.Background()
+		if base != nil {
+			ctx = base(l)
+		}
+
+		return context.WithValue(ctx, stoppingKey{}, (<-chan struct{})(stopping))
+	}
+
+	var once sync.Once
+
+	server.RegisterOnShutdown(func() { once.Do(func() { close(stopping) }) })
+}
+
+// stopping is the channel EndStreamsOnShutdown put in a request's context, or
+// nil, which never fires, for a server that was not given one.
+func stopping(r *http.Request) <-chan struct{} {
+	ch, _ := r.Context().Value(stoppingKey{}).(<-chan struct{})
+
+	return ch
+}
+
 // events streams a token whenever anything changes.
 //
 // Server sent events rather than a websocket: the interface only ever listens,
@@ -830,9 +872,14 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	keepalive := time.NewTicker(20 * time.Second)
 	defer keepalive.Stop()
 
+	done := stopping(r)
+
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+
+		case <-done:
 			return
 
 		case <-changes:
