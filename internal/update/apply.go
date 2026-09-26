@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/superuser404notfound/Polyseat/internal/hostpkg"
 )
@@ -43,6 +45,35 @@ const assetPathPrefix = "/superuser404notfound/Polyseat/releases/download/"
 // seven megabytes; this is room to grow by a lot and still refuse a body that
 // intends to fill the disk.
 const maxAsset = 256 << 20
+
+// downloadClient fetches the package, and it is deliberately not client.
+//
+// client's Timeout covers the whole exchange including reading the body, which
+// is right for a JSON answer of a few kilobytes and wrong for a package: thirty
+// seconds for fourteen megabytes is a floor of about 3.8 Mbit/s, and a machine
+// on a slow or busy line had its update cut off halfway every time with an
+// error that read like a network fault. So nothing here bounds the total. The
+// caller's context is the ceiling, the transport bounds each phase that can
+// hang before a byte arrives, and stallTimeout below catches a body that stops
+// moving, which is the one hang the other two cannot see.
+var downloadClient = &http.Client{Transport: downloadTransport()}
+
+func downloadTransport() http.RoundTripper {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = 30 * time.Second
+
+	return t
+}
+
+// stallTimeout is how long a download may go without a single byte before it
+// is given up. Not a speed floor: a line that delivers anything at all within
+// a minute is still delivering, and waiting for it costs nothing but time.
+// A variable so that a test can wait for it in milliseconds.
+var stallTimeout = time.Minute
+
+// errStalled is the cause a stalled download is cancelled with, so that what
+// the interface shows says what happened rather than "context canceled".
+var errStalled = errors.New("the download stopped arriving")
 
 // Managed reports whether this installation is one a package owns.
 //
@@ -171,12 +202,15 @@ func allowed(raw string) error {
 // if anything could rewrite it in between, which is a check that measures
 // nothing.
 func download(ctx context.Context, from, path string) (string, int64, error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, from, nil)
 	if err != nil {
 		return "", 0, err
 	}
 
-	resp, err := client.Do(req)
+	resp, err := downloadClient.Do(req)
 	if err != nil {
 		return "", 0, err
 	}
@@ -196,10 +230,23 @@ func download(ctx context.Context, from, path string) (string, int64, error) {
 
 	sum := sha256.New()
 
+	// The watchdog is armed only once the headers are in, because until then
+	// ResponseHeaderTimeout is the one waiting, and it is pushed back by every
+	// read that brings bytes. Cancelling the context is what unblocks a read
+	// that is sitting on a silent connection.
+	watchdog := time.AfterFunc(stallTimeout, func() { cancel(errStalled) })
+	defer watchdog.Stop()
+
+	body := &resetOnRead{r: resp.Body, timer: watchdog}
+
 	// One more byte than the limit, so that a body which is exactly too large
 	// is caught rather than truncated into looking right.
-	n, err := io.Copy(io.MultiWriter(f, sum), io.LimitReader(resp.Body, maxAsset+1))
+	n, err := io.Copy(io.MultiWriter(f, sum), io.LimitReader(body, maxAsset+1))
 	if err != nil {
+		if cause := context.Cause(ctx); errors.Is(cause, errStalled) {
+			return "", 0, fmt.Errorf("%w for %s after %d bytes", errStalled, stallTimeout, n)
+		}
+
 		return "", 0, err
 	}
 
@@ -208,6 +255,21 @@ func download(ctx context.Context, from, path string) (string, int64, error) {
 	}
 
 	return hex.EncodeToString(sum.Sum(nil)), n, f.Sync()
+}
+
+// resetOnRead pushes a timer back every time bytes arrive.
+type resetOnRead struct {
+	r     io.Reader
+	timer *time.Timer
+}
+
+func (r *resetOnRead) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if n > 0 {
+		r.timer.Reset(stallTimeout)
+	}
+
+	return n, err
 }
 
 // verify compares what arrived against what the release said would arrive.
