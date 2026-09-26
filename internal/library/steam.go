@@ -192,11 +192,34 @@ func parseManifest(data []byte) (App, error) {
 		}
 	}
 
-	if err := safeName(ManifestName(app.AppID)); err != nil {
-		return app, fmt.Errorf("appid: %w", err)
+	// Digits and nothing else, which is what every Steam app id is. safeName
+	// alone let a space through, and the id does not stay in this package: it
+	// ends up in file names, in steam:// links and in the command lines of
+	// Sunshine entries, which are split on whitespace. A manifest a seat wrote
+	// itself could otherwise carry a second argument into one of those.
+	if !numeric(app.AppID) {
+		return app, fmt.Errorf("appid %q is not a number", app.AppID)
 	}
 
 	return app, nil
+}
+
+// numeric reports whether s is a non-empty run of ASCII digits. Not
+// strconv.ParseUint, which is the same answer plus a limit on length that an
+// app id has no reason to be held to and a leading sign it has no reason to
+// carry.
+func numeric(s string) bool {
+	if s == "" {
+		return false
+	}
+
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+
+	return true
 }
 
 // parsePair splits a `"key"<tab>"value"` line.

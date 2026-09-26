@@ -248,6 +248,10 @@ func TestParseManifestRejectsNonsense(t *testing.T) {
 		"traversing installdir": "\"AppState\"\n{\n\t\"appid\"\t\t\"1\"\n\t\"installdir\"\t\t\"../escape\"\n}\n",
 		"absolute installdir":   "\"AppState\"\n{\n\t\"appid\"\t\t\"1\"\n\t\"installdir\"\t\t\"/etc\"\n}\n",
 		"appid with a slash":    "\"AppState\"\n{\n\t\"appid\"\t\t\"1/../..\"\n\t\"installdir\"\t\t\"Game\"\n}\n",
+		"appid with a space":    "\"AppState\"\n{\n\t\"appid\"\t\t\"440 --evil\"\n\t\"installdir\"\t\t\"Game\"\n}\n",
+		"appid with a tab":      "\"AppState\"\n{\n\t\"appid\"\t\t\"440\t1\"\n\t\"installdir\"\t\t\"Game\"\n}\n",
+		"appid with letters":    "\"AppState\"\n{\n\t\"appid\"\t\t\"abc\"\n\t\"installdir\"\t\t\"Game\"\n}\n",
+		"appid with a sign":     "\"AppState\"\n{\n\t\"appid\"\t\t\"+440\"\n\t\"installdir\"\t\t\"Game\"\n}\n",
 	} {
 		if _, err := parseManifest([]byte(data)); err == nil {
 			t.Errorf("parseManifest accepted %s", name)
