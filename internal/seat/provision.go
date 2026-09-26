@@ -649,6 +649,12 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		// already and fusermount3 is setuid, so this one package is the whole
 		// of what was missing.
 		"fuse2",
+		// unsquashfs, which is how the scan reads an AppImage's name and icon
+		// without running the file, see extract in appimage.go. Nothing a seat
+		// installs pulls it in: on Arch it is a dependency of incus, archiso and
+		// the like, never of anything here. Without it every AppImage keeps
+		// its file name and no picture.
+		"squashfs-tools",
 		// Named rather than left to arrive as somebody else's dependency,
 		// because the box art depends on it now: an AppImage often carries its
 		// icon only as an SVG, Eden among them, and rsvg-convert is what turns
