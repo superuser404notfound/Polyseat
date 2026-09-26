@@ -679,6 +679,29 @@ func TestRemoveLeavesSeatsAlone(t *testing.T) {
 	}
 }
 
+// Removing a title from the pool deletes its directory under common, and an
+// empty installdir makes that directory common itself: every game in the pool.
+func TestRemoveRefusesAnEmptyInstallDir(t *testing.T) {
+	pool := openPool(t)
+
+	install(t, pool.SeatApps("seat1"), "6", "Kept", "Kept", "1000", StateInstalled)
+
+	if _, err := pool.Sync(members("seat1"), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	write(t, filepath.Join(pool.PoolApps(), ManifestName("7")),
+		"\"AppState\"\n{\n\t\"appid\"\t\t\"7\"\n\t\"installdir\"\t\t\"\"\n}\n", 0o644)
+
+	if err := pool.Remove("7"); err == nil {
+		t.Error("Remove accepted a manifest with no installdir")
+	}
+
+	if _, err := os.Lstat(filepath.Join(pool.PoolApps(), commonDir, "Kept")); err != nil {
+		t.Errorf("removing one title took another with it: %v", err)
+	}
+}
+
 func TestForget(t *testing.T) {
 	pool := openPool(t)
 	seats := members("seat1", "seat2")

@@ -881,6 +881,15 @@ func (p *Pool) Remove(appID string) error {
 		return err
 	}
 
+	// parseManifest lets an empty installdir through, because a manifest
+	// without one still says which app a library declares. Joined onto the
+	// path below it names common itself, and the RemoveAll would take every
+	// game in the pool with it. The sync paths never get here with one, they
+	// all ask Installed first; this is the one destructive path that did not.
+	if err := safeName(app.InstallDir); err != nil {
+		return fmt.Errorf("%s: installdir: %w", manifest, err)
+	}
+
 	if err := os.RemoveAll(filepath.Join(p.PoolApps(), commonDir, app.InstallDir)); err != nil {
 		return err
 	}
