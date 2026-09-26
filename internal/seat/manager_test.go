@@ -742,3 +742,81 @@ func TestADeletedSeatStaysForgotten(t *testing.T) {
 		t.Errorf("the deleted seat has a runtime record again, with log %q", m.Log("vince"))
 	}
 }
+
+// A build reads the record, works for minutes and then writes down that it
+// finished. It used to write back the whole copy it started with, so this is
+// the save that happens in those minutes, made through Update, and then the
+// end of the build.
+func TestABuildKeepsWhatWasSavedWhileItRan(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{store: store, rt: map[string]*runtime{}, subs: map[int]chan struct{}{}}
+
+	built := Seat{Name: "vince", Label: "Vince", Resolution: "1920x1080@60Hz"}
+	if err := store.Put(built); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Update("vince", func(s *Seat) { s.Label = "Living room" }); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	if err := m.recordBuilt("vince", built, 1001); err != nil {
+		t.Fatalf("recordBuilt: %v", err)
+	}
+
+	got, err := store.Get("vince")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.Label != "Living room" {
+		t.Errorf("the label saved during the build is %q again", got.Label)
+	}
+
+	if got.Provisioned != Generation || got.PlayerUID != 1001 {
+		t.Errorf("the build was recorded as generation %d, uid %d; want %d, 1001",
+			got.Provisioned, got.PlayerUID, Generation)
+	}
+}
+
+// And a save the build could not have applied leaves the seat needing
+// provisioning, rather than being marked current by a build that used the
+// old value.
+func TestABuildWithOutdatedSettingsIsNotCalledCurrent(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{store: store, rt: map[string]*runtime{}, subs: map[int]chan struct{}{}}
+
+	built := Seat{Name: "vince", Resolution: "1920x1080@60Hz", Provisioned: Generation - 1}
+	if err := store.Put(built); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Update("vince", func(s *Seat) { s.Resolution = "3840x2160@60Hz" }); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	if err := m.recordBuilt("vince", built, 1001); err != nil {
+		t.Fatalf("recordBuilt: %v", err)
+	}
+
+	got, err := store.Get("vince")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.Resolution != "3840x2160@60Hz" {
+		t.Errorf("the resolution saved during the build is %q again", got.Resolution)
+	}
+
+	if got.Provisioned == Generation {
+		t.Error("a seat built with the old resolution is marked current")
+	}
+}

@@ -54,6 +54,17 @@ type Manager struct {
 	mu sync.Mutex
 	rt map[string]*runtime
 
+	// recordMu serialises every read, change and write of a seat's record on
+	// disk. Its own lock rather than mu, because it is held across file
+	// system calls, and mu is taken by the sweep every ten seconds.
+	//
+	// Without it a record is read, changed and written back whole by whoever
+	// gets there, and the last writer wins. Provisioning read the record,
+	// spent minutes building, and wrote its copy back, so a setting saved in
+	// between vanished and the seat was marked current besides. See
+	// recordBuilt.
+	recordMu sync.Mutex
+
 	observer *supervise.Process
 
 	// pool is the shared game library, nil when the filesystem cannot share
@@ -2078,14 +2089,50 @@ func (m *Manager) build(ctx context.Context, name string) error {
 		return err
 	}
 
-	seat.Provisioned = Generation
-	seat.PlayerUID = p.uid
-
-	if err := m.store.Put(seat); err != nil {
+	if err := m.recordBuilt(name, seat, p.uid); err != nil {
 		return err
 	}
 
 	return m.startSession(ctx, name)
+}
+
+// recordBuilt writes down that a build finished, into the record as it is now
+// rather than the copy the build started from.
+//
+// The copy is minutes old by the time the build ends, and writing it back put
+// the record back to what it was then: anything saved in the meantime was
+// gone, with nothing to say so. Only the two fields the build learned are
+// changed here.
+//
+// And the seat is only called current if it was built with the settings it now
+// has. Somebody who changes the address while a build is running has had it
+// marked as needing provisioning by Update; the build that then finishes
+// applied the old address, and marking it current would hide that for good.
+func (m *Manager) recordBuilt(name string, built Seat, uid int64) error {
+	m.recordMu.Lock()
+	defer m.recordMu.Unlock()
+
+	current, err := m.store.Get(name)
+	if err != nil {
+		return err
+	}
+
+	current.PlayerUID = uid
+
+	if needsProvisioning(built, current) {
+		m.logf(name, "! the seat's settings changed while it was being built, so it still needs provisioning")
+	} else {
+		current.Provisioned = Generation
+	}
+
+	return m.store.Put(current)
+}
+
+// needsProvisioning reports whether a change to a seat's record is one only
+// provisioning can apply.
+func needsProvisioning(before, after Seat) bool {
+	return after.Address != before.Address || after.Gateway != before.Gateway ||
+		after.Resolution != before.Resolution
 }
 
 // Start brings a seat up: container, session, broker.
@@ -2381,14 +2428,10 @@ func (m *Manager) Create(seat Seat) error {
 		return err
 	}
 
-	if _, err := m.store.Get(seat.Name); err == nil {
-		return fmt.Errorf("a seat called %q already exists", seat.Name)
-	}
-
 	seat.Created = time.Now()
 	seat.Provisioned = 0
 
-	if err := m.store.Put(seat); err != nil {
+	if err := m.createRecord(seat); err != nil {
 		return err
 	}
 
@@ -2399,8 +2442,20 @@ func (m *Manager) Create(seat Seat) error {
 	return nil
 }
 
-// Update changes a seat definition. The name cannot change, because it is also
-// the container name and the tag Sunshine writes into its device names.
+// createRecord writes a new seat's record, unless one of that name exists.
+// Under recordMu, so that two requests for the same name cannot both find it
+// free.
+func (m *Manager) createRecord(seat Seat) error {
+	m.recordMu.Lock()
+	defer m.recordMu.Unlock()
+
+	if _, err := m.store.Get(seat.Name); err == nil {
+		return fmt.Errorf("a seat called %q already exists", seat.Name)
+	}
+
+	return m.store.Put(seat)
+}
+
 // applyPointerSpeed pushes the pointer speed into a seat that is running.
 //
 // Silent about a seat that is switched off: there is nothing to write into and
@@ -2476,27 +2531,11 @@ func (m *Manager) applyGEProton(seat Seat) {
 	}
 }
 
+// Update changes a seat definition. The name cannot change, because it is also
+// the container name and the tag Sunshine writes into its device names.
 func (m *Manager) Update(name string, change func(*Seat)) error {
-	seat, err := m.store.Get(name)
+	before, seat, err := m.changeRecord(name, change)
 	if err != nil {
-		return err
-	}
-
-	before := seat
-	change(&seat)
-	seat.Name = name
-
-	if err := seat.Validate(); err != nil {
-		return err
-	}
-
-	// Anything that only provisioning can apply marks the seat as needing it.
-	if seat.Address != before.Address || seat.Gateway != before.Gateway ||
-		seat.Resolution != before.Resolution {
-		seat.Provisioned = 0
-	}
-
-	if err := m.store.Put(seat); err != nil {
 		return err
 	}
 
@@ -2547,6 +2586,39 @@ func (m *Manager) Update(name string, change func(*Seat)) error {
 	return nil
 }
 
+// changeRecord is the part of Update that touches the record, under recordMu
+// from the read to the write so that nothing written in between is lost. It
+// returns the record before and after, for Update to decide what else to do
+// once the lock is let go: some of that talks to Incus and takes a while.
+func (m *Manager) changeRecord(name string, change func(*Seat)) (Seat, Seat, error) {
+	m.recordMu.Lock()
+	defer m.recordMu.Unlock()
+
+	seat, err := m.store.Get(name)
+	if err != nil {
+		return Seat{}, Seat{}, err
+	}
+
+	before := seat
+	change(&seat)
+	seat.Name = name
+
+	if err := seat.Validate(); err != nil {
+		return Seat{}, Seat{}, err
+	}
+
+	// Anything that only provisioning can apply marks the seat as needing it.
+	if needsProvisioning(before, seat) {
+		seat.Provisioned = 0
+	}
+
+	if err := m.store.Put(seat); err != nil {
+		return Seat{}, Seat{}, err
+	}
+
+	return before, seat, nil
+}
+
 // Delete removes a seat and, unless asked to keep it, its container.
 func (m *Manager) Delete(name string, keepContainer bool) error {
 	if _, err := m.store.Get(name); err != nil {
@@ -2575,7 +2647,14 @@ func (m *Manager) Delete(name string, keepContainer bool) error {
 			}
 		}
 
-		if err := m.store.Delete(name); err != nil {
+		// Under recordMu, so that a save that read the record a moment ago
+		// cannot write it back after it is gone and bring the seat back
+		// without a container.
+		m.recordMu.Lock()
+		err = m.store.Delete(name)
+		m.recordMu.Unlock()
+
+		if err != nil {
 			return err
 		}
 
