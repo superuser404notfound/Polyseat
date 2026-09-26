@@ -119,10 +119,21 @@ step "Incus state"
 # The subvolumes first, children before parents, because btrfs refuses to delete
 # a subvolume that still has any. rm cannot do it at all, which is how this was
 # left two thirds full the first time.
-while read -r path; do
-    [[ -n $path ]] || continue
-    btrfs subvolume delete "/$path" >/dev/null 2>&1 || true
-done < <(btrfs subvolume list / 2>/dev/null | awk '/var\/lib\/incus/ {print $NF}' | sort -r)
+#
+# Found by walking the directory rather than from `btrfs subvolume list /`.
+# That list names each subvolume relative to the top of the filesystem and not
+# to /, so on the common layout where / is itself a subvolume called @ every
+# path came out as @/var/lib/incus/..., "/@/var/lib/incus/..." does not exist,
+# and every delete failed quietly into the || true. It also saw nothing when
+# /var/lib/incus sits on a btrfs of its own. The root directory of a btrfs
+# subvolume is always inode 256, which holds on any layout; the filesystem
+# type is checked as well because another filesystem mounted in here can have
+# an inode 256 of its own. Reverse order puts a child before its parent,
+# because a child's path has its parent's as a prefix.
+while IFS= read -r -d '' path; do
+    [[ $(stat -f -c %T -- "$path" 2>/dev/null) == btrfs ]] || continue
+    btrfs subvolume delete "$path" >/dev/null 2>&1 || true
+done < <(find /var/lib/incus -type d -inum 256 -print0 2>/dev/null | sort -rz)
 
 # Then the mounts incusd leaves behind. rm reports "device or resource busy" for
 # these and carries on, which looks like success.
