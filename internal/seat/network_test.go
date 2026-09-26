@@ -2,11 +2,14 @@ package seat
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/lxc/incus/v7/shared/api"
 
@@ -649,5 +652,100 @@ func TestNamedAddresses(t *testing.T) {
 
 	if got := NamedAddresses(nil); got != "" {
 		t.Errorf("no addresses gave %q", got)
+	}
+}
+
+// fakeBridges is an Incus with networks and nothing else, for managementBridge.
+type fakeBridges struct {
+	mu       sync.Mutex
+	networks map[string]*api.Network
+	creates  int
+
+	// racer, when set, makes the bridge appear from somewhere else just as
+	// this daemon asks for it, the way a second caller would.
+	racer bool
+}
+
+func (f *fakeBridges) Network(name string) (*api.Network, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.networks[name], nil
+}
+
+func (f *fakeBridges) CreateBridge(name, _ string) error {
+	f.mu.Lock()
+	f.creates++
+	_, exists := f.networks[name]
+	f.mu.Unlock()
+
+	// Long enough for every other caller to have looked and found nothing,
+	// which is the window the real race lives in.
+	time.Sleep(20 * time.Millisecond)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.networks[name] = &api.Network{Name: name, Type: "bridge", Managed: true,
+		NetworkPut: api.NetworkPut{Config: map[string]string{"ipv4.address": "10.99.0.1/24"}}}
+
+	if exists || f.racer {
+		return errors.New("The network already exists")
+	}
+
+	return nil
+}
+
+// Several seats autostarting on a host without a bridge all arrange their
+// management interface at once. One bridge has to come of it, and every seat
+// has to end up on it.
+func TestSeatsStartingTogetherMakeOneBridge(t *testing.T) {
+	f := &fakeBridges{networks: map[string]*api.Network{}}
+
+	var wg sync.WaitGroup
+
+	errs := make(chan error, 4)
+
+	for range 4 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			name, err := managementBridge(f)
+			if err == nil && name != PolyseatBridge {
+				err = fmt.Errorf("got %q", name)
+			}
+
+			errs <- err
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Errorf("a seat got no bridge: %v", err)
+		}
+	}
+
+	if f.creates != 1 {
+		t.Errorf("the bridge was made %d times, want once", f.creates)
+	}
+}
+
+// And a bridge made by somebody else between the look and the create is the
+// bridge that was wanted, not a failure.
+func TestABridgeSomebodyElseJustMadeIsTaken(t *testing.T) {
+	f := &fakeBridges{networks: map[string]*api.Network{}, racer: true}
+
+	name, err := managementBridge(f)
+	if err != nil {
+		t.Fatalf("the bridge that appeared was not taken: %v", err)
+	}
+
+	if name != PolyseatBridge {
+		t.Errorf("got %q, want %s", name, PolyseatBridge)
 	}
 }
