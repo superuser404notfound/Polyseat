@@ -225,8 +225,40 @@ fi
 #
 # Any other argument is accepted and treated as the first, so that a seat whose
 # application list is one version behind keeps starting Steam.
+#
+# Only to a Steam that exists, and that is the same trap again from the other
+# side. The retry below starts a second gamescope and goes straight on to ask
+# for the window, and the Steam inside that gamescope is not a process yet when
+# the first request goes out. Unguarded, that request was the one starting
+# Steam, outside gamescope. So no Steam means no request, and the caller asks
+# again a second later rather than five. A Steam that is running but not yet
+# listening is the case the loop below already handles.
 open_bigpicture() {
+    pgrep -x steam >/dev/null 2>&1 || return 1
+
     setsid steam steam://open/bigpicture >/dev/null 2>&1 </dev/null 9>&- &
+}
+
+# Steam closed politely and waited out. 0 once it is gone, 1 if it is still
+# there after twenty-five seconds.
+#
+# Only asked of a Steam that is running, for the reason open_bigpicture gives:
+# `steam` with no Steam to talk to starts one, and -shutdown is no exception.
+# And without the lock, like every other command here that may leave a process
+# behind, because whatever the bootstrapper starts would inherit it. The lock's
+# own comment has what that costs.
+close_steam() {
+    pgrep -x steam >/dev/null 2>&1 || return 0
+
+    steam -shutdown >/dev/null 2>&1 </dev/null 9>&-
+
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+        pgrep -x steam >/dev/null 2>&1 || return 0
+
+        sleep 1
+    done
+
+    return 1
 }
 
 # Asked for, then looked at, then asked again.
@@ -259,6 +291,7 @@ open_bigpicture() {
 show_bigpicture() {
     said_it=0
     waited=0
+    ask_at=0
 
     while [ "$waited" -lt "$POLYSEAT_BIGPICTURE_WAIT" ]; do
         if mapped; then
@@ -267,12 +300,15 @@ show_bigpicture() {
             return 0
         fi
 
-        if [ $((waited % 5)) -eq 0 ]; then
-            [ "$said_it" = 1 ] || say "opening Big Picture"
+        if [ "$waited" -ge "$ask_at" ]; then
+            if open_bigpicture; then
+                [ "$said_it" = 1 ] || say "opening Big Picture"
 
-            said_it=1
-
-            open_bigpicture
+                said_it=1
+                ask_at=$((waited + 5))
+            else
+                ask_at=$((waited + 1))
+            fi
         fi
 
         waited=$((waited + 1))
@@ -398,13 +434,7 @@ fi
 if [ "$1" = refresh ] && pgrep -x steam >/dev/null 2>&1; then
     say "restarting Steam, so that the next Big Picture is a fresh one"
 
-    steam -shutdown >/dev/null 2>&1
-
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
-        pgrep -x steam >/dev/null 2>&1 || break
-
-        sleep 1
-    done
+    close_steam
 
     # gamescope goes when its child does, but not instantly, and a gamescope
     # that is still there when the check below runs would look like success.
@@ -458,13 +488,7 @@ if pgrep -x gamescope-wl >/dev/null 2>&1; then
 
     # Its Steam first, and politely, because that Steam owns the library this
     # seat shares with the other one.
-    steam -shutdown >/dev/null 2>&1
-
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
-        pgrep -x steam >/dev/null 2>&1 || break
-
-        sleep 1
-    done
+    close_steam
 
     for pid in $(gamescopes | sed -n 's/^stale //p'); do
         kill "$pid" 2>/dev/null
@@ -481,21 +505,7 @@ if pgrep -x steam >/dev/null 2>&1; then
     say "Steam is running outside gamescope, where the overlay does not work;"
     say "  closing it so that it can be started inside one"
 
-    steam -shutdown >/dev/null 2>&1
-
-    gone=0
-
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
-        if ! pgrep -x steam >/dev/null 2>&1; then
-            gone=1
-
-            break
-        fi
-
-        sleep 1
-    done
-
-    if [ "$gone" = 0 ]; then
+    if ! close_steam; then
         say "! Steam would not close, so gamescope was not started"
 
         # Asked for once and not waited on, because there is no gamescope here
@@ -629,8 +639,7 @@ if ! ours; then
     say "gamescope did not come up, trying once more"
     say "  its log is at $LOG"
 
-    steam -shutdown >/dev/null 2>&1
-    sleep 6
+    close_steam
     mv -f "$LOG" "$LOG.first" 2>/dev/null
     start "$w" "$h" "$r"
 fi
