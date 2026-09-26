@@ -637,6 +637,30 @@ func (e *ErrExec) Error() string {
 	return fmt.Sprintf("%s: exit %d: %s", strings.Join(e.Argv, " "), e.ExitCode, out)
 }
 
+// execRequest is what Exec asks Incus to run.
+//
+// In / rather than wherever Incus would start it. Left alone that is root's
+// home, and most of what the daemon runs in a seat is run as the player
+// through sudo, which keeps the directory it was started in and cannot enter
+// that one. Most commands never notice. find does: with -exec ... {} + it goes
+// back to the directory it started in before running the command, fails to,
+// and runs nothing. That is how the scan for desktop entries Steam had already
+// written came back empty once it ran as the player, and every game with a
+// Steam shortcut appeared twice in the seat's launcher.
+func execRequest(argv []string) api.InstanceExecPost {
+	return api.InstanceExecPost{
+		Command:     argv,
+		WaitForWS:   true,
+		Interactive: false,
+		Cwd:         "/",
+		Environment: map[string]string{
+			"HOME":            "/root",
+			"PATH":            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			"DEBIAN_FRONTEND": "noninteractive",
+		},
+	}
+}
+
 // Exec runs a command inside the instance as root and returns its exit code.
 //
 // One warning that cost a wedged Incus daemon once: do not run this against an
@@ -646,16 +670,7 @@ func (e *ErrExec) Error() string {
 // gone. Whoever calls this is responsible for knowing the instance is running,
 // which is why the daemon tracks lifecycle events rather than polling.
 func (c *Client) Exec(ctx context.Context, name string, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	req := api.InstanceExecPost{
-		Command:     argv,
-		WaitForWS:   true,
-		Interactive: false,
-		Environment: map[string]string{
-			"HOME":            "/root",
-			"PATH":            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-			"DEBIAN_FRONTEND": "noninteractive",
-		},
-	}
+	req := execRequest(argv)
 
 	if stdin == nil {
 		stdin = bytes.NewReader(nil)
