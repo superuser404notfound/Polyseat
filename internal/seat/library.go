@@ -186,6 +186,16 @@ func (m *Manager) adoptHostLibrary() {
 		return
 	}
 
+	// Held from the first question to the last rather than only around the
+	// write. A pass is started by the timer and by three of the interface's
+	// buttons, each on a goroutine of its own, so two of them could both find
+	// no library watched, both pick the same one and both adopt it, while
+	// writing adoptSaid at the same moment. Everything asked below is a stat
+	// or two and one block sharing probe, so holding the lock over it costs
+	// the buttons nothing they would notice.
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+
 	sources := m.pool.Sources()
 	if len(sources) > 0 {
 		return
@@ -215,14 +225,9 @@ func (m *Manager) adoptHostLibrary() {
 		return
 	}
 
-	m.syncMu.Lock()
-
 	_, err := m.pool.AddSource(pick, func(f string, a ...any) {
 		m.log.Info("library: " + fmt.Sprintf(f, a...))
 	})
-
-	m.syncMu.Unlock()
-
 	if err != nil {
 		m.log.Warn("the shared library could not adopt the host's Steam library",
 			"dir", pick, "err", err)

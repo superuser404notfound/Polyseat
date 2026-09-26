@@ -70,7 +70,8 @@ type Manager struct {
 	// adoptSaid is the last reason the daemon gave for not adopting a Steam
 	// library it found, so that a standing condition is logged when it starts
 	// and when it changes rather than once a minute for as long as it holds.
-	// Only ever touched from the library pass, which is one goroutine.
+	// Guarded by syncMu: the pass that touches it is started from the timer
+	// and from the interface, which are different goroutines.
 	adoptSaid string
 
 	// libraries finds the Steam libraries on this host, and is nil everywhere
