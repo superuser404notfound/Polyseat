@@ -4,8 +4,17 @@ What this setup actually guarantees, what it deliberately does not, and why.
 Everything here was measured on the running two-seat rig rather than reasoned
 about: on 2026-07-28, for what M7 added on 2026-07-29, and for the bridged
 uplink and the per seat isolation on 2026-07-31. What was added after that
-carries its own date where it is described, the most recent being the renamed
-input devices of 2026-09-05.
+carries its own date where it is described, the renamed input devices of
+2026-09-05 among them.
+
+The audit of 2026-09-26 is the exception to "measured on the rig", and it is
+worth saying how. It went through the daemon looking for places where a player
+in a seat, a page in a browser or a name in a request could reach further than
+this document said, found several that could, and closed them. Each fix has a
+test that was seen to fail with the fix taken out, and the sections below say
+so where it applies. What a test cannot show is how a running desktop, a real
+Steam and a real controller behave around the change, and where that is the
+part that matters the section says it has not been watched yet.
 
 ## The threat model
 
@@ -39,6 +48,46 @@ narrow, and the narrowness is the point:
 A seat without the library still has no disk device at all. Turning it off is a
 real change and not a label, since the device is removed on the next provision.
 
+**The daemon does not follow a link a member put in its library.** That sentence
+is new as of the audit, and until then it was false in a way that mattered more
+than anything else on this page: **a player in a seat could become root on the
+host through a link in the seat's library.** The seat's directory belongs to
+the seat's mapped uid, the player can create a symlink anywhere in it, including
+an absolute one, and the daemon, which is root on the host, resolved those links
+on the host. Each of these worked and each now has a test that rebuilds it
+against a directory standing in for the rest of the machine: `steamapps` made a
+link to a host directory, which the daemon then created `common` in and handed
+to the seat; a link at the name the next manifest was about to be written
+under, which overwrote any file on the host and gave it to the seat; `steamapps`
+or `shared/` made a link, whose target was harvested into the pool and handed to
+every other seat; `common` made a link, through which a delivery deleted a host
+directory with the game's name; a manifest made a link or a FIFO, which was read
+through or blocked the sync for every seat; and a directory swapped for a link
+between the walk looking at it and reading it.
+
+Below the point where a member's directory starts, nothing is reached by path
+any more. The directory is opened once, everything under it is opened one
+component at a time with `O_NOFOLLOW` relative to the directory it is in, and
+every change goes through a held descriptor: `fchown` rather than `chown`, a
+rename between two held directories, a removal walk in place of
+`os.RemoveAll`. A link met on the way is refused by the open itself, so there is
+no moment between looking at an entry and using it. Links *inside* a game are
+still copied as links and never resolved, since games ship them. Manifests are
+read once, regular files only and without blocking, and the bytes that were
+parsed are the bytes passed on. `internal/library/nofollow.go` has this, and the
+reasons it is `openat` rather than `openat2` and why switching the thread to the
+member's uid was not done as a second layer.
+
+The host's own library and `~/Games/shared` are opened from `/`, and a link on
+the way is followed only in a directory nobody but root can write. That keeps
+`/home` as a link to `/var/home` working and refuses every link the owner could
+have made. **So `~/Games` and `~/Games/shared` have to be real directories**: a
+`~/Games` that is a link to another disk used to work, and is now refused with
+the reason in the daemon's journal and the host's folders left out of the pass.
+The same goes for a link anywhere below the home on the way to the host's Steam
+library, except that the path the daemon adopts is resolved once when it is
+adopted, so `~/.steam/steam` being a link is not a problem.
+
 What a seat can do through this that it could not before: fill the filesystem
 holding the library, and hand the other seats a game directory with contents of
 its choosing, because a harvested title is cloned onward as it stands. Neither
@@ -58,6 +107,35 @@ already had that reach through the pool; for a seat given to a stranger it is
 the shortest path from that seat to code running as the person at the keyboard.
 The way to close it is the same button that opened it, "Stop watching" on that
 library, which the daemon then leaves alone for good.
+
+**A shared folder's setup script runs only once somebody has allowed it.** A
+folder in the pool may carry `polyseat-setup.sh`, and until the audit the daemon
+ran it by itself wherever the folder was delivered: on the host as the owner of
+the Steam library, who administers the machine and often has sudo, and in every
+other seat as that seat's player. Folders reach the pool from any seat, and the
+pool takes the newest copy of a folder from whoever has one, so a player could
+run code as somebody else by putting a folder in their own `~/games/shared`, or
+a newer copy of one that was already there.
+
+Where a folder came from cannot decide this, because the pool keeps no record of
+it, and a folder the host put in is replaced by the first seat with a newer
+copy. So every script now waits for a person. The Library section of the
+interface lists the scripts that are waiting, with their text, their sha256 and
+where they would run, and allowing one names the hash that was shown. The
+approval is held to that hash and to the folder's version in the pool, its size
+and its newest modification time: the script runs the rest of the folder, and
+any change to the folder that reaches another member is a new version and a new
+question. The pool's copy is hashed again when the button is pressed, each
+member's own copy is hashed again immediately before it runs, and a link
+standing in for the script is refused throughout. A folder removed from the pool
+takes its approval with it.
+
+On the host a script never runs as root or as a system account, below uid 1000:
+the search for a host library includes `/root`, and the library's owner is who
+the script would run as. Such a library takes no part in the folders at all.
+Scripts run one at a time on a worker of their own, ended after ten minutes, on
+the host by killing the process group and in a seat by `timeout` inside the
+seat.
 
 **The Incus socket is not reachable from a seat.** It is `root:incus-admin 0660`
 on the host and not passed through, so a seat cannot manage containers.
@@ -123,9 +201,17 @@ before   /dev/hidraw14  Sunshine PS5 (virtual) pad (seat1)  root:root 660  user:
 after    /dev/hidraw14  Sunshine PS5 (virtual) pad (seat1)  root:root 600  no entry
 ```
 
-Both halves are covered now, by name in the rule and structurally in the
-broker, which finds the hidraw node through sysfs from the event device it has
-already attributed.
+Both halves are covered now, structurally in the broker, which finds the hidraw
+node through sysfs from the event device it has already attributed, and by name
+in the rule. **The second half of that sentence was not true until the audit of
+2026-09-26.** The four hidraw lines in the rule matched `ATTRS{name}`, and
+neither a hidraw node nor the hid device above it has a `name` attribute, so
+those lines had never fired. The name a hid device carries is `HID_NAME`, a
+property from its uevent, which `IMPORT{parent}` copies onto the hidraw event,
+and the lines match that now. Checked with `udevadm test` and a copy of the rule
+pointed at a real headset: with the old lines `73-seat-late.rules` still ran the
+uaccess builtin on the node, with the new ones it came out `root:root 0600` and
+the builtin never ran.
 
 The permissions are not the whole test either, and reading them as though they
 were is how this was missed once already. logind grants the desktop user an
@@ -140,11 +226,11 @@ grants, before `73-seat-late.rules`, which is what turns the tag into an actual
 entry on the node.
 
 **Covering it by name was not enough either, and the half second cost real
-exposure.** A raw HID node has no `name` attribute, so no pattern can reach one:
-the rule left it alone and the broker sealed it on its next pass. That is half a
-second, and the host's Steam was found holding a seat's controller open, having
-taken it in exactly that window. Permissions are checked when a file is opened
-and never again, so sealing it afterwards does not take it back.
+exposure.** With the name lines not firing, the rule left a raw HID node alone
+and the broker sealed it on its next pass. That is half a second, and the host's
+Steam was found holding a seat's controller open, having taken it in exactly
+that window. Permissions are checked when a file is opened and never again, so
+sealing it afterwards does not take it back.
 
 The answer is that the structural check does run in udev after all, for the
 devices that matter most. The uinput half genuinely cannot: reading a foreign
@@ -162,9 +248,24 @@ a keyboard plugged into the host                     POLYSEAT_OWNER=unknown
 ```
 
 A controller the host pairs over Bluetooth is a uhid device too. The observer
-has no record of it, so it comes back unknown and is left alone.
+writes it down as the host's, so it comes back as the host's and is left alone.
 
-The structural check cannot run in udev, which is where it would ideally
+**That only works if the observer has written the device down before udev
+asks**, and both start from the same kernel event. Until the audit the observer
+slept fifty milliseconds before it first looked for a new device, and udev
+starts the helper within a few milliseconds plus a Python start, so the helper
+should mostly have found no entry and answered unknown. That is read off the
+timing of the two paths rather than watched, which needs root and the kprobe.
+The observer now looks at once and then every two milliseconds, and the helper
+waits for the entry, at most a second, but only when one is on its way: an
+observer is running, by pid and command line, and the device's HID instance
+number is above the newest one that existed when the probe went live. That
+tells a device the observer saw created from one it cannot have seen, so a
+coldplug trigger is not held up, and a remove event never waits. The observer
+also stopped filing a USB device plugged in during a seat's start under that
+seat, and two seats creating pads at the same moment each claim exactly one.
+
+The uinput half cannot be answered in udev, which is where it would ideally
 happen. systemd-udevd runs its workers behind a syscall filter that blocks
 `pidfd_open` and `pidfd_getfd`, and reading a foreign descriptor needs both:
 
@@ -173,11 +274,42 @@ under udevd's filter   POLYSEAT_OWNER=unknown
 anywhere else          POLYSEAT_OWNER=container
 ```
 
-So the name patterns stay in the udev rule as a fast path that closes the
-window to zero for everything already known, and the broker closes the case of
-everything else within one poll interval. The residual exposure is that half
-second, for a device nobody has named in the rule, on a machine where the
-threat model is people in the same house.
+So for uinput the name patterns stay in the udev rule as a fast path that closes
+the window to zero for everything already known, and the broker closes the case
+of everything else within one poll interval, half a second.
+
+**Closing it after the fact used to mean closing the next open and nothing
+else**, and this paragraph used to claim more than that. Sealing was a chown, a
+chmod and `setfacl -b` on the event node and the raw HID node. The host
+compositor's libinput has by then already opened the device through logind's
+`TakeDevice`, which opens as root whatever the node says, and Steam opens a new
+pad the moment it appears; both keep their descriptor. `EVIOCREVOKE` only works
+for the holder, and hidraw has nothing like it. And the joystick node was not
+sealed at all, which is how Steam finds a controller.
+
+Since the audit the broker seals every node of the device, `js` and the legacy
+mouse node included, and does two more things. It marks the device with a
+directory under `/run/polyseat/sealed` named after its DEVPATH, which the rule
+tests first, so any later udev event for that device hides it too; DEVPATHs
+are not reused before a reboot, so a mark left behind cannot hide a later host
+device. Then, when the device's udev database entry lacks the
+`POLYSEAT_HIDDEN=1` the rule leaves on everything it hides, it announces the
+device as removed and added once, through `udevadm trigger`. libinput and
+Steam close a device on a remove, and the add passes through the rule with the
+mark in place. Both events are synthetic: the node stays, and the seat's own
+node is untouched.
+
+What is proven: with `udevadm test` and an extra rules directory against a real
+hidraw node, a marked device came out `root:root 0600` with `POLYSEAT_HIDDEN=1`
+and the uaccess builtin did not run. **What is not: whether the host's
+compositor and the host's Steam really let go on the synthetic remove.** That
+needs a seat, a running desktop and a device the name list does not cover, and
+nobody has watched it yet. Until somebody has, the honest statement is that a
+device outside the list is closed to new opens within half a second and is
+probably, not certainly, taken back from whatever opened it in that half
+second. On a machine where the threat model is people in the same house that is
+a stray cursor for a moment rather than a breach, and it is the part of this
+page most worth a report.
 
 **Sunshine then renamed all of it, and that was the test of the design above.**
 Newer builds move the virtual input to a library called libvirtualhid, so
@@ -215,6 +347,18 @@ forged cookie       401
 real cookie with the expiry moved forward   401
 ```
 
+And from the audit, each held by a test rather than measured against the rig:
+
+```
+a token made up for a machine nobody has claimed     401
+/api/session without a session                      no user name in it
+a cross-site or same-site POST from a browser       403
+a POST that is text/plain, a form or multipart      415
+a login body over 4 KiB, any other over 64 KiB      413
+a body announced and not sent within 15 seconds     refused
+fifty parallel guesses from one address             at most six reach the hash
+```
+
 The details behind that:
 
 * The password is stored as an **argon2id** hash, memory hard on purpose. The
@@ -222,10 +366,54 @@ The details behind that:
 * The session cookie is **HMAC signed** rather than stored server side, so a
   daemon restart does not sign everybody out. The signature covers the expiry,
   which is why moving it forward fails.
-* The cookie is `HttpOnly`, `Secure` and `SameSite=Strict`. That last one is
-  what stops another site from making a browser act on the session: every
-  state changing call here is a plain request carrying a cookie, and without it
-  a link in a mail could delete a seat.
+* **Until a password is chosen there is no valid session at all.** There is no
+  signing key before then, and until the audit the check ran anyway, with an
+  empty key, which is a key anybody has: a hand made token passed on every
+  unclaimed daemon and reached every guarded endpoint. An empty key now answers
+  no.
+* **Attempts are counted before the password is hashed.** The limiter used to be
+  asked before the hash and told about a failure after it, so every guess that
+  arrived during that tenth of a second found the same clean record and went
+  through. Checking and counting are one step now, and a correct password clears
+  the count. The login form, the password confirmation for updates and removal,
+  and the current password in the Account dialog all go through it; the last
+  went through no limiter at all before, which made it the place a borrowed
+  browser could guess at full speed. IPv6 addresses are counted per `/64`,
+  since every machine picks its own low half, and once the limiter holds 4096
+  addresses it sweeps out the expired ones and, if that is not enough, forgets
+  the one heard from longest ago.
+* **At most two argon2 hashes run at once**, whoever asks, and the rest wait for
+  a slot. Each takes 64 MiB, and nothing bounded them before: a few hundred
+  parallel logins, which need no session, asked the daemon for tens of
+  gigabytes. Waiting rather than refusing, because a refusal would lock the
+  owner out for as long as somebody else kept knocking.
+* **A failed login does not log the user name that was typed.** The field above
+  the password is where passwords get typed by mistake, and the journal is
+  readable by more people than the credentials file.
+* **`/api/session` names the user only to somebody signed in.** It is answered
+  without a session, because the page has to know whether to draw a login
+  form, and it used to hand out half of the login before the first guess.
+* The cookie is `HttpOnly`, `Secure` and `SameSite=Strict`, and that is **no
+  longer the only thing standing between another site and this one.** It did
+  nothing for `/api/setup`, which needs no cookie: on an unclaimed machine any
+  page somebody on the network opened could post a form there and choose the
+  password. Every state changing request now passes Go's
+  `CrossOriginProtection`, which refuses one the browser marks as cross-site
+  or same-site by `Sec-Fetch-Site`, or, from a browser too old to send that,
+  one whose `Origin` is not this host. Same-site is refused too, because on a
+  LAN reached by address the seats' own Sunshine pages are the nearest other
+  site there is. A request with neither header is not from a browser and has
+  no cookie to borrow, so `curl` keeps working.
+* **A body has to be JSON**, except on the upload route, which has to be
+  multipart. A form can send text/plain, urlencoded or multipart anywhere
+  without asking; only a script on this origin can send `application/json`. A
+  request with no `Content-Type` may carry nothing at all, which is what the
+  page sends for a button with no fields.
+* **Bodies are bounded**: 4 KiB for the three endpoints that hash a password,
+  64 KiB for everything else but an upload, read whole under a fifteen second
+  deadline. Idle connections are closed after two minutes, and the event
+  streams end when the daemon shuts down rather than holding it for ten
+  seconds.
 * **Changing the password ends every session**, because it rotates the signing
   key. That is the behaviour people expect from changing a password and would
   otherwise not get from signed cookies.
@@ -233,6 +421,16 @@ The details behind that:
   Sunshine, whose own interfaces the seat cards link to at
   `https://<seat>:47990`. The daemon logs the fingerprint at startup so it can
   be compared against what the browser is asking to trust.
+* **And it is a server certificate, not an authority**, since the audit. It used
+  to carry `IsCA` and the certificate signing usage, which is harmless while
+  people click through the warning and stops being harmless when somebody does
+  the tidier thing and imports it as trusted: they have then installed a root
+  authority whose key is a file on this machine. A certificate generated now is
+  a plain leaf. **One generated before is kept**, because the daemon never
+  replaces a certificate it finds and replacing every one would make every
+  browser ask again at once. Whoever imported the old one as trusted should
+  remove it from the browser, delete `cert.pem` and `key.pem` from the daemon's
+  state directory and restart it, which makes a new one.
 
 **There is a window in which the machine can be claimed, and it is deliberate.**
 A daemon that has never been set up has no credentials at all, and the first
@@ -247,8 +445,13 @@ whose entire point is that it is driven from a browser and a gamepad. `journalct
 setting up a games machine for their household.
 
 What limits it: the window is open only until somebody walks through it, and it
-closes behind them. `Claim` checks and writes as one step, so two browsers
-arriving at the same moment cannot both succeed. An unclaimed store refuses
+closes behind them. `Claim` checks, hashes and writes as one step, so two
+browsers arriving at the same moment cannot both succeed; until the audit it
+let go of its lock between checking and writing, and the second password
+silently replaced the first. The window is also only open to somebody who
+reaches the page itself: a page on another site can no longer choose the
+password through the visitor's browser, which is the cross-site check above.
+Nobody's session is valid while it is open. An unclaimed store refuses
 every sign in rather than accepting an empty form, which it would otherwise do,
 since comparing no stored name and hash against an empty name and password
 succeeds on both counts. And the daemon says on the way up that it has no
@@ -269,6 +472,18 @@ provisioning and keeps it in `/var/lib/polyseat/secrets/`, `0600` and root only.
 Deliberately not part of the seat definition, because that is what the interface
 reads on every refresh and a password has no business travelling with it; it is
 fetched from its own endpoint when somebody asks to see it.
+
+It reaches Sunshine over the exec's standard input, since the audit. It used to
+be an argument, `sunshine --creds user password` run through an Incus exec, and
+the argv of an exec is not private: Incus keeps it in the operation's metadata,
+where anybody with API access can list it, `incus monitor` prints it as it
+happens, and when the command failed it became an error message in the seat's
+log and on its card. A two line wrapper now reads the password and execs
+Sunshine. **What is left is Sunshine's own argv, for the few milliseconds it
+runs**, visible in the process list of the host and of the seat to anybody
+looking at that moment, because `--creds` takes the password as an argument and
+nothing else. Writing Sunshine's credentials file directly would close that too,
+and was not done because that format is Sunshine's and has moved once already.
 
 The daemon reaches Sunshine over the Incus bridge with **certificate
 verification off**. Sunshine serves a certificate it generated for itself, so
@@ -526,8 +741,18 @@ same amount of containment.
 What is checked, and what is not. Downloads run over **https only**, redirects
 included, because what arrives is executed; there is no signature to verify
 because AppImages mostly do not carry one. The file is checked for the AppImage
-magic before the daemon executes it to read its name and icon, so a renamed
-shell script in `~/Downloads` is not adopted and not run. The size is capped at
+magic before it is adopted, so a renamed shell script in `~/Downloads` is not
+taken for one. **And nothing in the file is run to read its name and icon**,
+since the audit. The scan used to ask the file with `--appimage-extract`, which
+is answered by the runtime at the front of the file and never reaches the
+payload, but the runtime is part of the file too: anything that arrived in
+`~/Downloads` with the right bytes in its header was executed by the scan
+within a minute, as the player, without anybody having opened it, and a web
+page that makes the browser save a file is enough to put one there. The scan
+now finds where the squashfs inside the file begins from the ELF header and
+reads it from the outside with `unsquashfs`, which every seat carries since
+generation 59. Without `unsquashfs` it reads nothing rather than falling back
+to running the file. The size is capped at
 6 GB so that a mistyped address cannot fill a seat's disk before the check that
 would have rejected it. **None of that says the AppImage is trustworthy**: it
 says the file is the kind of thing it claims to be and arrived over a connection
@@ -536,8 +761,22 @@ nobody rewrote in transit.
 ### The interface can put files into a seat
 
 Anybody with the password can upload a file, or a folder of them, into a seat's
-`~/Downloads`. It is written by the daemon, which is root, as the player, which
-is the same ownership the AppImage route and the flatpak route already produce.
+`~/Downloads`. It is written by the player, which is the same ownership the
+AppImage route and the flatpak route already produce.
+
+By the player and not merely owned by the player, and the difference was a hole
+until the audit. The daemon used to write through the Incus file API, which
+writes as root, follows symlinks and gives a file it creates to the uid it was
+asked for, so a player who made a name in `~/Downloads` a link to
+`/etc/ld.so.preload` was handed that file on the next upload, which in the
+container is root. While the seat runs, a small script started as the player now
+reads the file from standard input into a temporary name and moves it over the
+destination with `mv -T`, which replaces a link standing there rather than
+writing through it, so a link can only lead where the player could write
+anyway. A seat that is switched off still takes uploads, and there, with nothing
+inside it running that could swap a link in, every directory from the home down
+is looked at without following links before the file API writes, and any link
+stops the file. The seat's state is asked again before every file.
 
 What this is not: a new authority. The same session can already install a
 flatpak into that seat, download and adopt an AppImage, pair a client and take
@@ -581,7 +820,7 @@ switch.
 What it does give away is that a machine at that address runs something which
 watches this repository, to GitHub and to anybody who can see the connection.
 `"update_check": false` in `/etc/polyseat/polyseatd.json` turns it off, and then
-no request is made at all — including the button under *Host* that asks now
+no request is made at all, including the button under *Host* that asks now
 instead of waiting six hours, which refuses and says which setting refused it.
 That button needs a session and nothing else: it makes the same request the
 timer makes, changes nothing on this machine, and installing what it finds is
@@ -634,7 +873,22 @@ the same party over the same connection, so it catches a download that arrived
 wrong and not one that was meant to arrive wrong. It is not tamper evidence and
 is not described as any. Real tamper evidence needs a signing key that does not
 live on GitHub, which is the same key a package repository would need; if that
-ever exists, this gets stronger for free.
+ever exists, this gets stronger for free. The audit looked at this again and
+left it where it is, deliberately: signing is a key somebody has to keep,
+publish and rotate, and it is deferred rather than forgotten.
+
+What the audit did change is what goes into the packages in the first place.
+**The workflow that builds and attaches them runs pinned code**: the GitHub
+actions by the commit their version tags named, and the Arch container by the
+digest of its image, where both used to be tags that whoever controls them can
+point somewhere new. That job holds a token that can write to releases, so what
+runs in it is part of what a release is. And **the `.deb` and the `.rpm` are
+built from the release's tag.** They used to be built from whatever commit
+triggered the job, which is the commit that follows the tag on `main` and could
+have anything else from `main` in front of it, so the Debian and Fedora packages
+of a release could contain code the release did not, while the Arch package
+beside them came from the tag. The job now checks out the tag and refuses to go
+on unless the tree is exactly that commit and clean.
 
 **Asking for the password again is available and off by default.**
 `"update_needs_password": true` makes the interface ask for the interface
@@ -666,7 +920,7 @@ package" and now reads as one.
 **And only the file that belongs to this host.** A release carries three
 packages. `internal/hostpkg` works out which family this machine is and matches
 that asset alone, so the browser cannot steer the daemon towards a different
-one — which is the same property the rest of this section rests on, extended to
+one. That is the same property the rest of this section rests on, extended to
 one more axis.
 
 ### It can also prepare the machine and remove Polyseat, as root
@@ -694,7 +948,7 @@ seat and, if it is asked to, the shared game library. `"web_uninstall": false`
 turns it off. It is the one action in the interface that pressing again does not
 undo, so it asks for the interface password every time, whatever
 `update_needs_password` says, and deleting seats needs the word "remove" typed
-out — checked in the daemon and not only in the browser, because it is the API
+out, checked in the daemon and not only in the browser, because it is the API
 that deletes things.
 
 **What holds for both is what holds for the update: the browser never says what
@@ -728,8 +982,8 @@ Three things stand between those:
 
 * **The interface password, every time**, whatever `update_needs_password` says.
   The same rule removal follows, for a different reason: not that this cannot be
-  undone — it is the one host action that is undone by pressing the other button
-  — but that this is the one that widens what a seat can reach.
+  undone, since it is the one host action that is undone by pressing the other
+  button, but that this is the one that widens what a seat can reach.
 * **`"web_lan_bridge": false`** takes it off the page entirely, for a machine
   whose seats are not all for people in the same room. The script still works at
   a terminal, where whoever runs it already has root.
@@ -749,9 +1003,18 @@ the worse outcome rather than the safer one.
 
 Virtual keyboards reach the kernel VT and sysrq handlers exactly like a physical
 keyboard, and there is no per-device switch. Handled in
-[`../host/README.md`](../host/README.md): `kernel.sysrq` is pinned, and
-`check-hardening.sh` reports when the exposure is actually open rather than
-merely possible.
+[`../host/README.md`](../host/README.md): `check-hardening.sh --fix` pins
+`kernel.sysrq`, and the script reports when the exposure is actually open rather
+than merely possible.
+
+`--fix` used to pin whatever value was running, so a machine at 1, where a
+seat's virtual keyboard can reboot or crash the host, had exactly that written
+into `/etc/sysctl.d` by the option meant to close it. It now keeps the running
+value only when it is harmless, 0, 2, 16 or 18, and pins 16 otherwise. It also
+reads the sysctl files the way systemd-sysctl does, all four directories sorted
+together with a file in `/etc` masking a namesake elsewhere, instead of a grep
+in `/etc` that took a commented line for a setting, and checks after writing
+that its file is the one that wins.
 
 ## The broker runs as root and consumes container-controlled data
 
@@ -759,10 +1022,60 @@ Device names come from inside the seats, and the broker matches on them. Two
 things keep that from being a hole:
 
 * **Nothing is passed through a shell.** All external calls are argv lists.
-  The one `sh -c` call interpolates only the major and minor numbers, which are
-  integers read from sysfs.
+  The two `sh -c` calls, which write a udev database entry inside the seat,
+  interpolate only major and minor numbers, which are integers read from sysfs.
 * **The name no longer decides anything.** Since attribution became structural,
   a crafted name can at most produce a misleading log line.
+
+## The daemon runs as root and reads what a player writes
+
+The broker is not the only part of Polyseat in that position. The daemon reads
+Steam's manifests out of a seat, lists what is installed, writes the app list
+and the session's configuration into the player's home and names seats after
+what a request says. The player owns that home and has no sudo, on purpose, and
+the audit of 2026-09-26 went through every place where the daemon took what a
+player can write as given. What holds now:
+
+* **Nothing the daemon writes into the player's home is written as root.**
+  Provisioning, the app list, the game entries and every upload are written by
+  the player, through the same script that replaces a link standing at the name
+  rather than writing through it; directories are made by the player with
+  `mkdir -p`, and the two Steam files provisioning edits are read by the player
+  too. Before, the Incus file API wrote all of it as root, following links, and
+  a player could stand `~/.config/polyseat/pointer.conf` as a link to
+  `/etc/ld.so.preload` and be handed that file on the next rebuild, which in the
+  container is root. The one thing that has to run as root there, handing back
+  directories root created, walks from the home with `O_NOFOLLOW` and changes
+  the ownership of the directory it opened, so a link ends the walk.
+* **Everything that reads what the player owns is bounded inside the seat.** The
+  scans behind the app list, the session reads of the sweep, and a shared
+  folder's setup script run under `timeout` in the seat as the player, because
+  Incus does not end a command whose caller stopped waiting, and a FIFO in the
+  right place used to hold the daemon's view of every seat for good. What a
+  scan may print is capped at 16 MiB. The Python ones run with `python3 -I`,
+  so that a `usercustomize.py` or a `.pth` file in the player's home does not
+  decide what the daemon is told.
+* **A Steam app id is a run of digits or it is dropped.** It becomes a file
+  name, a `steam://` link and part of a Sunshine command line, which Sunshine
+  splits on whitespace, so an id with a space in it from a manifest the player
+  wrote carried extra arguments of the player's choosing into an entry somebody
+  else picks from Moonlight's list. This is checked both in the library and in
+  the scan that builds the app list.
+* **A seat name is checked before it becomes a path**, in the store itself.
+  Go's router decodes `%2F` inside a path segment, so
+  `DELETE /api/seats/..%2Fsecrets%2Fvince` used to reach the store with a name
+  pointing outside the seats directory, and the daemon removed that file. This
+  needed a session, which is full control anyway, but a session is not meant to
+  be a way to delete arbitrary files as root either.
+* **A static address and its gateway are parsed**, and a gateway without an
+  address is refused. Both are written into the seat's network file, and the
+  only test used to be that the address contained a slash, which a line break
+  and a `DNS=` line after it pass.
+* **What a Proton release says is single quoted** in the script that installs
+  it in a seat. The URL, the checksum and the tag went in as Go strings, which a
+  shell reads as double quoted, so `$(...)` in a release's tag would have run as
+  root in every seat that updated. That needed whoever can publish a release of
+  that project, and it is closed anyway.
 
 ## The inconsistency that was found here is gone
 

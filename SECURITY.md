@@ -35,6 +35,10 @@ hold. The clearest examples:
   the wrong mode, in `polyseatd -report`, in the interface without a session.
 - The input broker being made to do something by a name or a device coming out
   of a container, which is data a seat controls.
+- The daemon, which is root, being made to read, write, remove or run something
+  by a link, a file name, a manifest or a script a player put in a seat's home
+  or library. The audit of 2026-09-26 closed every path of this kind it found,
+  and docs/security.md lists them; a path it missed is exactly what to report.
 
 The verified half of docs/security.md is the list of things claimed to hold, and
 each entry says how it was measured. If a measurement there does not reproduce

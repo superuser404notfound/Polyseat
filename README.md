@@ -106,7 +106,10 @@ a checkout instead: [CONTRIBUTING.md](CONTRIBUTING.md).
 claimed the machine yet, so the page asks you to set one rather than to type
 one. Do it before anybody else does: until it is set, whoever reaches the page
 can set it. The browser will ask about the certificate once, exactly as
-Sunshine's own interface makes it ask.
+Sunshine's own interface makes it ask. Accept it for this site rather than
+importing it as a trusted authority; it is a server certificate and not meant
+to be one, and [docs/security.md](docs/security.md) says what to do about a
+certificate from before 0.32.0 that somebody already imported.
 
 The interface answers on the whole network, so seats can be managed from the
 same phone that runs Moonlight. To keep it on this machine only, set `listen`
@@ -187,7 +190,10 @@ way.
 
 What the update never does is let the browser say what to install: it takes the
 release the daemon found itself, from this project's own downloads, and checks
-it against the checksum that release states.
+it against the checksum that release states. That proves the file arrived whole,
+not who made it: the packages carry no signature yet, which
+[docs/security.md](docs/security.md) says plainly along with what is done
+instead.
 
 The check for a new version is one request to GitHub every six hours, it sends
 nothing about the machine, and it installs nothing on its own. *Host* has a
@@ -262,11 +268,18 @@ being downloaded a second time, which is the direction that used to be missing:
 before, the only way back was to fetch it again on the machine it was already
 on. Folder games join the same way, and the switch for them is a directory:
 `mkdir -p ~/Games/shared` on the host turns it on, removing it turns it off.
+Both `~/Games` and `~/Games/shared` have to be real directories. A link to
+another disk is refused, because the daemon runs as root and does not follow a
+link somebody else could have put in its way.
 
 **Launchers other than Steam work too.** Each seat has a `shared/` directory
 where one folder is one game, and a seat's Lutris already installs there, so a
 game installed the ordinary way appears in the other seats by itself. Heroic and
-Bottles get there by pointing them at the same directory.
+Bottles get there by pointing them at the same directory. A folder can bring a
+`polyseat-setup.sh` that registers the game wherever it arrives, and that
+script runs only once somebody has read it and allowed it in the Library section
+of the interface, because any seat can put a folder in the pool and the script
+would run as somebody else.
 
 **Each seat keeps its own saves**, including for those games. A Windows game
 installed through a launcher brings its wine prefix along, and the part of that

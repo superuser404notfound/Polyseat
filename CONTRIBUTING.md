@@ -40,7 +40,9 @@ tag. That is also what a hardware report should say it was running.
 
 `sudo host/update.sh` moves a checkout to the newest release and installs it,
 refusing a working copy with uncommitted work in it and waiting for a moment
-when nobody is streaming. `sudo host/install.sh --uninstall` takes it all out
+when nobody is streaming. It runs every git command as whoever owns the checkout
+rather than as root, so that your own `git pull` afterwards does not fail on
+files root left behind. `sudo host/install.sh --uninstall` takes it all out
 again and leaves the seats alone; `--purge` takes the seats too and asks first.
 Both of those hand over to `host/uninstall.sh`, which is also installed as
 `polyseat-uninstall` and is what the button in the interface runs.
@@ -77,6 +79,22 @@ than pass quietly**, so read what a run says it skipped:
   made with `reflink=1`.
 - Some seat tests run the real Python helpers and need `python3`, `evdev`,
   `librsvg` and Pillow.
+
+Two more suites sit beside `go test` and need neither root nor a seat:
+
+```
+python3 -m unittest discover -s spike/m2-input-broker -t spike/m2-input-broker -v
+```
+
+is the input broker, the uhid observer and the udev helper, against sysfs trees
+and udev databases built in a temporary directory, and every `host/test-*.sh`
+that is not about a virtual machine checks one of the host scripts against
+stubbed tools: `test-distro.sh` the package manager table, `test-lan-bridge.sh`
+the seat handling and the refusals in `lan-bridge.sh`, `test-hardening.sh` how
+`check-hardening.sh` reads `kernel.sysrq` and what its `--fix` would pin,
+`test-uninstall.sh` whether `uninstall.sh` may remove `polyseatbr0`, and
+`test-gpu-detect.sh` the card detection in `prepare.sh`. `test-install.sh` and
+`test-package.sh` are the two that want a throwaway virtual machine.
 
 `.github/workflows/ci.yml` sets all of that up on a runner, including half a
 gigabyte of btrfs in a loopback file, and is the shortest description of what a
@@ -119,8 +137,10 @@ Two habits follow from that:
 
 ## Pull requests
 
-CI has to pass: build, vet, `gofmt`, tests, `node --check` over the interface's
-JavaScript, and `bash -n` plus `shellcheck --severity=warning` over the shell.
+CI has to pass: build, vet, `gofmt`, tests, the Python tests of the input
+broker, the shell tests under `host/` named above, `node --check` over the
+interface's JavaScript, and `bash -n` plus `shellcheck --severity=warning` over
+the shell.
 That last pair covers more than `host/`: the scripts a seat carries in
 `internal/seat/assets/`, the packaging scripts, and the spike scripts as well,
 because a seat's shell is shipped code and a broken line in it surfaces on

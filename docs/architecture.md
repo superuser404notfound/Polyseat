@@ -233,10 +233,29 @@ host ready and taking Polyseat off it again were the two things at either end of
 its life that still needed a terminal, and both are buttons. Neither is a second
 way into anything the daemon owns: they run the same two scripts somebody at a
 terminal runs, `polyseat-prepare` and `polyseat-uninstall`, and the browser
-cannot say what to run — one takes an account name, the other takes two flags.
+cannot say what to run: one takes an account name, the other takes two flags.
 What is left on the command line is what nothing already on the machine can do
 for itself: installing the package and starting the unit. Where that line runs
 and why is [`installation.md`](installation.md).
+
+**The page is told that something changed, not what.** The daemon pushes a
+token over server sent events whenever anything changes, several a second while
+a seat provisions, and the page used to fetch both the state and the library on
+every one. The library walks the pool and every seat's manifests under the
+pool's lock, so an open page kept the daemon reading manifests several times a
+second for a view that had not changed. It now fetches the library when
+something it did may have changed it, when the stream connects, when the set of
+seats or which of them take part has changed, and otherwise at most every
+fifteen seconds, with a refresh scheduled for the end of that interval so a
+change inside it is not left waiting. A game installed inside a seat reaches the
+pool with no token of its own, so those fifteen seconds are also how long it can
+take to show. Reading the library for the page also no longer asks every seat
+whether its files may be replaced right now; only a pass acts on that answer.
+
+Every value the page puts into an API path is encoded, through one tagged
+template, `apiPath`, so that a call site cannot forget. A folder title such as
+`folder:Tom & Jerry #2` used to be cut off at the `#`, and the daemon answered
+404 for a title it had just listed.
 
 ## Principle: the daemon owns the configuration
 
@@ -247,7 +266,7 @@ this rule, GUI-centred management inevitably drifts out of sync.
 
 ## How the daemon is built
 
-Four decisions worth writing down, each of them made by something that went
+The decisions worth writing down, each of them made by something that went
 wrong first.
 
 **Events, never polling.** The daemon learns what containers are doing from the
@@ -256,6 +275,46 @@ every ten seconds, to read what the session is doing, and never while a seat is
 stopping. The M2 broker prototype polled `incus exec` twice a second regardless
 of state; an exec landed inside a shutdown and the Incus daemon hung in
 "Stopping instance" with the container already dead.
+
+That read is one exec, not four. The state of the session's two units, the size
+of the output and the stream check used to be four round trips through the
+Incus daemon every ten seconds per seat, each one a process in the seat and a
+lifecycle event, underneath whatever somebody was playing. They are one script
+now, with a marker line between the parts, and a part that did not run reads as
+"unknown", which is what four failing execs said too.
+
+**"Never while a seat is stopping" is a lock, not a look.** The sweep used to
+check the seat's busy flag and then go on to its execs without holding
+anything, so a Stop that began a moment later found nothing in its way and the
+next exec landed in the container's shutdown, which is the shape of the hang
+above. Each seat now has lanes, one per kind of reading that may take a while:
+`sweep` for the ten second read, `apps` for rebuilding Moonlight's list, and
+`asking` for the question of what the seat is behind on. A reading holds its
+lane for as long as it runs and enters it only while no operation holds the
+seat. An operation sets busy first, cancels whatever reading is in progress,
+and waits for every lane to be let go before it touches the container, in a
+goroutine of its own so the request that started it returns at once. A reading
+that was cancelled half way returns before it writes down or acts on what it
+never finished reading.
+
+**Nothing in the main loop waits for a seat.** The loop that delivers Incus's
+events also runs the timers, and until the audit of 2026-09-26 it did the timed
+work in place: the sweep visited the seats one after another, rebuilt an app
+list when one was due, ran the six hourly `pacman -Sy` in every seat and the
+Proton check, reconciled a seat after each event, and ran a whole library pass
+every minute. Each of those is as long as a seat decides, and a player can
+decide that from inside a seat, so one slow seat held up every other seat's
+sweep and every lifecycle event for minutes. Each of them now runs on a
+goroutine of its own. A seat's sweep takes its lane before the goroutine
+starts, so a seat still being read costs one `TryLock` per tick rather than a
+goroutine parked behind it; the app list rebuild runs in the `apps` lane beside
+the sweep; the freshness pass and the Proton pass run at most one at a time,
+and each seat's turn goes through the lane or through the operation machinery
+as above; a lifecycle event is reconciled on a goroutine, and two events for one
+seat queue on its sweep lane and each reads what is true when its turn comes;
+the timer's library pass runs at most one at a time. The buttons in the
+interface still run the library pass directly, because somebody is waiting for
+the answer.
 
 The first version of the event handler reacted to every lifecycle event, and
 Incus emits one for every exec. Each read of a seat caused the next read: a
@@ -433,6 +492,31 @@ nothing tells it to look now, and the alternative, only ever cloning while Steam
 is closed, would mean a seat's new game never arrives on a machine somebody
 leaves Steam open on.
 
+The directory that walk looks for is resolved first, because `/proc` never names
+a symlink: maps, working directories and descriptors all carry the real path.
+A library reached through one, which is the ordinary case for
+`~/.steam/steam/steamapps`, was never found in use before the audit, and the
+pool replaced a game's files while the host's Steam was playing it.
+
+**Nothing a member put in its library is followed.** The daemon is root and
+every library it works in belongs to somebody else: a seat's to the seat's
+mapped uid, where the player can put a symlink anywhere, and the host's and
+`~/Games/shared` to the desktop user. So below the point where a member's
+directory starts, the pool reaches nothing by path. It opens the member's
+directory once and everything under it one component at a time with
+`O_NOFOLLOW`, relative to the directory it is in, and makes every change
+through a held descriptor, which leaves no moment between looking at an entry
+and using it for a link to be swapped in. Links inside a game are copied as
+links and never resolved. The host's paths run through somebody's home, so they
+are opened from `/`, following a link only in a directory nobody but root can
+write; that keeps `/home` as a link to `/var/home` working and refuses
+`~/Games` as a link to another disk. A member whose directory cannot be opened
+that way is reported and left out of the pass rather than ending it, since a
+seat can now make that happen on purpose. The attacks this closes are in
+[`security.md`](security.md), and `internal/library/nofollow.go` has the
+reasons for `openat` over `openat2` and for not switching the thread to the
+member's uid.
+
 ## Where a game installs by default
 
 A seat used to offer two Steam library folders, its own private one and the
@@ -512,7 +596,11 @@ is what switches it off; the daemon never creates it, for the same reason it
 never creates anything else in somebody's own library. The shape matches a seat
 on purpose: a seat's Lutris has `game_path` at `/home/player/games` with
 `shared/` beneath it, so the host's wants `~/Games`, which is where Lutris
-installs by default anyway.
+installs by default anyway. Both have to be real directories, not links to
+somewhere else, for the reason in "Library pool" above. A library owned by root
+or a system account, below uid 1000, takes no part in the folders at all: the
+search for a host library includes `/root`, and what arrives here is meant for a
+person's own Lutris.
 
 What travels is the directory, and only the directory. A Lutris installation is
 a folder plus a row in that machine's `pga.db` plus a YAML under
@@ -522,13 +610,43 @@ names lives under `~/.local/share/lutris/runners` and a seat has no such path.
 So a game installed on the host arrives in every seat as files that nothing in
 that seat's Lutris knows about. Registering it there is the folder's own job.
 
-**A folder may carry `polyseat-setup.sh`**, and the daemon runs it wherever that
-folder has just been delivered: inside the container as the player for a seat,
-and as the library's owner for the host, never as root. It runs after the sync's
-own lock has been let go, because the honest work behind one of these is minutes
-of wine prefix, and it runs again on every update, so these scripts have to be
-safe to run twice. A failure is written to that member's log and stops nothing
-else; the files arrived either way.
+**A folder may carry `polyseat-setup.sh`**, and once somebody has allowed it the
+daemon runs it wherever that folder has been delivered: inside the container as
+the player for a seat, and as the library's owner for the host, never as root
+or a system account. It runs again after every update the member receives, once
+that version has been allowed too, so these scripts have to be safe to run
+twice. A failure is written to that
+member's log and stops nothing else; the files arrived either way.
+
+**Allowed, because a script from the pool is a script a seat may have
+written.** Until the audit of 2026-09-26 the daemon ran it by itself, and that
+let a player run code as the host's desktop user, who usually has sudo, by
+putting a folder in their own `shared/`. Where a folder came from cannot settle
+it, since the pool records no origin and takes the newest copy from whoever
+has one, so every script waits for a person. The Library section lists the
+scripts waiting, with their text, their sha256 and where they would run, and
+the approval names the hash that was shown and is tied to the folder's version
+in the pool, its size and its newest time. A changed folder that reaches
+another member is a new version and asks again, a removed folder takes its
+approval with it, and each member's copy is hashed again immediately before it
+runs. Why it is tied to the whole folder and not only the script is that the
+script runs the rest of the folder.
+
+A delivery is written down per member, against the pool's version, in
+`folder-setup.json` beside the seat records, and kept until the run happens.
+It used to exist only in the report of the pass that delivered it, so a seat
+that was off when a folder arrived never got its setup, and neither did
+anything after a daemon restart. Now a seat that was off runs it on the first
+pass after it is running again.
+
+The runs happen on a worker goroutine, one at a time, with a context of their
+own. They used to happen inside the library pass, which is called from the
+main loop and from interface requests, so a ten minute setup held up every
+lifecycle event, and one started from a button was bound to a request that
+ended when the answer was sent. Ten minutes is still the limit. On the host the
+script gets a process group of its own, killed when time is up, and only the
+last 8 KiB of its output are kept; in a seat it runs under `timeout` inside the
+container, from the folder, as it does on the host.
 
 This is not the manifest this design does without. The daemon reads nothing out
 of the script, and has no opinion about what is in it or which launcher it
@@ -538,10 +656,12 @@ Steam half gets for free, where an `appmanifest` travels inside the library and
 Steam reads the library itself.
 
 The script runs as the member's owner rather than as the daemon, and that is
-the whole of the trust argument: the pool is fed by the members, a member is a
-seat whose player deliberately has no sudo, and running a folder's script as
-that owner hands it exactly what the person it came from already had. A seat
-cannot reach further into the host by putting a file in a shared folder.
+half of the trust argument: whatever it does, it does with what the person it
+runs as already has, and never with root. This paragraph used to say it was the
+whole argument, on the reasoning that a folder's script hands the member exactly
+what the person it came from had. That was wrong, because the person it runs as
+is not the person it came from: a seat's script ran on the host as the
+administrator. The approval above is the other half.
 
 The two signals Steam gives are replaced by facts read off the tree. Finished
 becomes "nothing in it has changed for a couple of minutes", which is honest but
@@ -550,6 +670,14 @@ complete, and there is no way to tell from outside. Version becomes the newest
 modification time inside the tree, which is why cloning preserves file times.
 Without that a copy would always look newer than its own original and the two
 would carry each other back and forth forever.
+
+That has happened twice, and the second time was subtler. Carrying a seat's
+`drive_c/users` into the new tree, below, is a rename, and a rename sets the
+time of the directory it lands in to the present; `drive_c` is counted, so
+every updated copy of a folder with a wine prefix measured newer than its
+source, and the pool and the seats handed the whole game back and forth once
+the settle time had passed each round. The carry now puts back the times of
+every directory it touches, on both sides.
 
 **The saves stay in the seat.** Lutris points at this directory by default, so
 installing a game the ordinary way puts it here, and for a Windows game that
@@ -567,6 +695,12 @@ the other seat; and a clone leaves it alone, carrying the destination's own
 across the swap rather than replacing it. A seat that has never seen the game
 is given the one that came with it, so that a game keeping data files rather
 than saves under `drive_c/users` works there at all.
+
+A folder can hold more than one prefix, and their saves are carried one after
+the other. When an update fails part of the way through, everything that was
+carried is carried back before the old copy is restored; until the audit the
+cleanup removed the new tree with the saves already moved into it. If carrying
+back fails as well, the staging directory is kept and the error names it.
 
 What this does not cover is a game that saves into its own installation
 directory, as titles from before the prefix convention do. Nothing can, without
@@ -618,7 +752,34 @@ game is somebody unable to play with no way to find out why.
 
 That scan is on its own minute long timer rather than the ten second sweep,
 because asking Lutris means starting Lutris, and nobody needs to learn within
-ten seconds that a game was uninstalled.
+ten seconds that a game was uninstalled. The sweep notices when it is due and
+hands it to the seat's `apps` lane on a goroutine of its own, rather than
+running it in place, and a rebuild still running when the next falls due is
+left to finish.
+
+**Everything the scan reads belongs to the player**, Steam's manifests, Lutris,
+the desktop entries and `~/Applications`, so it is bounded where it runs. Each
+part runs under `timeout` inside the seat as the player, because Incus does not
+end a command whose caller has stopped waiting and a FIFO in the right place
+used to hold a scan, and with it the daemon's view of every seat, for good. The
+daemon keeps a deadline of its own a little beyond the seat's, caps what a scan
+may print at 16 MiB, and bounds the whole rebuild at ten minutes. The Python
+scans run with `python3 -I`, so that nothing in the player's home is imported
+before the scan's first line, and the desktop entry scan has `grep` skip
+anything that is not a plain file rather than trusting `find` to have looked.
+Only app ids that are one to ten digits make it into the list, because the id
+becomes part of a command line Sunshine splits on whitespace.
+
+**And everything the daemon writes into the player's home is written by the
+player.** The app list, the game entries, the uploads and every file
+provisioning puts there go through a short script run as the player, which
+writes to a temporary name and moves it over the destination with `mv -T`, so
+a link standing at the name is replaced rather than written through. The
+Incus file API, which is what all of it used before, writes as root and follows
+links, and why that mattered is in [`security.md`](security.md). A seat that is
+switched off has no player to write as, so an upload into one checks every
+directory on the way for links first, which is sound only because nothing in
+the seat runs; the state is asked before every file.
 
 **Files are not an account**, and forgetting that made the list actively
 misleading. The shared library puts a game into every seat that takes part, so
@@ -678,6 +839,15 @@ icon into the seat's icon theme, that file is used and nothing is fetched at
 all, and where the icon cannot be had the small one Steam cached for its own
 library list is better than a cover. Lutris names its icons after the slug it
 knows a game by, and those are already in the theme.
+
+`appinfo.vdf` is a megabyte and a half, and the icon's file name is the hash
+read out of it, so until the audit the helper read it on nearly every pass of
+the minute timer. The values it wants are now kept beside the icons with the
+size and time of the `appinfo.vdf` they came from, and Steam's file is read
+again only when it changed or a title is asked about that the copy does not
+have. Both picture helpers take the list of games on standard input rather than
+as their one argument, which the kernel caps at 128 KiB: a large library stopped
+both from running at all, silently, and every game lost its card and its icon.
 
 **Sunshine reads that file once**, when it starts, for the list it serves to
 clients. Its web interface rereads it on every request, and asking that one
@@ -748,8 +918,10 @@ all, which is what makes it the right mechanism here rather than a convenient
 one: the player installs into their own home with no password, and the daemon's
 install button in the web interface runs the same command as the same user, so
 there is one list of installed software and not two. Flathub is added per user
-for the same reason. The cost is one setuid bwrap per seat, and why that is the
-smaller cost is set out in [`security.md`](security.md).
+for the same reason. The cost is `security.nesting=true` on every seat, which
+flatpak's sandbox needs since the setuid bwrap it used to get by with is gone
+upstream, and why that is the smaller cost is set out in
+[`security.md`](security.md).
 
 Three routes, because they answer to different people. `gnome-software` is in
 the seat for whoever is sitting in it, browsing Flathub with pictures and a
@@ -758,31 +930,43 @@ toolkit underneath it, where bazaar would have been 52 MB and discover 212 MB.
 The web interface is for setting a seat up for somebody before handing it over.
 The command line is for neither and stays anyway.
 
-**AppImages are the other kind, and they need a different mechanism because
-they have no index.** There is no Flathub for them: an AppImage is one file on
+**AppImages are the other kind, and they need a different mechanism because they
+have no index.** There is no Flathub for them: an AppImage is one file on
 somebody's release page, and the only thing that knows it exists is the
 directory it was put in. So the seat side is a directory listing rather than a
 package manager. `~/Applications` is what is listed, `~/Downloads` is swept into
 it once a minute, and each file's name and icon are read out of the file itself
-with `--appimage-extract`, cached against its size and modification time so that
-a scan costs a listing rather than an unpack. From there they join the same path
-as everything else and become entries in Moonlight and in the seat's launcher.
+with `unsquashfs`, cached against its size and modification time so that a scan
+costs a listing rather than an unpack. A type 2 AppImage is an ELF runtime with
+a squashfs appended, and the squashfs begins where the ELF's section header
+table ends, so the scan computes that offset from the header, checks the
+squashfs magic there and reads the filesystem from the outside. Type 1 images,
+ISO 9660 and long out of use, get their file name and no icon. From there they
+join the same path as everything else and become entries in Moonlight and in the
+seat's launcher.
 
 Three facts about this were measured in a seat rather than assumed. The
 container already has `/dev/fuse` and a setuid `fusermount3`, so nothing about
 the container had to change; what was missing was **fuse2**, because the
 AppImage runtime dlopens `libfuse.so.2` by name and a seat with only fuse3
 stopped every classic AppImage at `dlopen(): error loading libfuse.so.2`.
-`--appimage-extract` needs no FUSE at all, which is why reading the metadata
-works even where running the thing would not. And `curl -#` draws its progress
+Reading the metadata needs no FUSE at all, which is why it works even where
+running the thing would not. And `curl -#` draws its progress
 bar on standard error with no terminal attached, so unlike flatpak, whose
 progress needs a pseudo terminal, a download reports itself for free.
 
 The magic bytes are checked before anything else happens to a file, in both the
-daemon and the scan. The scan **runs** each file to read its metadata, so a
-shell script somebody renamed to `.AppImage` would otherwise be a program the
-daemon starts once a minute; the check is what keeps the two apart, and a test
-asserts it by failing loudly when the payload runs.
+daemon and the scan. **The scan used to run each file to read its metadata**,
+with `--appimage-extract`, which the runtime at the front of the file answers
+without reaching the payload. But the runtime is part of the file as well, so
+anything that arrived in `~/Downloads` with the right bytes in its header was
+executed within a minute, as the player, without anybody having opened it, and
+a page that makes a browser save a file is enough to put one there. That ended
+with the audit of 2026-09-26. `unsquashfs` comes from `squashfs-tools`, which
+every seat installs since generation 59 because nothing else a seat installs
+brings it; without it the scan reads nothing, keeps no answer for that file so
+that the icon appears once the tool is there, and does not fall back to running
+anything.
 
 A **sandbox has to be told about the shared library**, and that was found by
 trying it rather than by reading a manifest. M6 said a launcher other than
@@ -825,7 +1009,16 @@ line in the log rather than a seat that failed to build.
 
 **It updates itself**, because a build that exists to carry fixes early is worth
 nothing pinned to whatever was current on the day a seat was provisioned. The
-daemon looks for a newer release every six hours and shortly after it starts.
+daemon looks for a newer release every six hours and shortly after it starts,
+on a goroutine of its own and at most one pass at a time, since a pass is a
+download of a third of a gigabyte for each seat that is behind and it used to
+hold up the main loop for as long as GitHub took. Each seat's turn goes through
+the same machinery as any other operation, so a seat that is being provisioned
+or having its software updated is skipped until the next pass rather than
+having its compatibility tools replaced underneath it; a side effect is that a
+turn clears the seat's last error, as any operation does. What the release
+says, its URL, its checksum and its tag, goes into the script the seat runs
+single quoted, so that nothing in a release's name is read by a shell.
 The replacement is an unlink and a rename, so it waits for a seat with nobody
 streaming out of it and with nothing holding the directory open, asked with the
 same `/proc` probe the library uses. A game running under that Proton keeps the
@@ -1148,13 +1341,31 @@ once, and on a cold start it asks before sway's rule has fired. The witness was
 Steam's own log line, `ThreadSetForceDeviceScaleFactors 1.000000 * 1.423025`,
 rather than a screenshot - version 0.22.0 photographed the screen instead and
 was silently wrong twice in one seat. Inside gamescope none of that happens,
-because gamescope hands Steam a screen of exactly the right size. What is still
-needed is `polyseat-bigpicture-watch`, for a different bug with the same
-appearance: sway allows one fullscreen container per workspace, so a game going
-fullscreen dethrones Big Picture and nothing gives it back when the game exits.
-The watcher reads sway's `fullscreen_mode` and `close` events rather than any
+because gamescope hands Steam a screen of exactly the right size. What is left
+is `polyseat-bigpicture-watch`, for a different bug with the same appearance:
+sway allows one fullscreen container per workspace, so a game going fullscreen
+dethrones Big Picture and nothing gives it back when the game exits. The
+watcher reads sway's `fullscreen_mode` and `close` events rather than any
 window title, since Steam translates the title and a German seat calls that
 window "Big-Picture-Modus".
+
+**On the ordinary path it matches nothing any more**, and neither do the
+`class="^steam$"` rules in the session's sway configuration: inside gamescope
+sway sees one window with the app_id `gamescope` and never Steam's. They are
+kept, because `polyseat-steam` still has two ways to end up with a Steam
+outside gamescope, a gamescope that fails on its second try and a Steam that
+would not close, and a Big Picture that owns the screen there is worth one
+process asleep on sway's socket. Said here so that nobody removes them as dead
+or takes them for the ordinary path.
+
+That retry had a way of producing exactly that case until the audit. It
+started a second gamescope and asked for Big Picture straight away, before the
+Steam inside it was a process, and `steam steam://open/bigpicture` with no
+Steam to hand it to starts one, outside gamescope. The script now sends nothing
+while no Steam is running, and every place that shuts Steam down checks first
+and waits the shutdown out. sway also starts Sunshine only once the session's
+display has been imported into the user manager, in one command, where the
+two used to be separate lines that sway starts at once.
 
 ## The client with no keyboard and no mouse
 
@@ -1286,6 +1497,16 @@ is what this did first, meant the helper worked until the first person stopped
 playing and was dead to everybody after that. It rescans every two seconds, and
 when the last pad disappears it releases whatever was held and switches the
 mode off, so the next person does not inherit a pointer they never asked for.
+
+A pad can also disappear in the middle of a rescan, which is when Sunshine takes
+it away at the end of a stream, and until the audit that ended the helper for
+the rest of the session: only the open was guarded, not the two capability
+queries after it. Both are now, and the session starts the helper through a
+loop that starts it again when it dies after running for a while; one that dies
+within half a minute is left dead, since that is a helper that cannot run here
+at all. It also stopped turning over ninety times a second for the whole
+session. It does that only while a stick is off centre or a chord is counting,
+and otherwise sleeps until the next rescan.
 
 Written rather than configured, and that was a deliberate change of mind. The
 obvious answer is an existing remapper, and two were tried. sc-controller ships
@@ -1494,6 +1715,22 @@ waits for a seat to be free first, gives up on one that never is after five
 minutes and says so on that seat, and carries on past a seat that fails rather
 than abandoning the rest.
 
+**What a seat is behind on** is a `pacman -Sy` inside it, so it is asked every
+six hours and two minutes after the daemon starts, off the main loop and at most
+one pass at a time. Each seat's turn and the "Check for updates" button go
+through the seat's `asking` lane, which an operation cancels and waits out, so
+a Stop no longer brings a container down under a running `pacman -Sy`. The
+button waits for a pass already asking rather than refusing, since that pass is
+answering the same question within two minutes.
+
+**And the end of a build writes back only what it learned.** A build used to
+read the seat's record, provision for minutes, and write that same copy back,
+which silently undid anything saved in between, a label, a pointer speed, an
+address, and marked the seat current even when the change was one only
+provisioning applies. It now reads the record again and sets only the
+generation and the uid; when a setting provisioning applies changed while it
+ran, the seat stays marked as needing provisioning and the log says why.
+
 **Who is streaming, on the seat's own card.** Asked of Sunshine first, which does
 not answer it: `/api/session`, `/api/sessions`, `/api/status` and
 `/api/clients/active` are all 404 on the version in a seat, `/api/clients/list`
@@ -1502,7 +1739,11 @@ level records the encoder and the bitrate and never the client. So it is written
 down where it is known instead. Sunshine's prep commands run when a stream starts
 and again when it ends, with the client's size, framerate and HDR in their
 environment and the name of the application it asked for, and `polyseat-session`
-puts that in a file for as long as the stream lasts.
+puts that in a file for as long as the stream lasts. The names are whatever an
+application or a client is called, so control characters in them become spaces
+and the size and framerate are written only when they are digits; a line break
+in a name used to make the file invalid JSON, and the card lost what was being
+played and by whom.
 
 **The name comes from Sunshine now**, and this document said for a long time
 that it could not. Since 2026.906.222525 Sunshine puts the paired name of the
@@ -1600,6 +1841,37 @@ success. It now stops the seats first, rolls back everything from the first
 change on any failure, and calls it a success only when the interface really is
 a port, the bridge really has the address, and the gateway really answers over
 it.
+
+**It also refuses a `br0` that is not its own.** `br0` is the most ordinary
+bridge name there is, and the script never asked whether one existed: on a
+machine with a `br0` made by hand or from libvirt's documentation it added a
+second profile for the same interface, and the two raced at every boot. It now
+stops before any seat is stopped when an interface called `br0` exists, when a
+profile other than its own names it, or when a profile of its own is left from
+an earlier run, which is what `--undo` is for. The one step that was left to
+`set -e`, switching the old uplink profile's autoconnect off, rolls back like
+every other step after the bridge exists. And the run's output no longer waits
+for a child the script left behind: the interface showed a bridge run as in
+progress, and refused the next one, for as long as such a child lived.
+
+**The management bridge is made once.** Every autostarting seat starts in its
+own goroutine and arranges its management interface, so on a host with no
+usable bridge they all looked, all found nothing and all asked Incus to make
+`polyseatbr0`, and every one but the first failed and was left without a path
+back to the daemon. Looking and creating are one step under a lock now, and a
+create that fails is looked at again, since a second daemon or somebody's own
+`incus` command is outside the lock. `polyseat-uninstall --seats` removes
+`polyseatbr0` after the seats, but only when Incus counts nobody still using
+it, profiles included; the LAN bridge from `lan-bridge.sh` is kept and named
+in its summary, because taking the host's own network away from a script that
+may be running over it is how a machine ends up off it.
+
+**A static address is parsed, not pattern matched.** The address and the
+gateway are written into the seat's `systemd-networkd` file, and the only check
+was that the address contained a slash, which an address followed by a line
+break and any directive at all passed. Both go through `netip` now and have to
+be the same family, and a gateway without an address is refused, since it
+would be stored and shown and never written anywhere.
 
 **Which side of the line a seat is on is a checkbox on the seat**, on for a new
 one. A seat with it off gets a macvlan on the bridge rather than a port on it,
