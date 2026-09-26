@@ -127,10 +127,22 @@ SUBSYSTEM=="input", ATTRS{name}=="libvirtualhid*",  GOTO="polyseat_hide"
 # So the event node was pinned to root while its hidraw sibling kept an access
 # control entry for the desktop user, and a seat's controller reached the host's
 # Steam, which is exactly how Steam reads a DualSense.
-SUBSYSTEM=="hidraw", ATTRS{name}=="polyseat:*",      GOTO="polyseat_hide"
-SUBSYSTEM=="hidraw", ATTRS{name}=="*passthrough*",   GOTO="polyseat_hide"
-SUBSYSTEM=="hidraw", ATTRS{name}=="Sunshine*",       GOTO="polyseat_hide"
-SUBSYSTEM=="hidraw", ATTRS{name}=="libvirtualhid*",  GOTO="polyseat_hide"
+#
+# By HID_NAME, and not by ATTRS{name} as these lines first were. A hidraw node
+# and the hid device above it have no "name" attribute at all, so the pattern
+# had nothing to compare against and these four lines never fired once. The
+# name a hid device carries is HID_NAME, a property from its uevent and not an
+# attribute, which is why ATTRS cannot see it and IMPORT{parent} can: it copies
+# the parent's properties onto the hidraw event, and the parent of a hidraw node
+# is always its hid device. Checked on the host with udevadm info against a
+# real headset, and with udevadm test and a copy of this file that named it:
+# with the ATTRS form 73-seat-late.rules still ran the uaccess builtin on the
+# node, with this form the node came out root 0600 and uaccess never ran.
+SUBSYSTEM=="hidraw", IMPORT{parent}="HID_NAME"
+SUBSYSTEM=="hidraw", ENV{HID_NAME}=="polyseat:*",      GOTO="polyseat_hide"
+SUBSYSTEM=="hidraw", ENV{HID_NAME}=="*passthrough*",   GOTO="polyseat_hide"
+SUBSYSTEM=="hidraw", ENV{HID_NAME}=="Sunshine*",       GOTO="polyseat_hide"
+SUBSYSTEM=="hidraw", ENV{HID_NAME}=="libvirtualhid*",  GOTO="polyseat_hide"
 GOTO="polyseat_end"
 
 LABEL="polyseat_hide"
