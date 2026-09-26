@@ -29,7 +29,12 @@ const hostMember = "host"
 // good way to decide which copy is the real one. The others stay what they were
 // before, libraries the pool takes games from, and the interface says which one
 // receives.
-func (m *Manager) hostMembers() []library.Member {
+//
+// probe says whether to find out if the files may be replaced right now. Only
+// a pass acts on that answer, and asking it is a walk over every process the
+// owner has, twice; the interface reading the pool wants the names and the
+// directories and nothing else.
+func (m *Manager) hostMembers(probe bool) []library.Member {
 	if m.pool == nil {
 		return nil
 	}
@@ -70,9 +75,14 @@ func (m *Manager) hostMembers() []library.Member {
 		// directory on the strength of that answer. hostIdle takes the
 		// directory it is asked about, so the same probe covers it; an empty
 		// path is nobody's and answers yes.
-		Updatable: hostIdle(apps, uid) && hostIdle(folders, uid),
+		Updatable: probe && probeHost(apps, uid) && probeHost(folders, uid),
 	}}
 }
+
+// probeHost is hostIdle, as a variable so that a test can see whether it was
+// asked at all. The question it answers is expensive enough that asking it
+// where nothing acts on the answer is the thing worth catching.
+var probeHost = hostIdle
 
 // hostSharedDir is where the host keeps the launcher agnostic folders, below
 // the home of whoever owns the library the pool gives games to.

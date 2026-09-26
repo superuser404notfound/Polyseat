@@ -393,6 +393,65 @@ func TestAdoptHostLibraryIsOneDecision(t *testing.T) {
 	}
 }
 
+// The interface reads the pool on every change the daemon pushes, several times
+// a second while a seat is being built. Whether a member's files may be replaced
+// is a walk over /proc on the host and an exec into every running seat, and
+// nothing the interface shows depends on it, so reading the pool must not ask.
+func TestLibraryDoesNotProbe(t *testing.T) {
+	root := reflinkDirFor(t)
+
+	pool, err := library.Open(filepath.Join(root, "library"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	host := filepath.Join(root, "home", "player", ".local", "share", "Steam", "steamapps")
+	if err := os.MkdirAll(filepath.Join(host, "common"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := pool.AddSource(host, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	asked := 0
+
+	defer func(was func(string, int) bool) { probeHost = was }(probeHost)
+
+	probeHost = func(string, int) bool {
+		asked++
+
+		return true
+	}
+
+	m := &Manager{
+		pool:  pool,
+		store: store,
+		log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	status := m.Library()
+
+	if asked != 0 {
+		t.Errorf("reading the pool for the interface probed the host %d times", asked)
+	}
+
+	if status.Receiving != host {
+		t.Errorf("receiving = %q, want %q", status.Receiving, host)
+	}
+
+	// And the seam is the one a pass goes through, or the zero above would
+	// prove nothing.
+	if members := m.members(true); len(members) != 1 || !members[0].Updatable || asked == 0 {
+		t.Errorf("a pass did not probe the host: %d asks, %+v", asked, members)
+	}
+}
+
 // reflinkDirFor is the seat package's copy of the library package's rule: a
 // scratch directory that can actually share blocks, since the adoption is gated
 // on measuring exactly that and /tmp is tmpfs on most machines.

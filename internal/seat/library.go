@@ -277,13 +277,19 @@ func (m *Manager) openLibrary() {
 // on the host filesystem: a game installed in one seat reaches the others
 // whether or not anybody is sitting at them. A seat with no container yet is
 // skipped, since there is no mapping to read and nothing to share.
-func (m *Manager) members() []library.Member {
+//
+// probe is whether to ask each member if its files may be replaced now, which
+// is an exec into every running seat and two walks over /proc for the host.
+// A pass needs that answer. The interface does not: it reads the pool on every
+// change the daemon pushes, which during a provisioning run is several times a
+// second, and Inventory never looks at Updatable.
+func (m *Manager) members(probe bool) []library.Member {
 	seats, err := m.store.List()
 	if err != nil {
 		return nil
 	}
 
-	out := m.hostMembers()
+	out := m.hostMembers(probe)
 
 	for _, s := range seats {
 		if !s.Library {
@@ -312,7 +318,7 @@ func (m *Manager) members() []library.Member {
 		out = append(out, library.Member{
 			Name:      s.Name,
 			Owner:     library.Owner{UID: int(hostUID), GID: int(hostGID)},
-			Updatable: m.libraryIdle(s.Name),
+			Updatable: probe && m.libraryIdle(s.Name),
 		})
 	}
 
@@ -491,7 +497,7 @@ func (m *Manager) syncLibrary(ctx context.Context) {
 	// in this pass rather than in the next one.
 	m.adoptHostLibrary()
 
-	members := m.members()
+	members := m.members(true)
 	if len(members) == 0 {
 		return
 	}
@@ -586,17 +592,24 @@ func (m *Manager) Library() LibraryStatus {
 		return LibraryStatus{Available: false, Problem: m.libraryErr}
 	}
 
-	inv, err := m.pool.Inventory(m.members())
+	members := m.members(false)
+
+	inv, err := m.pool.Inventory(members)
 	if err != nil {
 		return LibraryStatus{Available: false, Problem: err.Error()}
 	}
 
 	sources := m.pool.Sources()
 
+	// Out of the list just built rather than by asking again, which is what
+	// this used to do: a second stat of the library and, back when the list
+	// carried the idle probe, a second walk over /proc for a path.
 	var receiving string
 
-	if hosts := m.hostMembers(); len(hosts) > 0 {
-		receiving = hosts[0].Apps
+	for _, member := range members {
+		if member.Name == hostMember {
+			receiving = member.Apps
+		}
 	}
 
 	return LibraryStatus{
