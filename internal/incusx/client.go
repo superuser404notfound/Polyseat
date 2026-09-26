@@ -743,6 +743,22 @@ func (c *Client) Try(ctx context.Context, name string, argv ...string) (string, 
 	return out.String(), code, err
 }
 
+// TryInput is Try with something on standard input, and with the two output
+// streams kept apart.
+//
+// Apart, because what this is for is a helper that answers in JSON on standard
+// output, and a single warning on standard error mixed into that answer makes
+// all of it unreadable. Standard input, because an argument has a ceiling: the
+// kernel refuses a command line with one string over 128 KiB, and a list of
+// every game in a seat can be longer than that.
+func (c *Client) TryInput(ctx context.Context, name string, stdin []byte, argv ...string) (stdout, stderr string, code int, err error) {
+	out, errOut := &syncBuffer{}, &syncBuffer{}
+
+	code, err = c.Exec(ctx, name, argv, bytes.NewReader(stdin), out, errOut)
+
+	return out.String(), errOut.String(), code, err
+}
+
 // syncBuffer collects standard output and standard error together.
 //
 // It has to be locked. The client copies the two streams from two goroutines,

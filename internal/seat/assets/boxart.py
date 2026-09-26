@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """polyseat-boxart - turn whatever artwork a seat has into cards Moonlight shows.
 
-Reads a JSON list of {"key", "source", "label", "steam", "fallback"} on the
-command line and prints {"key": "/path/to/card.png"} for the ones it could
+Reads a JSON list of {"key", "source", "label", "steam", "fallback"} on
+standard input and prints {"key": "/path/to/card.png"} for the ones it could
 make. "source" is artwork already on disk, "steam" is an application id to
 fetch a cover for when there is none, and "fallback" is an icon to use when
 there is no cover to be had anywhere.
@@ -386,15 +386,39 @@ def sweep(keep):
             pass
 
 
+def request():
+    """The list to work on.
+
+    Standard input, because the daemon's list is every game in the seat and an
+    argument has a ceiling: one string on a command line may be 128 KiB, and a
+    large library passes that, at which point the command does not run at all.
+    The first argument is still read when nothing arrives on standard input,
+    which is what a daemon from before this sends to a seat built after it.
+    """
+    data = ""
+
+    if sys.stdin is not None and not sys.stdin.isatty():
+        data = sys.stdin.read()
+
+    if not data.strip() and len(sys.argv) > 1:
+        data = sys.argv[1]
+
+    return json.loads(data) if data.strip() else []
+
+
 def main():
-    if len(sys.argv) < 2:
+    items = request()
+
+    # Nothing asked for is not the same as nothing found, and sweeping on it
+    # would throw away every card in the seat.
+    if not items:
         print("{}")
         return
 
     out = {}
     budget = {"left": FETCH_BUDGET}
 
-    for item in json.loads(sys.argv[1]):
+    for item in items:
         try:
             path = build(item, budget)
         except Exception:

@@ -321,3 +321,85 @@ func iconsHelper(t *testing.T) (string, string) {
 
 	return python, dir
 }
+
+// appinfo.vdf is a megabyte and a half and the helper runs every minute. The
+// hash that names an icon file is inside it, so the first version read it on
+// nearly every pass while its docstring said the opposite. The few values
+// wanted from it are kept beside the icons now, and Steam's file is only read
+// again when it has changed or a title is asked about that the copy lacks.
+const iconsCacheDriver = iconsPrelude + `
+root = sys.argv[2]
+workspace(root)
+
+build_appinfo(icons.APPINFO, {"1562430": {
+    "clienticon": "581c0734616454644f2d1a7f7f47ec56cbecade8",
+    "icon": "c8b352e87c28aa9ffe3a4641b230beb5064a49e6",
+}})
+
+reads = []
+real = icons.vdf_apps
+
+
+def counted(data, wanted):
+    reads.append(sorted(wanted))
+
+    return real(data, wanted)
+
+
+icons.vdf_apps = counted
+
+
+def ask(*appids):
+    info = icons.AppInfo(set(appids))
+
+    return info.of(appids[0])
+
+
+answers = []
+
+# The first pass has nothing kept and reads the file.
+answers.append(ask("1562430"))
+# The second is the minute timer, and has everything it needs.
+answers.append(ask("1562430"))
+# A title Steam knows nothing about is asked for once, then remembered as that.
+answers.append(ask("1562430", "999"))
+answers.append(ask("1562430", "999"))
+# Steam writes its file, and what was kept may be stale.
+st = os.stat(icons.APPINFO)
+os.utime(icons.APPINFO, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+answers.append(ask("1562430", "999"))
+
+print(json.dumps({"reads": len(reads), "answers": answers}))
+`
+
+func TestIconsReadAppinfoOnlyWhenWhatWasKeptIsOutOfDate(t *testing.T) {
+	python, dir := iconsHelper(t)
+
+	out, err := exec.Command(python, "-c", iconsCacheDriver,
+		filepath.Join(dir, "icons.py"), dir).CombinedOutput()
+	if err != nil {
+		t.Fatalf("the helper failed: %v\n%s", err, out)
+	}
+
+	var result struct {
+		Reads   int                 `json:"reads"`
+		Answers []map[string]string `json:"answers"`
+	}
+
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("the driver printed %q: %v", out, err)
+	}
+
+	// The first pass, the new title, and the file changing. Not the minute
+	// timer, and not the unknown title a second time.
+	if result.Reads != 3 {
+		t.Errorf("read appinfo.vdf %d times over five passes, want 3", result.Reads)
+	}
+
+	for i, answer := range result.Answers {
+		if answer["clienticon"] != "581c0734616454644f2d1a7f7f47ec56cbecade8" ||
+			answer["icon"] != "c8b352e87c28aa9ffe3a4641b230beb5064a49e6" {
+			t.Errorf("pass %d answered %v, want what appinfo.vdf says", i+1, answer)
+		}
+	}
+}
