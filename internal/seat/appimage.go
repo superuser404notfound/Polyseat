@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
 )
@@ -489,14 +490,20 @@ if __name__ == "__main__":
     main()
 `
 
+// appImagePatience bounds the AppImage scan, longer than the others because
+// its first look at a new file unpacks part of it. That happens once per file
+// and build; after it the answer comes out of the cache in the time the other
+// scans take.
+const appImagePatience = 5 * time.Minute
+
 // scanAppImages asks a seat what it has in ~/Applications.
 //
 // Takes the client rather than hanging off either the manager or the
 // provisioner, because both need the same answer: the provisioner to build the
 // app list, the manager to draw the software panel.
 func scanAppImages(ctx context.Context, client *incusx.Client, seat string) ([]AppImage, error) {
-	out, code, err := client.Try(ctx, seat, "sudo", "-u", Player, "env",
-		"HOME=/home/"+Player, "python3", "-c", appImageScan)
+	out, code, err := look(ctx, client, seat, appImagePatience,
+		pythonScan(appImagePatience, appImageScan)...)
 	if err != nil {
 		return nil, err
 	}
@@ -661,7 +668,7 @@ func (m *Manager) InstallAppImage(name, rawURL string) error {
 		}
 
 		if _, code, err := m.client.Try(ctx, name, m.playerEnv(
-			"python3", "-c", appImageProbe, part)...); err != nil {
+			"python3", "-I", "-c", appImageProbe, part)...); err != nil {
 			return err
 		} else if code != 0 {
 			_, _, _ = m.client.Try(ctx, name, "rm", "-f", part)

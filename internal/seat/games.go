@@ -244,8 +244,8 @@ func steamTool(appid, name string) bool {
 
 // steamGames lists the games Steam has installed in this seat.
 func (p *Provisioner) steamGames(ctx context.Context) ([]Game, error) {
-	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
-		"HOME=/home/"+Player, "python3", "-c", steamScan)
+	out, code, err := look(ctx, p.Client, p.name(), scanPatience,
+		pythonScan(scanPatience, steamScan)...)
 	if err != nil {
 		return nil, err
 	}
@@ -367,8 +367,8 @@ func (m *lutrisMemory) remember(stamp string, games []Game) {
 // Deliberately not run as a login shell or with a display: this is a stat and
 // it must never be the thing that starts anything.
 func (p *Provisioner) lutrisState(ctx context.Context) (string, error) {
-	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
-		"HOME=/home/"+Player, "sh", "-c", lutrisProbe)
+	out, code, err := look(ctx, p.Client, p.name(), scanPatience,
+		asPlayerFor(scanPatience, "sh", "-c", lutrisProbe)...)
 	if err != nil {
 		return "", err
 	}
@@ -404,11 +404,11 @@ func (p *Provisioner) lutrisGames(ctx context.Context) ([]Game, error) {
 		return games, nil
 	}
 
-	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
-		"HOME=/home/"+Player,
-		"DISPLAY=:0",
-		fmt.Sprintf("XDG_RUNTIME_DIR=/run/user/%d", p.uid),
-		"lutris", "--list-games", "--installed", "--json")
+	out, code, err := look(ctx, p.Client, p.name(), scanPatience,
+		asPlayerFor(scanPatience, "env",
+			"DISPLAY=:0",
+			fmt.Sprintf("XDG_RUNTIME_DIR=/run/user/%d", p.uid),
+			"lutris", "--list-games", "--installed", "--json")...)
 	if err != nil {
 		return nil, err
 	}

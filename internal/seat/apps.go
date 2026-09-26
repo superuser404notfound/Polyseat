@@ -1,12 +1,18 @@
 package seat
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/superuser404notfound/Polyseat/internal/incusx"
 )
 
 // AppsPath is the list Moonlight shows when it connects to a seat.
@@ -624,6 +630,124 @@ for want in json.loads(sys.argv[1]):
 print(json.dumps(out))
 `
 
+// scanPatience is how long one look into a seat may take before the seat ends
+// it.
+//
+// Every scan behind the app list reads files the player owns: Steam's
+// manifests, Lutris's configuration, desktop entries, the contents of
+// ~/Applications. Any of them can be made a FIFO, and a read of a FIFO nobody
+// writes to never returns. These run from the sweep, which visits every seat in
+// turn, so one scan that never returned used to stop the daemon noticing
+// anything about any seat, for good. A minute is several times what the
+// slowest of them has been seen to take, which is Lutris starting GTK to print
+// a list.
+const scanPatience = time.Minute
+
+// scanLimit is the most one look may answer with.
+//
+// The answers are lists of games and paths, a few kilobytes on a seat with a
+// large library. What is printed is also the player's to decide, so without a
+// bound this would be a way to make the daemon hold as much memory as a seat
+// cares to send it.
+const scanLimit = 16 << 20
+
+// asPlayerFor is the argv for a scan that runs as the player and is ended by
+// the seat itself when it overstays.
+//
+// Inside the seat and not only here, because a deadline on this side only
+// stops the daemon waiting: Incus does not end a command whose caller has gone
+// away, so the scan would sit in the seat on its FIFO and the next minute would
+// add another. timeout runs as the player, below sudo, so what it kills is the
+// player's own process group and nothing that sudo would have to pass a signal
+// on to.
+func asPlayerFor(limit time.Duration, argv ...string) []string {
+	return append([]string{
+		"sudo", "-u", Player, "env", "HOME=/home/" + Player,
+		"timeout", "-k", "5", strconv.Itoa(int(limit / time.Second)),
+	}, argv...)
+}
+
+// pythonScan is a Python scan run as the player, isolated from the player.
+//
+// -I because the scan runs as the player with the player's HOME, and Python
+// imports from there by default: usercustomize.py, and any .pth file, in
+// ~/.local/lib/python3.*/site-packages are run before the first line of the
+// scan. That is no more than the player can already do as themselves, but it
+// let them decide what the daemon was told and when it was told it. -I leaves
+// out the user's site directory and every PYTHON* variable, and keeps the
+// system's site-packages, which the scans do not need and which the player
+// cannot write.
+func pythonScan(limit time.Duration, script string, args ...string) []string {
+	return asPlayerFor(limit, append([]string{"python3", "-I", "-c", script}, args...)...)
+}
+
+// look runs one scan inside a seat and answers what it printed.
+//
+// The daemon's own deadline sits a little beyond the seat's, so that the seat
+// ending the scan is the ordinary way out and this one is only for an exec that
+// hangs on the Incus side.
+func look(ctx context.Context, client *incusx.Client, seat string, limit time.Duration, argv ...string) (string, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, limit+15*time.Second)
+	defer cancel()
+
+	out := &cappedBuffer{limit: scanLimit}
+
+	code, err := client.Exec(ctx, seat, argv, nil, out, out)
+	if err != nil {
+		return "", code, err
+	}
+
+	if out.over() {
+		return "", code, fmt.Errorf("the seat answered with more than %d bytes, which no scan here produces", scanLimit)
+	}
+
+	return out.String(), code, nil
+}
+
+// cappedBuffer collects output up to a limit and remembers going past it.
+//
+// It keeps reading after the limit rather than failing the write. A writer
+// that fails makes the Incus client stop reading its end of the stream, and the
+// command in the seat then blocks on a full pipe instead of finishing, which is
+// the hang this exists to prevent in another shape.
+type cappedBuffer struct {
+	mu    sync.Mutex
+	buf   bytes.Buffer
+	limit int
+	past  bool
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if room := b.limit - b.buf.Len(); room < len(p) {
+		b.past = true
+
+		if room > 0 {
+			b.buf.Write(p[:room])
+		}
+
+		return len(p), nil
+	}
+
+	return b.buf.Write(p)
+}
+
+func (b *cappedBuffer) over() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.past
+}
+
+func (b *cappedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
 // installedLaunchers asks the seat what it has.
 //
 // One call rather than one per launcher: this runs on every seat start, and an
@@ -647,8 +771,8 @@ exit 0`
 	// As the player with HOME set, because a flatpak installed into the user
 	// installation is invisible to root: `flatpak list` as root reports the
 	// system installation, which in a seat is empty.
-	out, _, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
-		"HOME=/home/"+Player, "sh", "-c", script)
+	out, _, err := look(ctx, p.Client, p.name(), scanPatience,
+		asPlayerFor(scanPatience, "sh", "-c", script)...)
 	if err != nil {
 		return nil, err
 	}
@@ -749,8 +873,8 @@ func (p *Provisioner) launcherIcons(ctx context.Context, want any) map[string]st
 		return nil
 	}
 
-	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
-		"HOME=/home/"+Player, "python3", "-c", iconScan, string(query))
+	out, code, err := look(ctx, p.Client, p.name(), scanPatience,
+		pythonScan(scanPatience, iconScan, string(query))...)
 	if err != nil || code != 0 {
 		return nil
 	}
@@ -905,14 +1029,31 @@ func (p *Provisioner) foreignEntries(ctx context.Context) string {
 		"/var/lib/flatpak/exports/share/applications",
 	}
 
-	out, code, err := p.Client.Try(ctx, p.name(), "sh", "-c",
-		"find "+strings.Join(dirs, " ")+" -maxdepth 1 -name '*.desktop' "+
-			"! -name '"+entryPrefix+"*' -exec grep -h '^Exec=' {} + 2>/dev/null")
+	// As the player, because two of those directories are theirs and nothing
+	// in any of them needs root to read.
+	out, code, err := look(ctx, p.Client, p.name(), scanPatience,
+		asPlayerFor(scanPatience, "sh", "-c", foreignScan(dirs))...)
 	if err != nil || code > 1 {
 		return ""
 	}
 
 	return out
+}
+
+// foreignScan is the command behind foreignEntries.
+//
+// -D skip is what makes it safe to run over a directory the player writes to.
+// Without it a FIFO called anything.desktop is handed to grep, which opens it
+// and waits for a writer that never comes, and the sweep that asked waited with
+// it. With it grep opens every file non-blocking and looks at what it got
+// before reading, which answers for a symlink to a FIFO as well, and for one
+// swapped in after find has passed. A -type f on find was the other way and
+// was not taken: it asks before grep opens the file, so the swap gets through,
+// and the flatpak exports are symlinks that it would have dropped.
+func foreignScan(dirs []string) string {
+	return "find " + strings.Join(dirs, " ") + " -maxdepth 1 -name '*.desktop' " +
+		"! -name '" + entryPrefix + "*' " +
+		"-exec grep -h -D skip '^Exec=' {} + 2>/dev/null"
 }
 
 // alreadyListed reports whether one of those commands starts the same game.
