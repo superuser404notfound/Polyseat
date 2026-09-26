@@ -1,6 +1,7 @@
 package seat
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -146,8 +147,40 @@ func ValidateDropPath(rel string) (string, error) {
 // worth measuring. *incusx.Client is the real one.
 type filer interface {
 	Status(name string) (string, error)
+	FileType(name, path string) (string, error)
 	MakeDir(name, path string, mode int, uid, gid int64) error
 	PushStream(name, path string, content io.Reader, mode int, uid, gid int64) error
+	Exec(ctx context.Context, name string, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error)
+}
+
+// dropScript writes one file into the seat as the player, from standard input:
+// an upload, or a file of the daemon's own that lives in the player's home.
+//
+// As the player rather than through the Incus file API, and that is a security
+// property rather than a matter of ownership. The file API writes as root and
+// follows symlinks, and it gives a file it creates to the uid it was asked for:
+// a player who made ~/Downloads/x a link to /etc/ld.so.preload and then had
+// somebody upload x would own that file, which in a container is root. Written
+// by the player, a link leads only where the player could already write.
+//
+// Into a temporary name first and then moved over the destination. mv replaces
+// a symlink standing at the destination rather than writing through it, -T
+// refuses a directory standing there instead of moving the file into it, and a
+// failed upload leaves nothing half written with the real name on it.
+const dropScript = `d=$(dirname -- "$1")
+mkdir -p -- "$d" || exit 1
+t=$(mktemp -- "$d/.polyseat-write.XXXXXX") || exit 1
+if cat > "$t" && chmod 0644 -- "$t" && mv -fT -- "$t" "$1"; then
+	exit 0
+fi
+rm -f -- "$t"
+exit 1
+`
+
+// playerDrop is the argv that runs dropScript for one destination.
+func playerDrop(dest string) []string {
+	return []string{"sudo", "-u", Player, "env", "HOME=/home/" + Player,
+		"sh", "-c", dropScript, "sh", dest}
 }
 
 func (m *Manager) filer() filer {
@@ -238,21 +271,31 @@ func (m *Manager) Receive(name string, files Uploads) (Received, error) {
 
 		dest := DropDir + "/" + rel
 
-		if dir := path.Dir(dest); !made[dir] {
-			if err := into.MakeDir(name, dir, 0o755, s.PlayerUID, s.PlayerUID); err != nil {
-				return got, err
-			}
-
-			made[dir] = true
-		}
-
 		counted := &counter{r: up.Body}
+
+		// Asked again for every file, because the answer decides how the file
+		// is written and a seat can be started in the middle of a folder.
+		status, err := into.Status(name)
+		if err != nil {
+			return got, err
+		}
 
 		// A failure here stops the whole drop rather than joining Skipped. What
 		// reaches this point has a name the seat accepts, so what fails is the
-		// container, the connection or the disk, and none of those is going to
-		// be different for the next file.
-		if err := into.PushStream(name, dest, counted, 0o644, s.PlayerUID, s.PlayerUID); err != nil {
+		// container, the connection, the disk, or a link the player put in the
+		// way, and none of those is going to be different for the next file.
+		switch status {
+		case "Running":
+			// No deadline: an upload lasts as long as somebody's uplink needs,
+			// and the body ends when the browser stops sending.
+			err = writeAsPlayer(context.Background(), into, name, dest, counted)
+		case "Stopped":
+			err = dropIntoStopped(into, name, dest, made, s.PlayerUID, counted)
+		default:
+			err = fmt.Errorf("the seat is %s, try again in a moment", strings.ToLower(status))
+		}
+
+		if err != nil {
 			return got, fmt.Errorf("%s could not be written into the seat: %w", rel, err)
 		}
 
@@ -284,6 +327,91 @@ func (m *Manager) Receive(name string, files Uploads) (Received, error) {
 	m.notify()
 
 	return got, nil
+}
+
+// execer is the one call writeAsPlayer needs, which both the Incus client and
+// the upload's test seam have.
+type execer interface {
+	Exec(ctx context.Context, name string, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error)
+}
+
+// writeAsPlayer writes one file into a running seat through dropScript.
+//
+// Used for everything the daemon puts in the player's home while the seat
+// runs, uploads and the app list alike, for the reason dropScript gives.
+func writeAsPlayer(ctx context.Context, into execer, name, dest string, body io.Reader) error {
+	complaint := &cappedBuffer{limit: 4096}
+
+	code, err := into.Exec(ctx, name, playerDrop(dest), body, io.Discard, complaint)
+	if err != nil {
+		return err
+	}
+
+	if code != 0 {
+		return fmt.Errorf("the seat said: %s", lastLines(complaint.String(), 2))
+	}
+
+	return nil
+}
+
+// dropIntoStopped writes one file into a seat that is switched off, through
+// the Incus file API, after making sure no link stands anywhere on the way.
+//
+// There is no player to write as when nothing in the seat runs, and the file
+// API follows links and hands what it creates to the player, see dropScript.
+// So every folder from the home down and the destination itself is looked at
+// first, without following anything, and a link anywhere stops the file.
+//
+// Looking first and writing second is only sound because the seat is off:
+// nothing inside it runs that could put a link there in between. That is also
+// why the caller asks for the state before every file rather than once, and
+// takes the other road the moment the seat is running.
+func dropIntoStopped(into filer, name, dest string, made map[string]bool, uid int64, body io.Reader) error {
+	dir := path.Dir(dest)
+
+	if !made[dir] {
+		walked := ""
+
+		for _, part := range strings.Split(strings.Trim(dir, "/"), "/") {
+			walked += "/" + part
+
+			// Everything above the home is the image's, and nothing the
+			// player can change.
+			if !strings.HasPrefix(walked+"/", "/home/"+Player+"/") {
+				continue
+			}
+
+			if made[walked] {
+				continue
+			}
+
+			kind, err := into.FileType(name, walked)
+			if err != nil {
+				return err
+			}
+
+			switch kind {
+			case "directory":
+			case "":
+				if err := into.MakeDir(name, walked, 0o755, uid, uid); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("%s in the seat is a %s rather than a folder, so nothing is written through it", walked, kind)
+			}
+
+			made[walked] = true
+		}
+	}
+
+	switch kind, err := into.FileType(name, dest); {
+	case err != nil:
+		return err
+	case kind != "" && kind != "file":
+		return fmt.Errorf("%s in the seat is a %s, so it was not overwritten", dest, kind)
+	}
+
+	return into.PushStream(name, dest, body, 0o644, uid, uid)
 }
 
 // describeDrop is the log line's subject: the file when there was one, and how

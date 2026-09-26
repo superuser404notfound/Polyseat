@@ -1,11 +1,15 @@
 package seat
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -148,6 +152,10 @@ type pushed struct {
 	gid  int64
 	mode int
 	body string
+
+	// player is set when the file was written by the player inside the seat
+	// rather than through the file API as root.
+	player bool
 }
 
 // fakeFiler is a container that only remembers what was written to it, so that
@@ -158,6 +166,11 @@ type fakeFiler struct {
 	dirs  []string
 	files []pushed
 
+	// types is what FileType answers for a path; anything not in it is not
+	// there. asked counts the questions per path.
+	types map[string]string
+	asked map[string]int
+
 	// failOn makes the write of one path fail, which is the case that has to
 	// stop the whole drop rather than skip a file.
 	failOn string
@@ -165,10 +178,50 @@ type fakeFiler struct {
 
 func (f *fakeFiler) Status(string) (string, error) { return f.status, nil }
 
+func (f *fakeFiler) FileType(_, p string) (string, error) {
+	if f.asked == nil {
+		f.asked = map[string]int{}
+	}
+
+	f.asked[p]++
+
+	return f.types[p], nil
+}
+
 func (f *fakeFiler) MakeDir(_, dir string, _ int, _, _ int64) error {
 	f.dirs = append(f.dirs, dir)
 
+	if f.types == nil {
+		f.types = map[string]string{}
+	}
+
+	f.types[dir] = "directory"
+
 	return nil
+}
+
+// Exec stands in for dropScript run as the player. The destination is the
+// argument after the script, which is what the real command reads as $1.
+func (f *fakeFiler) Exec(_ context.Context, _ string, argv []string, stdin io.Reader, _, _ io.Writer) (int, error) {
+	want := playerDrop("")
+	if len(argv) != len(want) || strings.Join(argv[:len(argv)-1], "\x00") != strings.Join(want[:len(want)-1], "\x00") {
+		return -1, fmt.Errorf("an unexpected command: %q", argv)
+	}
+
+	dest := argv[len(argv)-1]
+
+	body, err := io.ReadAll(stdin)
+	if err != nil {
+		return -1, err
+	}
+
+	if dest == f.failOn {
+		return 1, nil
+	}
+
+	f.files = append(f.files, pushed{path: dest, mode: 0o644, body: string(body), player: true})
+
+	return 0, nil
 }
 
 func (f *fakeFiler) PushStream(_, dest string, content io.Reader, mode int, uid, gid int64) error {
@@ -245,9 +298,11 @@ func TestAnUploadLandsInDownloadsOwnedByThePlayer(t *testing.T) {
 		t.Errorf("the drop was reported as %d files and %d bytes", got.Files, got.Bytes)
 	}
 
+	// Written by the player, which is what makes them the player's, and never
+	// through the file API as root while there is a player to write as.
 	want := []pushed{
-		{path: DropDir + "/save.zip", uid: 1000, gid: 1000, mode: 0o644, body: "the save"},
-		{path: DropDir + "/load/0100/Textures/a.bfres", uid: 1000, gid: 1000, mode: 0o644, body: "the mod"},
+		{path: DropDir + "/save.zip", mode: 0o644, body: "the save", player: true},
+		{path: DropDir + "/load/0100/Textures/a.bfres", mode: 0o644, body: "the mod", player: true},
 	}
 
 	if !reflect.DeepEqual(files.files, want) {
@@ -256,10 +311,12 @@ func TestAnUploadLandsInDownloadsOwnedByThePlayer(t *testing.T) {
 }
 
 // A folder of several hundred files is several hundred files in a handful of
-// directories, and asking Incus to create each of those once per file is a
-// round trip for every answer nobody reads.
+// directories, and asking Incus about each of those once per file is a round
+// trip for every answer nobody reads. Only a seat that is off is asked at all.
 func TestAnUploadAsksForEachFolderOnce(t *testing.T) {
-	files := &fakeFiler{status: "Running"}
+	files := &fakeFiler{status: "Stopped", types: map[string]string{
+		"/home": "directory", "/home/" + Player: "directory",
+	}}
 	m := receiver(t, 1000, files)
 
 	var sent [][2]string
@@ -271,8 +328,50 @@ func TestAnUploadAsksForEachFolderOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(files.dirs) != 1 {
-		t.Errorf("%d files in one folder asked for it %d times: %v", len(sent), len(files.dirs), files.dirs)
+	for p, n := range files.asked {
+		if strings.HasSuffix(p, ".dat") {
+			continue
+		}
+
+		if n != 1 {
+			t.Errorf("%s was asked about %d times for %d files", p, n, len(sent))
+		}
+	}
+
+	if len(files.dirs) != 3 {
+		t.Errorf("created %v, want Downloads, save and save/user once each", files.dirs)
+	}
+}
+
+// A seat that is off is written through the file API, which follows links and
+// gives what it creates to the player. A link anywhere on the way, in a folder
+// or standing at the name itself, would therefore make a file somewhere else in
+// the seat the player's. /etc/ld.so.preload owned by the player is root.
+func TestAnUploadIntoASeatThatIsOffGoesThroughNoLink(t *testing.T) {
+	for _, at := range []string{
+		"/home/" + Player,
+		DropDir,
+		DropDir + "/save",
+		DropDir + "/save/game.sav",
+	} {
+		t.Run(at, func(t *testing.T) {
+			files := &fakeFiler{status: "Stopped", types: map[string]string{
+				"/home/" + Player: "directory",
+				DropDir:           "directory",
+				DropDir + "/save": "directory",
+			}}
+			files.types[at] = "symlink"
+
+			m := receiver(t, 1000, files)
+
+			if _, err := m.Receive("living-room", &list{files: [][2]string{{"save/game.sav", "x"}}}); err == nil {
+				t.Error("a drop through a symlink was reported as working")
+			}
+
+			if len(files.files) != 0 {
+				t.Errorf("written through a symlink at %s: %+v", at, files.files)
+			}
+		})
 	}
 }
 
@@ -377,4 +476,82 @@ func TestAnUploadIntoASeatThatIsOff(t *testing.T) {
 	if len(files.files) != 1 {
 		t.Errorf("%d files reached a stopped seat", len(files.files))
 	}
+}
+
+// runDrop runs dropScript here, as whoever runs the test, the way the seat runs
+// it as the player.
+func runDrop(t *testing.T, dest, body string) error {
+	t.Helper()
+
+	cmd := exec.Command("sh", "-c", dropScript, "sh", dest)
+	cmd.Stdin = strings.NewReader(body)
+
+	return cmd.Run()
+}
+
+// The script that writes an upload as the player, against a real filesystem.
+// What matters is the symlink: one standing at the name is replaced, never
+// written through, because writing through it is how a file elsewhere in the
+// seat changes hands.
+func TestDropScript(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("an ordinary file, in a folder that is not there yet", func(t *testing.T) {
+		dest := filepath.Join(dir, "save", "user", "01.dat")
+
+		if err := runDrop(t, dest, "the save"); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := os.ReadFile(dest)
+		if err != nil || string(got) != "the save" {
+			t.Fatalf("read back %q, %v", got, err)
+		}
+
+		if info, _ := os.Stat(dest); info.Mode().Perm() != 0o644 {
+			t.Errorf("mode %v", info.Mode().Perm())
+		}
+	})
+
+	t.Run("a symlink standing at the name", func(t *testing.T) {
+		elsewhere := filepath.Join(dir, "ld.so.preload")
+		if err := os.WriteFile(elsewhere, []byte("untouched"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		dest := filepath.Join(dir, "x")
+		if err := os.Symlink(elsewhere, dest); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := runDrop(t, dest, "payload"); err != nil {
+			t.Fatal(err)
+		}
+
+		if got, _ := os.ReadFile(elsewhere); string(got) != "untouched" {
+			t.Errorf("the upload was written through the link: %q", got)
+		}
+
+		if info, err := os.Lstat(dest); err != nil || !info.Mode().IsRegular() {
+			t.Errorf("the link was not replaced by the file: %v, %v", info, err)
+		}
+	})
+
+	t.Run("a folder standing at the name", func(t *testing.T) {
+		dest := filepath.Join(dir, "folder")
+		if err := os.Mkdir(dest, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := runDrop(t, dest, "x"); err == nil {
+			t.Error("a folder was overwritten, or had the upload moved into it")
+		}
+
+		left, _ := filepath.Glob(filepath.Join(dir, ".polyseat-write.*"))
+		inside, _ := os.ReadDir(dest)
+
+		if len(left) != 0 || len(inside) != 0 {
+			t.Errorf("a failed upload left %v beside it and %d files in it", left, len(inside))
+		}
+	})
 }

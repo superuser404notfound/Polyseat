@@ -3,6 +3,7 @@ package seat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -964,5 +965,76 @@ func TestCappedBuffer(t *testing.T) {
 
 	if got := b.String(); got != "12345678" {
 		t.Errorf("kept %q", got)
+	}
+}
+
+// Reading the app list has three outcomes that must not be confused. No file
+// is an empty list; a file is the list; anything else is a reason to stop,
+// because writing on after a read that merely failed replaces somebody's own
+// entries with nothing. The script runs here against a real directory, and its
+// exit is read by the same function the daemon uses.
+func TestReadingTheAppList(t *testing.T) {
+	dir := t.TempDir()
+
+	read := func(path string) ([]byte, error) {
+		var out, complaint strings.Builder
+
+		cmd := exec.Command("sh", "-c", appsRead, "sh", path)
+		cmd.Stdout, cmd.Stderr = &out, &complaint
+
+		code := 0
+
+		if err := cmd.Run(); err != nil {
+			exit, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatal(err)
+			}
+
+			code = exit.ExitCode()
+		}
+
+		return appsAnswer(out.String(), complaint.String(), code, nil)
+	}
+
+	if got, err := read(filepath.Join(dir, "apps.json")); err != nil || got != nil {
+		t.Errorf("a seat with no list yet: %q, %v", got, err)
+	}
+
+	present := filepath.Join(dir, "present.json")
+	if err := os.WriteFile(present, []byte(stockSunshineApps), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := read(present); err != nil || string(got) != stockSunshineApps {
+		t.Errorf("a list that is there came back as %q, %v", got, err)
+	}
+
+	// Something is there and cannot be read. A directory stands in for every
+	// failure that is not absence, and is one a test can make without root.
+	folder := filepath.Join(dir, "folder.json")
+	if err := os.Mkdir(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := read(folder); err == nil {
+		t.Errorf("a list that could not be read was taken for none at all: %q", got)
+	}
+
+	// A link to nothing is the player's doing and not an empty list either.
+	dangling := filepath.Join(dir, "dangling.json")
+	if err := os.Symlink(filepath.Join(dir, "gone"), dangling); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := read(dangling); err == nil {
+		t.Error("a dangling link was taken for no list at all")
+	}
+
+	if _, err := appsAnswer(strings.Repeat("x", appsLimit+1), "", 0, nil); err == nil {
+		t.Error("a list over the limit was accepted")
+	}
+
+	if _, err := appsAnswer("", "", -1, errors.New("the seat went away")); err == nil {
+		t.Error("an exec that failed was taken for no list at all")
 	}
 }

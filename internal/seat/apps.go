@@ -175,8 +175,13 @@ func (p *Provisioner) WriteApps(ctx context.Context) ([]string, bool, error) {
 	ours, names := polyseatApps(found, games)
 
 	// A seat that has never been started has no file yet. Not an error: the
-	// merge simply has nothing to preserve.
-	existing, _ := p.Client.ReadFile(p.name(), AppsPath)
+	// merge simply has nothing to preserve. Anything else that stops the read
+	// is, because carrying on would write a list without the entries somebody
+	// added by hand, on the strength of a read that merely failed this once.
+	existing, err := p.readAppsFile(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("the current app list could not be read: %w", err)
+	}
 
 	list, kept, err := mergeApps(ours, existing)
 	if err != nil {
@@ -205,9 +210,66 @@ func (p *Provisioner) WriteApps(ctx context.Context) ([]string, bool, error) {
 		p.Log("kept %d app entry/entries that were added by hand", kept)
 	}
 
-	err = p.Client.PushFile(p.name(), AppsPath, data, 0o644, p.uid, p.uid)
+	// As the player, see dropScript: this is a path in their home, and the
+	// file API as root would follow a link they put there.
+	err = writeAsPlayer(ctx, p.Client, p.name(), AppsPath, bytes.NewReader(data))
 
 	return names, err == nil, err
+}
+
+// appsLimit is the largest app list this will read. Sunshine's own, with every
+// game on a large library in it, is tens of kilobytes.
+const appsLimit = 4 << 20
+
+// appsAbsent is what appsRead exits with when there is no file, which is the
+// one failure to read that is not a failure.
+const appsAbsent = 3
+
+// appsRead prints the app list, or exits appsAbsent when there is none.
+//
+// As the player for the same reason the write is, and so that a link the player
+// put at that name cannot show the daemon a file only root may read and have it
+// merged into a list the player can read back. One byte past the limit is read
+// so that a file too large is told apart from one exactly at it.
+var appsRead = `[ -e "$1" ] || [ -L "$1" ] || exit ` + strconv.Itoa(appsAbsent) + `
+exec head -c ` + strconv.Itoa(appsLimit+1) + ` -- "$1"
+`
+
+// readAppsFile reads the seat's app list, and answers nothing without an error
+// when there is none yet.
+//
+// Standard output on its own rather than through look, which merges the two
+// streams: a warning from sudo in front of the JSON would read as a corrupt
+// file, and a corrupt file is one the merge keeps nothing of.
+func (p *Provisioner) readAppsFile(ctx context.Context) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, scanPatience+15*time.Second)
+	defer cancel()
+
+	out := &cappedBuffer{limit: appsLimit + 1}
+	complaint := &cappedBuffer{limit: 4096}
+
+	code, err := p.Client.Exec(ctx, p.name(),
+		asPlayerFor(scanPatience, "sh", "-c", appsRead, "sh", AppsPath),
+		nil, out, complaint)
+
+	return appsAnswer(out.String(), complaint.String(), code, err)
+}
+
+// appsAnswer turns what appsRead did into the file or a reason, apart from the
+// exec so that the three outcomes can be tested without a seat.
+func appsAnswer(out, complaint string, code int, err error) ([]byte, error) {
+	switch {
+	case err != nil:
+		return nil, err
+	case code == appsAbsent:
+		return nil, nil
+	case code != 0:
+		return nil, fmt.Errorf("exit %d: %s", code, lastLines(complaint, 2))
+	case len(out) > appsLimit:
+		return nil, fmt.Errorf("it is over %d bytes, which no app list is", appsLimit)
+	}
+
+	return []byte(out), nil
 }
 
 // sameAppList reports whether two app lists say the same thing.
@@ -958,8 +1020,10 @@ func (p *Provisioner) writeGameEntries(ctx context.Context, games []Game) error 
 		want[fmt.Sprintf("%s/%s%x.desktop", entryDir, entryPrefix, sum[:8])] = body
 	}
 
-	out, _, err := p.Client.Try(ctx, p.name(), "sh", "-c",
-		"ls -1 "+entryDir+"/"+entryPrefix+"*.desktop 2>/dev/null")
+	// As the player, like the writes and the removals below: the directory is
+	// theirs, and root listing it would follow a link they put there.
+	out, _, err := look(ctx, p.Client, p.name(), scanPatience, asPlayerFor(scanPatience, "sh", "-c",
+		"ls -1 "+entryDir+"/"+entryPrefix+"*.desktop 2>/dev/null")...)
 	if err != nil {
 		return err
 	}
@@ -996,7 +1060,9 @@ func (p *Provisioner) writeGameEntries(ctx context.Context, games []Game) error 
 			placed = true
 		}
 
-		if err := p.Client.PushFile(p.name(), path, body, 0o644, p.uid, p.uid); err != nil {
+		// Through dropScript and not the file API, which writes as root and
+		// follows a link the player stood at this name. See dropScript.
+		if err := writeAsPlayer(ctx, p.Client, p.name(), path, bytes.NewReader(body)); err != nil {
 			return err
 		}
 	}
@@ -1006,7 +1072,8 @@ func (p *Provisioner) writeGameEntries(ctx context.Context, games []Game) error 
 			continue
 		}
 
-		if _, _, err := p.Client.Try(ctx, p.name(), "rm", "-f", path); err != nil {
+		if _, _, err := look(ctx, p.Client, p.name(), scanPatience,
+			asPlayerFor(scanPatience, "rm", "-f", "--", path)...); err != nil {
 			return err
 		}
 	}
