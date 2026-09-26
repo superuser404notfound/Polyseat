@@ -165,10 +165,21 @@ func hostIdle(dir string, uid int) bool {
 		return false
 	}
 
+	// Resolved first, because /proc never names a symlink: maps, cwd and every
+	// fd link carry the real path. A library reached through one, which is the
+	// ordinary case for ~/.steam/steam/steamapps and for a home on a symlinked
+	// /home, would otherwise never match anything, and a Steam playing out of
+	// it would be reported idle and have its files replaced under it. Not
+	// resolvable means not there, which the rest of this treats as unknown.
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+
 	// The trailing separator is what makes this a path test rather than a text
 	// test. Without it a library at /home/x/Steam/steamapps would be reported
 	// busy by anything holding /home/x/Steam/steamapps-backup open.
-	needle := []byte(dir + string(filepath.Separator))
+	needle := []byte(resolved + string(filepath.Separator))
 
 	for _, entry := range entries {
 		if _, err := strconv.Atoi(entry.Name()); err != nil {

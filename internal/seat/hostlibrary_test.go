@@ -125,6 +125,30 @@ func TestHostIdle(t *testing.T) {
 		}
 	})
 
+	// Asked about through a symlink, which is how ~/.steam/steam/steamapps
+	// reaches the real library. /proc reports the resolved path, so a probe
+	// that compared the name it was given would call this idle while a file
+	// in it is open.
+	t.Run("a library reached through a symlink", func(t *testing.T) {
+		link := filepath.Join(dir, "via")
+		if err := os.Symlink(apps, link); err != nil {
+			t.Fatal(err)
+		}
+
+		defer os.Remove(link)
+
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		defer f.Close()
+
+		if hostIdle(link, uid) {
+			t.Error("a library named through a symlink was reported idle with a file in it open")
+		}
+	})
+
 	// Nobody's processes. The walk skips every process that does not belong to
 	// the owner of the library, and the point of that is speed on a host that
 	// also runs every seat's processes under a mapped uid.
