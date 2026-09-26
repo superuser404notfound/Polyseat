@@ -10,6 +10,215 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.32.0
+
+This release is an audit. On 2026-09-26 the daemon, the seat scripts, the input
+helpers, the host scripts and the release workflow were gone through for places
+where a player in a seat, a web page in a browser or a value in a request could
+reach further than docs/security.md said, and for places where one slow or
+hostile seat could stall the others. What was found is below, the serious part
+first and in plain words. Each fix has a test that was seen to fail with the fix
+taken out. Where the part that matters can only be seen on a running machine,
+this says it has not been watched yet.
+
+**A player in a seat could become root on the host through a link in the seat's
+library.** The seat's library belongs to the seat and the player can put a
+symlink anywhere in it; the daemon runs as root and resolved those links on the
+host. Made the right link, a delivery created directories in any host path and
+gave them to the seat, wrote a manifest over any host file and gave it to the
+seat, harvested any host directory into the pool and handed it to every other
+seat, or deleted a host directory that had a game's name. The host's own Steam
+library and `~/Games/shared` were open to the same thing from the desktop user.
+The daemon now reaches nothing below a member's directory by path: everything
+is opened one component at a time without following links, and changed through
+the descriptor that open returned, so there is no moment in which a link can be
+swapped in. Links inside a game are still copied as links. The one thing you may
+notice: **`~/Games` and `~/Games/shared` have to be real directories now.** A
+`~/Games` that is a link to another disk is refused, with the reason in the
+journal, where it used to be followed.
+
+**A player could run code as the host's desktop user through a shared folder.**
+A folder in the pool may carry `polyseat-setup.sh`, and the daemon ran it by
+itself wherever the folder arrived, on the host as the owner of the Steam
+library, who usually has sudo. Any seat can put a folder in the pool. **Setup
+scripts now run only once somebody has allowed them**: the Library section lists
+the scripts waiting, with their text and where they would run, and the approval
+is tied to the script's sha256 and to that version of the folder, so a changed
+folder asks again. A folder that arrived while a seat was off, or before a
+daemon restart, now gets its setup when the seat is next running, which it
+never did before. On the host a script never runs as root or as a system
+account.
+
+**A player could make root in their own seat write through a link in their
+home.** Provisioning, the Moonlight app list, the game entries and every upload
+were written into the player's home through the Incus file API, which writes as
+root and follows links, so `~/.config/polyseat/pointer.conf` made a link to
+`/etc/ld.so.preload` handed the player that file on the next rebuild. That is
+root inside an unprivileged container, not on the host, but the player has no
+sudo on purpose. All of it is written by the player now, through a script that
+replaces a link at the name rather than writing through it, and the one step
+that still runs as root there walks without following links. The scans behind
+the app list and the session reads of the ten second sweep also run as the
+player, under `timeout` inside the seat, so a FIFO in the right place no longer
+stalls the daemon's view of every seat.
+
+**Any file in `~/Downloads` that looked like an AppImage was run within a
+minute.** The scan read an AppImage's name and icon by asking the file, and the
+part of the file that answers is code from the file. A page that makes a
+browser save something was enough. The scan now reads the filesystem inside the
+file from the outside with `unsquashfs`, and every seat installs
+`squashfs-tools` for it.
+
+**Removing a title whose manifest named no directory removed every game in the
+pool.** A manifest without an `installdir` still says which app it declares, and
+the pool joined the empty name onto its common directory and removed that. It
+now refuses.
+
+**The interface could be driven from another web page.** The session cookie is
+`SameSite=Strict`, and that was the whole defence; it does nothing for
+`/api/setup`, which needs no cookie, so on a machine nobody had claimed any page
+somebody on the network opened could choose the password. Every state changing
+request now has to come from this page: a browser request marked cross-site or
+same-site is refused, a body has to be JSON (or multipart for an upload), and a
+request with neither `Sec-Fetch-Site` nor `Origin` still works, so `curl` is
+unaffected. Bodies are bounded at 4 KiB for the endpoints that hash a password
+and 64 KiB for the rest, and idle connections close after two minutes.
+
+**And the password had less around it than it looked.** On a machine nobody had
+claimed yet, a hand made session token was accepted by every guarded endpoint,
+because the check ran with an empty key. Two claims at the same moment could
+both succeed, the second silently replacing the first. Parallel guesses all went
+through before the first failure was counted, each asking for 64 MiB, with no
+bound on how many ran at once; now attempts are counted before the hash, at most
+two hashes run at a time, IPv6 is counted per `/64`, and the current password in
+the Account dialog, which had no limiter at all, has the same one. The user
+name is no longer handed to anybody who asks `/api/session` without a session,
+and a failed login no longer writes the typed user name, which is where
+passwords get typed by mistake, into the journal.
+
+**A seat's controller could still reach the host desktop.** The four hidraw
+lines in the udev rule matched an attribute a hidraw node does not have, so
+they had never fired; they match `HID_NAME` now, checked with `udevadm test`
+against a real device. The uhid observer used to wait fifty milliseconds before
+looking at a new device, so the rule mostly asked it too early; it looks at once
+now and the rule waits for it, at most a second and only when an answer is on
+its way. And a device the name list does not cover, which the broker finds and
+seals half a second later, used to stay open to whatever had already opened it,
+the host compositor and the host's Steam among them, and its joystick node was
+not sealed at all. The broker now seals every node, marks the device so every
+later udev event hides it too, and announces it as removed and added once so
+that what holds it lets go. **That last part is unproven on hardware**: the rule
+side was checked with `udevadm test`, whether a running compositor and Steam
+really let go on the synthetic remove has not been watched.
+
+**Smaller holes of the same family.** A seat name taken from the URL was turned
+into a file path before anybody checked it, so `DELETE /api/seats/..%2F...`
+removed a file outside the seats directory as root; every name is checked in the
+store now. A static address was checked only for a slash, so a line break after
+it put any `systemd-networkd` directive into the seat's network file; both the
+address and the gateway are parsed now. Each seat's Sunshine password was an
+argument to an Incus exec, which Incus keeps in its operation metadata and
+prints in `incus monitor`; it goes over standard input now, and what is left is
+Sunshine's own argv for the few milliseconds it runs. The script that installs
+Proton in a seat put a release's URL, checksum and tag into what a shell reads
+as double quotes, where `$(...)` runs; they are single quoted now. A Steam app
+id with a space in it carried arguments of a player's choosing into a Moonlight
+entry somebody else picks; only digits are accepted now.
+
+**The generated certificate is no longer a certificate authority.** It carried
+`IsCA` and the signing usage, which is harmless until somebody imports it as
+trusted, and then its key is a file on this machine that can sign for any site.
+New certificates are a plain server certificate. One that already exists is
+kept, so no browser asks again; if you imported it, remove it there, delete
+`cert.pem` and `key.pem` from the state directory and restart the daemon.
+
+**The .deb and the .rpm are built from the release's tag.** They were built
+from the commit that triggered the workflow, which comes after the tag on `main`
+and could carry anything else from there, so the Debian and Fedora packages of a
+release could differ from the Arch one beside them. The workflows also run
+actions pinned by commit and an Arch image pinned by digest. The packages are
+still not signed, and the checksum the update button checks proves a download
+arrived whole, not who made it; signing is deferred on purpose and
+docs/security.md says so.
+
+**Nothing in the daemon's main loop waits for a seat any more.** The ten second
+sweep visited the seats one after another, the app list was rebuilt inside it,
+and the six hourly `pacman -Sy`, the Proton pass and the minute's library pass
+ran in the same loop that delivers Incus's events. A seat that answered slowly,
+which a player can arrange, held up every other seat and every event for
+minutes. Each of those runs on its own now, and an operation such as Stop
+cancels and waits for whatever is reading the seat before it touches the
+container; before, a sweep could land an exec in the middle of a shutdown, the
+shape of the exec that once hung Incus. The Proton pass also stopped replacing
+the compatibility tools in a seat that was being provisioned at that moment.
+
+**And some things that simply lost data or work.** A finished build wrote back
+the seat record it had read minutes earlier, so a label, a pointer speed or an
+address saved during a build was silently undone. A deleted seat came back as
+an empty record when its delete finished. When a folder update failed part of
+the way, the saves already carried into the new copy were removed with it. A
+folder with a wine prefix was handed back and forth between the pool and the
+seats forever after any update, a whole game at a time, because carrying the
+saves made the copy look newer than its source. A host library reached through
+a symlink was never found in use, so the pool replaced a game's files while the
+host's Steam was playing it. Provisioning could close Steam, and the game with
+it, while somebody was streaming through a reconnect. A seat that was already
+running when the daemon started ran every player command as uid 1000 whatever
+its record said.
+
+**The seats themselves.** The gamepad pointer ended for the rest of the session
+when a pad vanished during a rescan, which is when a stream ends; it survives
+that now, is restarted if it dies, and sleeps instead of turning over ninety
+times a second. The retry in `polyseat-steam` could start a Steam outside
+gamescope, where the overlay does not work. Sunshine could start before the
+session's display was imported. A line break in a client's or an application's
+name made the session record invalid JSON and the card lost who was playing. A
+large library stopped the box art and icon helpers from running at all, because
+the kernel caps a single argument at 128 KiB.
+
+**On the host.** `prepare.sh` called `python`, which Debian and Fedora do not
+have under that name, and there it silently replaced a configured `library_dir`
+with the default. `check-hardening.sh --fix` pinned whatever `kernel.sysrq`
+was running, including 1, which lets a seat's keyboard reboot the host; it pins
+a harmless value now. `update.sh` ran git as root in somebody's own checkout
+and left files their next `git pull` could not write. `lan-bridge.sh` would add
+itself beside a `br0` somebody already had, and now refuses. `uninstall.sh
+--seats` removes the daemon's own `polyseatbr0` when nothing else uses it.
+`reset-machine.sh` never found Incus's subvolumes on a root that is a subvolume
+called `@`. The .deb and the .rpm now tell systemd about the unit they place.
+Several seats starting together no longer race to create the management bridge
+and leave all but one without it. A package download no longer fails on a line
+slower than about 3.8 Mbit/s. On a machine with two NVIDIA cards the device node
+guard checks the node of the card the seat actually has.
+
+**The interface.** The library is fetched when something could have changed it
+and otherwise at most every fifteen seconds, rather than on every change the
+daemon pushes, which kept it reading every seat's manifests several times a
+second during a provision; a game installed inside a seat can therefore take up
+to fifteen seconds to show. A folder title with `#`, `&` or `/` in it is encoded
+in every path the page builds, where it used to answer 404. Open pages no
+longer hold a daemon restart for ten seconds.
+
+**What behaves differently**, in one place:
+
+- A shared folder's `polyseat-setup.sh` waits in the Library section until it is
+  allowed, and asks again when the folder changes.
+- `~/Games` and `~/Games/shared` on the host have to be real directories; a link
+  is refused.
+- A seat with a gateway and no static address is refused when it is saved;
+  clear the gateway for DHCP.
+- The Library view refreshes at most every fifteen seconds on its own.
+- A script that drives the API from a browser page has to send JSON from that
+  same page. `curl` and other clients that are not browsers are unaffected.
+- On Debian and Fedora the package does not reload udev, so after upgrading run
+  `sudo udevadm control --reload` to be certain the new hide rule is the one in
+  use.
+
+**Seats have to be built again for this: recipe generation 59.** Writing the
+home as the player, `squashfs-tools`, the bounded scans, the pointer, the Steam
+and Sunshine start order and the session record all live in the seat, and none
+of it reaches a seat built before until it is provisioned again.
+
 ## 0.31.10
 
 **A resumed stream came back at the seat's default resolution.** Leaving Steam
