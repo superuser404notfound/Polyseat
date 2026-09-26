@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -150,5 +153,48 @@ func TestRetryPackagesDoesNotRepeatAConflict(t *testing.T) {
 
 	if calls != 1 {
 		t.Errorf("ran %d times, wanted 1", calls)
+	}
+}
+
+// The password reaches sunshine through standard input now, which is a shell
+// script doing the reading, so this runs that script under a real shell with a
+// sunshine that records what it was handed. A password with a backslash and a
+// space in it, because those are what a careless read mangles, and a stored
+// password is not guaranteed to be one this daemon generated.
+func TestCredentialsCommandHandsSunshineThePasswordFromStdin(t *testing.T) {
+	dir := t.TempDir()
+	record := filepath.Join(dir, "args")
+
+	fake := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + record + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "sunshine"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	const password = `se\cret with space`
+
+	argv := credentialsCommand("polyseat")
+
+	for _, arg := range argv {
+		if strings.Contains(arg, password) {
+			t.Fatalf("the password is in the command line: %q", argv)
+		}
+	}
+
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin"}
+	cmd.Stdin = strings.NewReader(password + "\n")
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the script failed: %v: %s", err, out)
+	}
+
+	got, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("sunshine was never run: %v", err)
+	}
+
+	want := "--creds\npolyseat\n" + password + "\n"
+	if string(got) != want {
+		t.Errorf("sunshine was handed %q, want %q", got, want)
 	}
 }

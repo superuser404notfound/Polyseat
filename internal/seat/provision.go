@@ -3000,6 +3000,28 @@ func (p *Provisioner) tidyLauncher() error {
 	return nil
 }
 
+// credentialsCommand is the command that sets Sunshine's login, with the
+// password left out of it: it is read from standard input.
+//
+// The password used to be an argument, and an argument of an exec is not a
+// private thing. Incus keeps the command of every exec in the operation's
+// metadata, which anybody with access to its API can list and `incus monitor`
+// prints as it happens, and a failure turned the same argv into an ErrExec
+// whose message went into the seat's log and onto its card. Standard input
+// travels over the exec's own websocket and appears in none of those.
+//
+// What is left is sunshine's own argv, for the few milliseconds it runs:
+// --creds takes the password as an argument and nothing else, and it is
+// visible in the host's process list while it does. Writing Sunshine's
+// credentials file directly would close that too, and was not done because its
+// format is Sunshine's to change and has moved once already, out of
+// sunshine_state.json into a directory of its own.
+func credentialsCommand(user string) []string {
+	return []string{"sh", "-c",
+		`IFS= read -r password && exec sunshine --creds "$1" "$password"`,
+		"polyseat-credentials", user}
+}
+
 func (p *Provisioner) stepCredentials(ctx context.Context) error {
 	if p.Secrets.SunshineUser == "" || p.Secrets.SunshinePassword == "" {
 		return fmt.Errorf("no Sunshine credentials were prepared for this seat")
@@ -3008,9 +3030,10 @@ func (p *Provisioner) stepCredentials(ctx context.Context) error {
 	// Run as the player with HOME set: sunshine writes the credentials next to
 	// its configuration, and as root it would write them into the wrong home
 	// and leave the seat unable to read its own login.
-	_, err := p.run(ctx, "sudo", "-u", Player, "env", "HOME=/home/"+Player,
-		"sunshine", "--creds", p.Secrets.SunshineUser, p.Secrets.SunshinePassword)
-	if err != nil {
+	argv := append([]string{"sudo", "-u", Player, "env", "HOME=/home/" + Player},
+		credentialsCommand(p.Secrets.SunshineUser)...)
+
+	if _, err := p.Client.RunInput(ctx, p.name(), p.Secrets.SunshinePassword+"\n", argv...); err != nil {
 		return err
 	}
 
