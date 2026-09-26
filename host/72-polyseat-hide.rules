@@ -88,7 +88,17 @@
 # given here and the uinput half still cannot.
 #
 # A controller the host itself pairs over Bluetooth is also a uhid device, and
-# the observer has no record of it, so it comes back unknown and is left alone.
+# the observer records it as the host's, so it comes back host and is left alone.
+#
+# The observer and this rule start from the same kernel event, and this rule is
+# usually first. So the helper waits for the observer's entry when one is on its
+# way: a device younger than the observer's probe, with an observer running.
+# That wait is milliseconds, and it is taken for the host's own controllers too,
+# because nothing can tell which device an entry will say until it is there.
+# Without it the observer, which slept fifty milliseconds before it even looked,
+# should have lost most of the time, and the gate below then did nothing for a
+# pad the name list does not cover. That is read off the timing of the two
+# paths, not measured: it needs root and a kprobe to watch.
 #
 # Both directories, and that is a bug fix rather than tidiness. This file named
 # /usr/local only, which is where install.sh puts the helpers from a checkout;
