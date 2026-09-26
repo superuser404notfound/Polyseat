@@ -809,3 +809,41 @@ func TestSteamIsNeverHandedTheScriptsLock(t *testing.T) {
 		}
 	}
 }
+
+// Sunshine captures the display sway opened, and learns which one only from
+// the environment sway imports into the user manager. sway starts every exec
+// line at once, so an import on a line of its own is a race Sunshine can win
+// and then start without a display. The start has to come after the import in
+// the same command.
+func TestTheSessionStartsSunshineOnlyAfterImportingTheDisplay(t *testing.T) {
+	out, err := render("assets/sway.config", map[string]string{
+		"Resolution": "1920x1080",
+		"Keyboard":   Keyboard{}.swayInput(),
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	found := false
+
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.HasPrefix(line, "exec ") || !strings.Contains(line, "start polyseat-sunshine") {
+			continue
+		}
+
+		found = true
+
+		importAt := strings.Index(line, "import-environment")
+		if importAt < 0 || !strings.Contains(line[importAt:], "&& systemctl --user start polyseat-sunshine") {
+			t.Errorf("Sunshine is started without waiting for the import: %q", line)
+		}
+
+		if !strings.Contains(line, "WAYLAND_DISPLAY") {
+			t.Errorf("the line that starts Sunshine does not import WAYLAND_DISPLAY: %q", line)
+		}
+	}
+
+	if !found {
+		t.Error("the session never starts Sunshine")
+	}
+}
