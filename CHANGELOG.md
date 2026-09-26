@@ -10,6 +10,22 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.31.10
+
+**A resumed stream came back at the seat's default resolution.** Leaving Steam
+in Moonlight without quitting keeps the application running for a resume, and
+45 seconds later the daemon counted the stream as over and put the seat back to
+its configured size. A resume runs none of Sunshine's prep commands, so nothing
+sized the seat for the client again: seen in vince as a 4K Apple TV streaming
+1920x1080 after coming back. The daemon now closes the application in Sunshine
+at that point instead, which runs Sunshine's own undo, and the next connection
+is a launch that sizes the seat properly. Every application in a seat is
+detached, so this ends no process, and Steam or a running game is still there
+when the same entry is picked again. Coming back within the 45 seconds is a
+resume as before, at the client's resolution.
+
+No seat needs to be built again.
+
 ## 0.31.9
 
 **The documentation says what the code does again.** It had stopped at 0.28

@@ -1402,6 +1402,18 @@ The daemon also puts the seat back itself when it sees a session end, rather tha
 trusting Sunshine's undo to have run. That is the same signal the card uses, and
 it covers every abnormal end and not only this one.
 
+**It closes the application first.** A client that leaves without quitting
+leaves the application running for it to resume, and a resume runs no prep
+commands, so putting the seat back underneath it meant somebody who stepped out
+of Steam came back at 1920x1080 on a 4K television, for as long as they played.
+So once the 45 seconds are up the daemon asks Sunshine to close the application
+(`POST /api/apps/close`), which runs Sunshine's own undo, and the next
+connection is a launch that sizes the seat for whoever makes it. Every
+application in a seat is detached, so the close ends no process: Steam and a
+running game carry on, and picking the same entry in Moonlight lands back in
+them. The seat is asked once more immediately before, because closing the
+application under a client that has just come back would end their stream.
+
 **A guard is only as good as the thing it asks.** The first version of this asked
 the marker file that describes the stream, and got thrown out of a stream anyway.
 Sunshine runs its prep commands once per application launch, not once per

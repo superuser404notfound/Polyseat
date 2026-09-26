@@ -266,6 +266,34 @@ func (c *Client) Unpair(ctx context.Context, uuid string) error {
 	return nil
 }
 
+// CloseApp ends the application Sunshine considers running, which runs its undo
+// commands the way quitting from Moonlight does.
+//
+// A client that leaves without quitting leaves the application running so that
+// it can be resumed, and a resumed application runs no prep commands: the seat
+// comes back at whatever size it was left at. So once the daemon has decided a
+// stream is over, it closes the application here rather than putting the seat
+// back behind Sunshine's back, and the next connection is a launch that sizes
+// the seat for whoever makes it.
+//
+// Every application in a seat is detached, so this ends no process. Steam and a
+// running game carry on; only Sunshine's idea of what is running changes.
+//
+// An empty object rather than no body, because Sunshine checks the content type
+// of every POST and a request without one is refused before it is read.
+func (c *Client) CloseApp(ctx context.Context) error {
+	var out statusResponse
+	if err := c.call(ctx, http.MethodPost, "/api/apps/close", map[string]any{}, &out); err != nil {
+		return err
+	}
+
+	if !out.Status {
+		return fmt.Errorf("Sunshine did not close the application")
+	}
+
+	return nil
+}
+
 func (c *Client) call(ctx context.Context, method, path string, body, into any) error {
 	return c.callWithin(ctx, callTimeout, method, path, body, into)
 }

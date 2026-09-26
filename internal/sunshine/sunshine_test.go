@@ -397,3 +397,37 @@ func TestPairFallsBackWhenTheAnswerIsNotTheList(t *testing.T) {
 		t.Fatal("sent a pairing_id after an answer that was not the list")
 	}
 }
+
+func TestCloseAppRefusesACloseThatDidNotHappen(t *testing.T) {
+	c := seat(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": false})
+	})
+
+	if err := c.CloseApp(t.Context()); err == nil {
+		t.Error("reported an application closed that Sunshine did not close")
+	}
+}
+
+// The content type is the part that is checked, because Sunshine refuses a POST
+// without one before it looks at anything else, and a stub that ignored it
+// would pass a request the real one answers with an error.
+func TestCloseAppPostsJSONToTheCloseRoute(t *testing.T) {
+	var method, path, kind string
+
+	c := seat(t, func(w http.ResponseWriter, r *http.Request) {
+		method, path, kind = r.Method, r.URL.Path, r.Header.Get("Content-Type")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": true})
+	})
+
+	if err := c.CloseApp(t.Context()); err != nil {
+		t.Fatalf("refused a close that worked: %v", err)
+	}
+
+	if method != http.MethodPost || path != "/api/apps/close" {
+		t.Errorf("asked %s %s, want POST /api/apps/close", method, path)
+	}
+
+	if kind != "application/json" {
+		t.Errorf("sent content type %q, Sunshine refuses anything but JSON", kind)
+	}
+}
