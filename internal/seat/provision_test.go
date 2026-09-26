@@ -261,3 +261,27 @@ func TestToolScriptRunsNothingFromTheRelease(t *testing.T) {
 		t.Errorf("the manifest was cut short or changed:\n%s", manifest)
 	}
 }
+
+// Putting Steam back after a cancelled run is the case detached exists for, so
+// it is tested with a context that is already cancelled: what comes out has to
+// be usable, and still has to end on its own.
+func TestDetachedOutlivesACancelledRunAndStillEnds(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ctx, stop := detached(parent)
+	defer stop()
+
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("the tidying context is already done: %v", err)
+	}
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("the tidying context has no deadline, so a hung exec would hold it for ever")
+	}
+
+	if left := time.Until(deadline); left <= 0 || left > quickTimeout {
+		t.Errorf("the deadline is %s away, want within %s", left, quickTimeout)
+	}
+}

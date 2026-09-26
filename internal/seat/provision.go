@@ -498,7 +498,15 @@ func (p *Provisioner) waitNetwork(ctx context.Context) error {
 	deadline := time.Now().Add(60 * time.Second)
 
 	for time.Now().Before(deadline) {
-		_, code, err := p.Client.Try(ctx, p.name(), "getent", "hosts", "geo.mirror.pkgbuild.com")
+		// Bounded per attempt for the reason waitSystemd gives: a lookup that
+		// hangs inside a stalled exec never brings the loop back round to the
+		// deadline. Twenty seconds rather than a few, because getent waiting out
+		// a resolver that does not answer yet is the normal case here and takes
+		// the resolver's own timeouts, not milliseconds.
+		attempt, cancel := context.WithTimeout(ctx, 20*time.Second)
+		_, code, err := p.Client.Try(attempt, p.name(), "getent", "hosts", "geo.mirror.pkgbuild.com")
+		cancel()
+
 		if err != nil {
 			return err
 		}
@@ -1360,12 +1368,29 @@ func (p *Provisioner) StartSteam(ctx context.Context) {
 }
 
 // ResumeSteam starts Steam again if this run was the one that closed it.
+//
+// Not with the caller's context as it stands. Run defers this, and a run cut
+// short by somebody pressing Cancel ends with that context already done: the
+// exec failed at once and the seat was left with no Steam, which the session
+// only puts back at its next start. See detached.
 func (p *Provisioner) ResumeSteam(ctx context.Context) {
 	if !p.closedSteam {
 		return
 	}
 
+	ctx, cancel := detached(ctx)
+	defer cancel()
+
 	p.StartSteam(ctx)
+}
+
+// detached is a context for tidying up after an operation, which has to run
+// whether or not the operation was cancelled, and must still end.
+//
+// It keeps the values of the one it came from and none of its cancellation,
+// and gives itself quickTimeout instead, because nothing is left to cancel it.
+func detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), quickTimeout)
 }
 
 // nothingUsing runs one of the idle probes inside this seat.
