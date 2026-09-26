@@ -73,6 +73,19 @@
 # So the tag goes as well, and ownership is pinned to root. The seats are
 # unaffected: Incus creates its own node inside the container with its own
 # mode, and the broker only reads /sys.
+# Whatever the broker has already found to be a seat's, by its creator rather
+# than its name. It marks such a device with a directory named after its
+# DEVPATH, and from then on every event for it lands here, so a retrigger no
+# longer opens it to the desktop again. The broker also announces the device as
+# removed and added once, when this file did not hide it at creation: the
+# desktop's libinput and Steam let go of it on the remove, and the add comes
+# back through this line. That is the only way this file reaches a uinput
+# device the name list below does not cover, since who created one cannot be
+# asked from in here. The DEVPATH and not the node name, because node names are
+# reused and inputN and HID instance numbers are not.
+SUBSYSTEM=="input|hidraw", TEST=="/run/polyseat/sealed$devpath", \
+  GOTO="polyseat_hide"
+
 # Structural, at the moment the device is created, for everything a seat makes
 # through uhid. That is every gamepad, and it is the case names cannot reach:
 # a raw HID node has no name attribute for a pattern to match on, so it stayed
@@ -156,6 +169,9 @@ SUBSYSTEM=="hidraw", ENV{HID_NAME}=="libvirtualhid*",  GOTO="polyseat_hide"
 GOTO="polyseat_end"
 
 LABEL="polyseat_hide"
+# Left in the udev database for the broker, which announces a device again only
+# when this file did not hide it: one hidden here was never opened on the host.
+ENV{POLYSEAT_HIDDEN}="1"
 ENV{ID_INPUT}="", ENV{ID_INPUT_JOYSTICK}="", ENV{ID_INPUT_MOUSE}="", \
   ENV{ID_INPUT_KEYBOARD}="", ENV{ID_INPUT_KEY}="", ENV{ID_INPUT_TOUCHSCREEN}="", \
   ENV{ID_INPUT_TABLET}="", ENV{LIBINPUT_IGNORE_DEVICE}="1"
