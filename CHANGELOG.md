@@ -10,6 +10,19 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.32.3
+
+**Games with a Steam shortcut appeared twice in a seat's launcher.** A seat's
+launcher lists every desktop entry it finds, and Polyseat leaves out its own
+entry for a game Steam already made a shortcut for. The scan that finds
+Steam's shortcuts has run as the player since 0.32.0, and in a directory the
+player cannot enter, where `find` quietly runs nothing: it answered that there
+were none, and each such game was listed twice, seen with Bus Simulator 21,
+DREDGE and Project Zomboid. Every command the daemon runs in a seat now starts
+in `/`. The doubles go away on their own within a minute of the update.
+
+No seat needs to be built again.
+
 ## 0.32.2
 
 **The daemon can be restarted while somebody is streaming.** With anybody
