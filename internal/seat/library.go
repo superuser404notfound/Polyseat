@@ -501,6 +501,20 @@ func (m *Manager) outside() []string {
 	return out
 }
 
+// syncSoon runs a library pass for the timer, on a goroutine of its own and at
+// most one at a time.
+//
+// The timer used to run the pass on the daemon's main loop. A pass walks every
+// member's library, which each player fills as they like, clones whatever is
+// new between them and asks every running seat whether its games are in use, so
+// its length is up to the seats; for all of it no Incus event was delivered and
+// no seat was swept. The interface's buttons keep calling syncLibrary directly:
+// they run on a request's goroutine, and the person who pressed one is waiting
+// for the answer.
+func (m *Manager) syncSoon(ctx context.Context) {
+	m.alone(&m.syncing, func() { m.syncLibrary(ctx) })
+}
+
 // syncLibrary runs one pass and reports anything it did.
 func (m *Manager) syncLibrary(ctx context.Context) {
 	if m.pool == nil {

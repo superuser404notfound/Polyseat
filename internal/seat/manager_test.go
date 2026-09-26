@@ -3,12 +3,17 @@ package seat
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/superuser404notfound/Polyseat/internal/config"
+	"github.com/superuser404notfound/Polyseat/internal/incusx"
 )
 
 // What the banner in the interface offers to fix, and the list the sweep works
@@ -662,8 +667,8 @@ func TestAnOperationStopsAndWaitsOutTheSweepInProgress(t *testing.T) {
 }
 
 // The timer's sweep leaves a seat to one already being read rather than
-// queueing behind it, because it runs on the goroutine that delivers Incus's
-// events.
+// queueing behind it, which is what keeps a slow seat at one sweep at a time
+// when the timer starts one every ten seconds.
 func TestTheTimersSweepDoesNotQueueBehindAnother(t *testing.T) {
 	m := &Manager{rt: map[string]*runtime{}}
 	rt := m.runtimeOf("vince")
@@ -688,6 +693,368 @@ func TestTheTimersSweepDoesNotQueueBehindAnother(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the timer's sweep waited for the one in progress")
+	}
+}
+
+// A rebuild of the app list is handed off by the sweep, and the sweep must be
+// able to go on to the next seat while it runs: the player decides how long the
+// scans behind it take, and the sweep of every other seat used to wait them out.
+// At most one per seat, and one seat's rebuild does not keep another's from
+// starting.
+func TestABackgroundRebuildHoldsUpNobody(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+	vince := m.runtimeOf("vince")
+	joser := m.runtimeOf("joser")
+
+	release := make(chan struct{})
+	defer close(release)
+
+	started := make(chan string, 4)
+
+	slow := func(name string) func(context.Context) {
+		return func(context.Context) {
+			started <- name
+			<-release
+		}
+	}
+
+	returned := make(chan bool, 1)
+
+	go func() { returned <- m.inBackground(context.Background(), vince, &vince.apps, slow("vince")) }()
+
+	select {
+	case ok := <-returned:
+		if !ok {
+			t.Fatal("an idle seat's rebuild was refused")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the caller waited for the rebuild, which is the sweep standing still")
+	}
+
+	<-started
+
+	if m.inBackground(context.Background(), vince, &vince.apps, slow("vince again")) {
+		t.Error("a second rebuild was started beside the one still running")
+	}
+
+	if !m.inBackground(context.Background(), joser, &joser.apps, slow("joser")) {
+		t.Error("another seat's rebuild was refused because of this one")
+	}
+
+	if got := <-started; got != "joser" {
+		t.Errorf("the rebuild that ran was %q", got)
+	}
+
+	// And the sweep itself, which is a different lane, still reads the seat.
+	_, end, ok := m.beginSweep(context.Background(), vince, false)
+	if !ok {
+		t.Fatal("the sweep was kept out of a seat whose app list is being rebuilt")
+	}
+
+	end()
+}
+
+// The same handshake as TestAnOperationStopsAndWaitsOutTheSweepInProgress, for
+// a rebuild of the app list. Taken off the sweep, it would otherwise be the one
+// reading of a seat that a Stop neither cancels nor waits for, and an exec of
+// its scans would land in the container's shutdown.
+func TestAnOperationStopsAndWaitsOutABackgroundRebuild(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+	rt := m.runtimeOf("vince")
+
+	// The caller's context ends as soon as it has handed the work off, which
+	// is what the sweep's does. The rebuild must not end with it.
+	caller, leave := context.WithCancel(context.Background())
+
+	running := make(chan context.Context, 1)
+	finish := make(chan struct{})
+
+	ok := m.inBackground(caller, rt, &rt.apps, func(ctx context.Context) {
+		running <- ctx
+		<-ctx.Done()
+		<-finish
+	})
+	if !ok {
+		t.Fatal("an idle seat's rebuild was refused")
+	}
+
+	leave()
+
+	ctx := <-running
+
+	if ctx.Err() != nil {
+		t.Fatal("the rebuild was cancelled by the end of the sweep that started it")
+	}
+
+	if err := m.claim(rt, "stopping", func() {}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	if ctx.Err() == nil {
+		t.Error("the rebuild was not told to stop, so its next exec goes ahead")
+	}
+
+	quiet := make(chan struct{})
+
+	go func() {
+		rt.quiesce()
+		close(quiet)
+	}()
+
+	select {
+	case <-quiet:
+		t.Fatal("the operation went ahead while the rebuild was still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(finish)
+
+	select {
+	case <-quiet:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the operation was still waiting after the rebuild ended")
+	}
+
+	if m.inBackground(context.Background(), rt, &rt.apps, func(context.Context) {
+		t.Error("a rebuild ran in a seat an operation holds")
+	}) {
+		t.Error("a rebuild was let into a seat an operation holds")
+	}
+}
+
+// A manager with seats in its store and sweeps that report which seat they
+// read, and read the one called slow until release is closed.
+func loopManager(t *testing.T, names ...string) (*Manager, chan string, chan struct{}) {
+	t.Helper()
+
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range names {
+		if err := store.Put(Seat{Name: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	swept := make(chan string, 16)
+	release := make(chan struct{})
+
+	m := &Manager{store: store, rt: map[string]*runtime{}, subs: map[int]chan struct{}{},
+		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	m.sweeper = func(_ context.Context, name string) {
+		swept <- name
+
+		if name == "slow" {
+			<-release
+		}
+	}
+
+	return m, swept, release
+}
+
+// The timer's pass visited the seats one after another on the main loop, so
+// one seat that answered slowly held up the sweep of every other seat and every
+// Incus event behind it. It must return at once, sweep the others, and not
+// start a second sweep of the slow seat beside the one still reading it.
+func TestTheTimersPassWaitsForNoSeat(t *testing.T) {
+	m, swept, release := loopManager(t, "slow", "vince")
+	defer close(release)
+
+	done := make(chan struct{})
+
+	go func() {
+		m.reconcileAll(context.Background())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the timer's pass waited for a slow seat")
+	}
+
+	seen := map[string]int{}
+
+	for len(seen) < 2 {
+		select {
+		case name := <-swept:
+			seen[name]++
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %v were swept", seen)
+		}
+	}
+
+	m.reconcileAll(context.Background())
+
+	// Whatever the second pass started, give it the moment.
+	time.Sleep(50 * time.Millisecond)
+
+	for len(swept) > 0 {
+		seen[<-swept]++
+	}
+
+	if seen["slow"] != 1 {
+		t.Errorf("the slow seat was swept %d times at once", seen["slow"])
+	}
+}
+
+// An event waits for a sweep of its seat that is already reading, because it
+// has something new to say. It used to do that on the main loop, so the next
+// event, for any seat, waited too.
+func TestAnEventDoesNotWaitForTheSeatsSweep(t *testing.T) {
+	m, swept, release := loopManager(t, "slow", "vince")
+	defer close(release)
+
+	rt := m.runtimeOf("vince")
+
+	_, end, ok := m.beginSweep(context.Background(), rt, true)
+	if !ok {
+		t.Fatal("an idle seat could not be swept")
+	}
+
+	done := make(chan struct{})
+
+	go func() {
+		m.onLifecycle(context.Background(), incusx.Lifecycle{Action: "instance-started", Instance: "vince"})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the event waited for the sweep in progress")
+	}
+
+	select {
+	case name := <-swept:
+		t.Fatalf("%s was swept while the sweep before it was still reading", name)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	end()
+
+	select {
+	case name := <-swept:
+		if name != "vince" {
+			t.Errorf("the event swept %s", name)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the event's sweep never ran once the seat was free")
+	}
+}
+
+// The passes the timers start, over the library and over what the seats are
+// behind on, go through alone: the loop does not wait for one, and one that
+// outlasts its interval is not joined by a second.
+func TestAPassOnATimerRunsAloneAndOffTheLoop(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+
+	var flag bool
+
+	release := make(chan struct{})
+	ran := make(chan struct{}, 4)
+
+	slow := func() {
+		ran <- struct{}{}
+		<-release
+	}
+
+	started := make(chan bool, 1)
+
+	go func() { started <- m.alone(&flag, slow) }()
+
+	select {
+	case ok := <-started:
+		if !ok {
+			t.Fatal("the first pass was refused")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the caller waited for the pass")
+	}
+
+	<-ran
+
+	if m.alone(&flag, slow) {
+		t.Error("a second pass started beside the first")
+	}
+
+	close(release)
+
+	deadline := time.Now().Add(5 * time.Second)
+
+	for !m.alone(&flag, func() {}) {
+		if time.Now().After(deadline) {
+			t.Fatal("no pass could start after the first one ended")
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A seat has one broker process for as long as it has a runtime record, and
+// startBroker starts that one again rather than making another. That is what
+// lets supervise keep a broker that is still stopping and its replacement from
+// running side by side: Start waits for a Stop in progress on the same Process,
+// and could not wait for one on a different Process. Made a second time, a
+// Stop from the sweep and a start from the next one would be two brokers
+// polling one seat for as long as the first took to go.
+func TestASeatKeepsOneBrokerAcrossStops(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A helper that exits at once, so that supervise has something to start
+	// and restart without a Python and a container behind it.
+	m := &Manager{
+		cfg:   config.Config{Python: "/usr/bin/true", HelperDir: t.TempDir()},
+		store: store,
+		rt:    map[string]*runtime{},
+		subs:  map[int]chan struct{}{},
+	}
+
+	rt := m.runtimeOf("vince")
+
+	defer m.stopBroker("vince")
+
+	// Starts and stops from different goroutines at once, the first start
+	// among them, which is what the sweep, an event and an operation amount
+	// to. Every broker any of them saw is collected.
+	seen := make(chan any, 4*20)
+	done := make(chan struct{})
+
+	for range 4 {
+		go func() {
+			defer func() { done <- struct{}{} }()
+
+			for range 20 {
+				m.startBroker("vince")
+
+				m.mu.Lock()
+				seen <- rt.broker
+				m.mu.Unlock()
+
+				m.stopBroker("vince")
+			}
+		}()
+	}
+
+	for range 4 {
+		<-done
+	}
+
+	close(seen)
+
+	brokers := map[any]bool{}
+	for b := range seen {
+		brokers[b] = true
+	}
+
+	if len(brokers) != 1 {
+		t.Errorf("one seat had %d broker processes", len(brokers))
 	}
 }
 

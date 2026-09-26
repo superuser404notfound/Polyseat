@@ -462,9 +462,36 @@ func (m *Manager) refreshAppsWhenNobodyIsStreaming(ctx context.Context, name str
 //
 // Several times what a rebuild costs in the steady state, which is seconds, and
 // enough for the one that reads a new AppImage for the first time. It is a
-// ceiling on how long the sweep can be kept from the other seats, not a
-// schedule.
+// ceiling on how long one rebuild can hold its seat's lane, not a schedule.
 const appsPatience = 10 * time.Minute
+
+// refreshAppsSoon rebuilds the app list on a goroutine of its own, and reports
+// whether it started one.
+//
+// For the sweep, which used to call refreshApps in place. Every scan behind a
+// rebuild reads what the player owns, so the player decides how long it takes:
+// a seat whose Steam manifests or AppImages were arranged to be slow kept its
+// rebuild going until appsPatience, and for all of that the sweep of every
+// other seat stood still behind it, and the event loop with them. Bounding the
+// scans made that minutes rather than for ever. Taking it off the sweep makes
+// it that one seat's minutes.
+//
+// At most one per seat, through the seat's apps lane: a rebuild still running
+// when the next one falls due is left to finish, and false says so. And like
+// the sweep it stops for an operation, which cancels it through the lane and
+// waits for it before touching the seat, so a rebuild's exec does not land in
+// a Stop.
+//
+// The context it is given only lends its values. The sweep's own ends when the
+// sweep does, which is long before a rebuild would, so the rebuild runs on one
+// with the cancel taken out, and the lane and appsPatience are its limits.
+func (m *Manager) refreshAppsSoon(ctx context.Context, name string) bool {
+	rt := m.runtimeOf(name)
+
+	return m.inBackground(ctx, rt, &rt.apps, func(ctx context.Context) {
+		m.refreshApps(ctx, name)
+	})
+}
 
 // refreshApps rewrites the Moonlight app list for a running seat.
 //
@@ -472,10 +499,11 @@ const appsPatience = 10 * time.Minute
 // periodic sweep and a line every ten seconds would both fill the seat's log
 // and wake the interface each time.
 func (m *Manager) refreshApps(ctx context.Context, name string) {
-	// The rebuild as a whole is bounded as well as each scan in it. This runs
-	// on the sweep, which visits the seats one after another, and every scan
-	// behind it reads what the player owns. Each has its own limit inside the
-	// seat; this is the one for everything that has not, and for the sum.
+	// The rebuild as a whole is bounded as well as each scan in it. Every scan
+	// behind it reads what the player owns, and while it runs it holds the
+	// seat's apps lane, or the operation that called it. Each scan has its own
+	// limit inside the seat; this is the one for everything that has not, and
+	// for the sum.
 	ctx, cancel := context.WithTimeout(ctx, appsPatience)
 	defer cancel()
 

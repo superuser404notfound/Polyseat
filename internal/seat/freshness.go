@@ -752,7 +752,6 @@ func (m *Manager) updateFreshness(ctx context.Context) {
 		rt := m.runtimeOf(s.Name)
 
 		m.mu.Lock()
-		busy := rt.busy != ""
 		checked := rt.freshChecked
 		m.mu.Unlock()
 
@@ -760,7 +759,7 @@ func (m *Manager) updateFreshness(ctx context.Context) {
 		// is old rather than wrong, and the card says how old; replacing it
 		// with a note about the seat being off would be storing a fact about
 		// the present, which is exactly what goes stale.
-		if busy || !m.running(s.Name) {
+		if !m.running(s.Name) {
 			continue
 		}
 
@@ -771,13 +770,40 @@ func (m *Manager) updateFreshness(ctx context.Context) {
 			continue
 		}
 
-		seatCtx, cancel := context.WithTimeout(ctx, freshPatience)
-		m.record(s.Name, m.Freshness(seatCtx, s.Name))
-
-		cancel()
+		m.askInTurn(ctx, rt, s.Name)
 	}
 
 	m.notify()
+}
+
+// askInTurn is one seat's turn in the pass.
+//
+// Through the seat's asking lane, which is what a busy seat is skipped by now.
+// The pass used to look at busy and then go on to its execs, and a look is not
+// a claim: a Stop that began a moment later had its container's shutdown
+// interleaved with a pacman -Sy for up to freshPatience. The lane is claimed
+// and cancelled by an operation the way the sweep is, see beginSweep.
+func (m *Manager) askInTurn(ctx context.Context, rt *runtime, name string) {
+	ctx, end, ok := m.enter(ctx, rt, &rt.asking, false)
+	if !ok {
+		return
+	}
+
+	defer end()
+
+	ctx, cancel := context.WithTimeout(ctx, freshPatience)
+	defer cancel()
+
+	m.record(name, m.look(ctx, name))
+}
+
+// look is Freshness, or what a test put in its place.
+func (m *Manager) look(ctx context.Context, name string) Freshness {
+	if m.asker != nil {
+		return m.asker(ctx, name)
+	}
+
+	return m.Freshness(ctx, name)
 }
 
 // CheckFreshness asks one seat now, instead of waiting for the six hour timer.
@@ -796,8 +822,9 @@ func (m *Manager) updateFreshness(ctx context.Context) {
 // Not wrapped in operate, unlike updating: this changes nothing. It reads the
 // seat's package database through a copy and its Sunshine version through
 // pacman -Q, so there is nothing here that another operation could interleave
-// badly with. What it must not do is run against a seat in the middle of being
-// built, and that is what the refusal below is for.
+// badly with. What it must not do is run against a seat an operation holds, or
+// go on running into one that an operation has just taken, and that is what
+// the seat's asking lane is for.
 func (m *Manager) CheckFreshness(name string) (Freshness, error) {
 	// Looked up rather than made, for the reason Log gives: the name is straight
 	// from the URL, and runtimeOf creates whatever it is asked for. Every seat
@@ -811,13 +838,18 @@ func (m *Manager) CheckFreshness(name string) (Freshness, error) {
 		return Freshness{}, fmt.Errorf("there is no seat called %q: %w", name, os.ErrNotExist)
 	}
 
-	m.mu.Lock()
-	busy := rt.busy
-	m.mu.Unlock()
-
-	if busy != "" {
+	// The same lane as the pass, and for the same reason: busy looked at
+	// rather than claimed let a Stop pressed a moment later bring the
+	// container down under this one's execs. Waiting rather than refusing
+	// when the pass holds it, because the pass is asking the same question and
+	// is done within freshPatience. Before the look at the state, so that a
+	// seat in the middle of being built is busy rather than off.
+	ctx, end, ok := m.enter(context.Background(), rt, &rt.asking, true)
+	if !ok {
 		return Freshness{}, ErrBusy
 	}
+
+	defer end()
 
 	// Answered now rather than written down. Somebody who presses this on a
 	// seat that is switched off gets told so, and nothing is stored that would
@@ -826,12 +858,12 @@ func (m *Manager) CheckFreshness(name string) (Freshness, error) {
 		return Freshness{}, ErrNotRunning
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), freshPatience)
+	ctx, cancel := context.WithTimeout(ctx, freshPatience)
 	defer cancel()
 
 	m.sunshine.forget()
 
-	f := m.record(name, m.Freshness(ctx, name))
+	f := m.record(name, m.look(ctx, name))
 
 	m.notify()
 
@@ -850,24 +882,12 @@ func (m *Manager) CheckFreshness(name string) (Freshness, error) {
 // this often harmless: a seat with a current reading is skipped without
 // anything being asked of it.
 func (m *Manager) freshenSoon(ctx context.Context) {
-	m.mu.Lock()
+	// Without the caller's cancel. The sweep is the commonest caller and its
+	// context ends the moment the sweep does, which is before the pass has
+	// asked its first seat anything: every pass started this way gave up at
+	// once, and a seat switched on after the daemon was not asked until the
+	// six hour timer came round.
+	ctx = context.WithoutCancel(ctx)
 
-	if m.freshening {
-		m.mu.Unlock()
-
-		return
-	}
-
-	m.freshening = true
-	m.mu.Unlock()
-
-	go func() {
-		defer func() {
-			m.mu.Lock()
-			m.freshening = false
-			m.mu.Unlock()
-		}()
-
-		m.updateFreshness(ctx)
-	}()
+	m.alone(&m.freshening, func() { m.updateFreshness(ctx) })
 }

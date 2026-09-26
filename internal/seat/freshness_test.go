@@ -845,3 +845,120 @@ func TestBehindThePinIsStillBehind(t *testing.T) {
 		t.Errorf("the summary does not say what the update would install: %q", got)
 	}
 }
+
+// A running seat that has never been asked, in a store the pass can read, with
+// what it is asked answered by ask.
+func freshnessManager(t *testing.T, ask func(ctx context.Context, name string) Freshness) (*Manager, *runtime) {
+	t.Helper()
+
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Put(Seat{Name: "seat1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{store: store, rt: map[string]*runtime{}, subs: map[int]chan struct{}{},
+		sunshine: &sunshineCache{}, asker: ask}
+
+	rt := m.runtimeOf("seat1")
+	rt.state = StateRunning
+
+	return m, rt
+}
+
+// The sweep is what starts a pass for a seat that came up without ever having
+// been asked, and it hands over its own context, which ends the moment the
+// sweep does. The pass gave up on that at its first look, so such a seat went
+// unasked until the six hour timer. This is a sweep that has already ended.
+func TestAPassStartedByTheSweepOutlivesIt(t *testing.T) {
+	asked := make(chan error, 1)
+
+	m, _ := freshnessManager(t, func(ctx context.Context, _ string) Freshness {
+		asked <- ctx.Err()
+
+		return Freshness{}
+	})
+
+	sweep, end := context.WithCancel(context.Background())
+	end()
+
+	m.freshenSoon(sweep)
+
+	select {
+	case err := <-asked:
+		if err != nil {
+			t.Errorf("the seat was asked with a context that had already ended: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pass ended with the sweep that started it and never asked the seat")
+	}
+}
+
+// Both ways a seat is asked what it is behind on used to look at busy and then
+// go on to their execs, and a look is not a claim: a Stop that began a moment
+// later brought the container down under a pacman -Sy. They now go through the
+// seat's asking lane, which an operation cancels and waits out the way it does
+// the sweep. See TestAnOperationStopsAndWaitsOutTheSweepInProgress.
+func TestAnOperationStopsAndWaitsOutALookAtFreshness(t *testing.T) {
+	starters := map[string]func(m *Manager){
+		"the pass":   func(m *Manager) { m.freshenSoon(context.Background()) },
+		"the button": func(m *Manager) { go func() { _, _ = m.CheckFreshness("seat1") }() },
+	}
+
+	for which, start := range starters {
+		t.Run(which, func(t *testing.T) {
+			asking := make(chan context.Context, 1)
+			finish := make(chan struct{})
+
+			m, rt := freshnessManager(t, func(ctx context.Context, _ string) Freshness {
+				asking <- ctx
+				<-ctx.Done()
+				<-finish
+
+				return Freshness{}
+			})
+
+			start(m)
+
+			var ctx context.Context
+
+			select {
+			case ctx = <-asking:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the seat was never asked")
+			}
+
+			if err := m.claim(rt, "stopping", func() {}); err != nil {
+				t.Fatalf("claim: %v", err)
+			}
+
+			if ctx.Err() == nil {
+				t.Error("the look was not told to stop, so its next exec goes ahead")
+			}
+
+			quiet := make(chan struct{})
+
+			go func() {
+				rt.quiesce()
+				close(quiet)
+			}()
+
+			select {
+			case <-quiet:
+				t.Fatal("the operation went ahead while the seat was still being asked")
+			case <-time.After(50 * time.Millisecond):
+			}
+
+			close(finish)
+
+			select {
+			case <-quiet:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the operation was still waiting after the look ended")
+			}
+		})
+	}
+}
