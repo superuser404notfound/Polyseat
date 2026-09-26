@@ -124,11 +124,18 @@ type runtime struct {
 	lastErr string
 	cancel  context.CancelFunc
 
-	// sweep is held for the whole of a reconcile, and sweepCancel ends the one
-	// in progress. Together they are what keeps a reading of the seat and an
-	// operation on it from overlapping. See beginSweep.
-	sweep       sync.Mutex
-	sweepCancel context.CancelFunc
+	// sweep is held for the whole of a reconcile. It is what keeps a reading
+	// of the seat and an operation on it from overlapping. See beginSweep.
+	sweep lane
+
+	// apps is held while the Moonlight app list is rebuilt in the background,
+	// and asking while the seat is asked what it is behind on. Lanes of their
+	// own rather than the sweep's, because both can take minutes and the sweep
+	// must go on reading the seat meanwhile; lanes at all, because an
+	// operation has to stop and wait out these exactly as it does the sweep.
+	// See refreshAppsSoon and updateFreshness.
+	apps   lane
+	asking lane
 
 	log    *Log
 	broker *supervise.Process
@@ -749,9 +756,37 @@ func (m *Manager) reconcileWith(ctx context.Context, name string, wait bool) {
 // The context returned is the one the reads must use, so that the cancel
 // reaches them. end has to be called when they are finished.
 func (m *Manager) beginSweep(ctx context.Context, rt *runtime, wait bool) (context.Context, func(), bool) {
+	return m.enter(ctx, rt, &rt.sweep, wait)
+}
+
+// lane is one kind of reading of a seat that an operation must not overlap.
+//
+// The sweep was the only one for a long time, and it still is the only one on
+// the ten second timer. The others are the slow readings that were taken off
+// it: the app list, which reads what the player owns and can be kept busy by
+// them until its deadline, and the question of what the seat is behind on,
+// which is a pacman -Sy against the mirrors. Each runs on a goroutine of its
+// own and must stop for an operation in exactly the way the sweep does, or an
+// exec from one of them lands in the middle of a Stop.
+type lane struct {
+	// held for as long as the reading runs. TryLock is what makes a lane hold
+	// at most one reading at a time.
+	mu sync.Mutex
+
+	// cancel ends the reading in progress. Guarded by Manager.mu, not by mu.
+	cancel context.CancelFunc
+}
+
+// lanes is every lane of a seat, for the two places that treat them alike.
+func (rt *runtime) lanes() []*lane {
+	return []*lane{&rt.sweep, &rt.apps, &rt.asking}
+}
+
+// enter is beginSweep for any lane.
+func (m *Manager) enter(ctx context.Context, rt *runtime, l *lane, wait bool) (context.Context, func(), bool) {
 	if wait {
-		rt.sweep.Lock()
-	} else if !rt.sweep.TryLock() {
+		l.mu.Lock()
+	} else if !l.mu.TryLock() {
 		return nil, nil, false
 	}
 
@@ -759,29 +794,51 @@ func (m *Manager) beginSweep(ctx context.Context, rt *runtime, wait bool) (conte
 
 	if rt.busy != "" || rt.state == StateStopping {
 		m.mu.Unlock()
-		rt.sweep.Unlock()
+		l.mu.Unlock()
 
 		return nil, nil, false
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	rt.sweepCancel = cancel
+	l.cancel = cancel
 	m.mu.Unlock()
 
 	end := func() {
 		m.mu.Lock()
-		rt.sweepCancel = nil
+		l.cancel = nil
 		m.mu.Unlock()
 
 		cancel()
-		rt.sweep.Unlock()
+		l.mu.Unlock()
 	}
 
 	return ctx, end, true
 }
 
-// claim marks a seat as busy with an operation, and stops the sweep that is
-// reading it, if there is one. See beginSweep for why both halves are needed.
+// inBackground runs work on a goroutine of its own, holding the lane for as
+// long as it runs, and reports whether it started. It does not start while
+// another reading holds the same lane or while an operation holds the seat.
+//
+// The work's context is ctx with the cancel taken out and the lane's put in, so
+// that it outlives the caller, which is usually a sweep about to end, and still
+// stops for an operation.
+func (m *Manager) inBackground(ctx context.Context, rt *runtime, l *lane, work func(context.Context)) bool {
+	ctx, end, ok := m.enter(context.WithoutCancel(ctx), rt, l, false)
+	if !ok {
+		return false
+	}
+
+	go func() {
+		defer end()
+
+		work(ctx)
+	}()
+
+	return true
+}
+
+// claim marks a seat as busy with an operation, and stops every reading of it
+// that is in progress. See beginSweep for why both halves are needed.
 func (m *Manager) claim(rt *runtime, label string, cancel context.CancelFunc) error {
 	m.mu.Lock()
 
@@ -795,22 +852,34 @@ func (m *Manager) claim(rt *runtime, label string, cancel context.CancelFunc) er
 	rt.cancel = cancel
 	rt.lastErr = ""
 	rt.progress = -1
-	sweep := rt.sweepCancel
+
+	var readings []context.CancelFunc
+
+	for _, l := range rt.lanes() {
+		if l.cancel != nil {
+			readings = append(readings, l.cancel)
+		}
+	}
+
 	m.mu.Unlock()
 
-	if sweep != nil {
-		sweep()
+	for _, stop := range readings {
+		stop()
 	}
 
 	return nil
 }
 
-// quiesce waits until no sweep is reading the seat. Called by an operation after
-// claim, which has already made sure that none will start and that the one in
-// progress has been told to stop, so this is a wait of milliseconds.
+// quiesce waits until nothing is reading the seat. Called by an operation after
+// claim, which has already made sure that no reading will start and that the
+// ones in progress have been told to stop, so this is a wait for each of them
+// to notice: milliseconds for the sweep, and for the others as long as their
+// current exec takes to give up on a cancelled context.
 func (rt *runtime) quiesce() {
-	rt.sweep.Lock()
-	rt.sweep.Unlock() //nolint:staticcheck // taken only to wait for the holder
+	for _, l := range rt.lanes() {
+		l.mu.Lock()
+		l.mu.Unlock() //nolint:staticcheck // taken only to wait for the holder
+	}
 }
 
 // refreshSession reads what the session inside a running seat is doing.
@@ -951,8 +1020,12 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 			m.logf(name, "the seat is in use, so Moonlight's list will be updated when the stream ends")
 		}
 
+		// Handed off rather than done here, see refreshAppsSoon. A rebuild
+		// that is still running from last time is not a reason to wait: its
+		// own answer is at most appsPatience old, and the next one falls due
+		// a minute after this.
 		if due && !busy {
-			m.refreshApps(ctx, name)
+			m.refreshAppsSoon(ctx, name)
 		}
 
 		// A seat that has come up and has never been asked what it is behind
@@ -1360,7 +1433,16 @@ func (m *Manager) sessionEnded(ctx context.Context, name string) {
 
 	if pending {
 		m.logf(name, "the stream ended, updating the app list now")
-		m.refreshApps(ctx, name)
+
+		// A rebuild from before the stream may still hold the lane. What was
+		// held back is then owed to the next sweep rather than dropped: the
+		// zero time is due at once, and the sweep only acts on it once nobody
+		// is streaming.
+		if !m.refreshAppsSoon(ctx, name) {
+			m.mu.Lock()
+			rt.appsChecked = time.Time{}
+			m.mu.Unlock()
+		}
 	}
 }
 

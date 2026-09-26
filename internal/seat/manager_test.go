@@ -691,6 +691,132 @@ func TestTheTimersSweepDoesNotQueueBehindAnother(t *testing.T) {
 	}
 }
 
+// A rebuild of the app list is handed off by the sweep, and the sweep must be
+// able to go on to the next seat while it runs: the player decides how long the
+// scans behind it take, and the sweep of every other seat used to wait them out.
+// At most one per seat, and one seat's rebuild does not keep another's from
+// starting.
+func TestABackgroundRebuildHoldsUpNobody(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+	vince := m.runtimeOf("vince")
+	joser := m.runtimeOf("joser")
+
+	release := make(chan struct{})
+	defer close(release)
+
+	started := make(chan string, 4)
+
+	slow := func(name string) func(context.Context) {
+		return func(context.Context) {
+			started <- name
+			<-release
+		}
+	}
+
+	returned := make(chan bool, 1)
+
+	go func() { returned <- m.inBackground(context.Background(), vince, &vince.apps, slow("vince")) }()
+
+	select {
+	case ok := <-returned:
+		if !ok {
+			t.Fatal("an idle seat's rebuild was refused")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the caller waited for the rebuild, which is the sweep standing still")
+	}
+
+	<-started
+
+	if m.inBackground(context.Background(), vince, &vince.apps, slow("vince again")) {
+		t.Error("a second rebuild was started beside the one still running")
+	}
+
+	if !m.inBackground(context.Background(), joser, &joser.apps, slow("joser")) {
+		t.Error("another seat's rebuild was refused because of this one")
+	}
+
+	if got := <-started; got != "joser" {
+		t.Errorf("the rebuild that ran was %q", got)
+	}
+
+	// And the sweep itself, which is a different lane, still reads the seat.
+	_, end, ok := m.beginSweep(context.Background(), vince, false)
+	if !ok {
+		t.Fatal("the sweep was kept out of a seat whose app list is being rebuilt")
+	}
+
+	end()
+}
+
+// The same handshake as TestAnOperationStopsAndWaitsOutTheSweepInProgress, for
+// a rebuild of the app list. Taken off the sweep, it would otherwise be the one
+// reading of a seat that a Stop neither cancels nor waits for, and an exec of
+// its scans would land in the container's shutdown.
+func TestAnOperationStopsAndWaitsOutABackgroundRebuild(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+	rt := m.runtimeOf("vince")
+
+	// The caller's context ends as soon as it has handed the work off, which
+	// is what the sweep's does. The rebuild must not end with it.
+	caller, leave := context.WithCancel(context.Background())
+
+	running := make(chan context.Context, 1)
+	finish := make(chan struct{})
+
+	ok := m.inBackground(caller, rt, &rt.apps, func(ctx context.Context) {
+		running <- ctx
+		<-ctx.Done()
+		<-finish
+	})
+	if !ok {
+		t.Fatal("an idle seat's rebuild was refused")
+	}
+
+	leave()
+
+	ctx := <-running
+
+	if ctx.Err() != nil {
+		t.Fatal("the rebuild was cancelled by the end of the sweep that started it")
+	}
+
+	if err := m.claim(rt, "stopping", func() {}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	if ctx.Err() == nil {
+		t.Error("the rebuild was not told to stop, so its next exec goes ahead")
+	}
+
+	quiet := make(chan struct{})
+
+	go func() {
+		rt.quiesce()
+		close(quiet)
+	}()
+
+	select {
+	case <-quiet:
+		t.Fatal("the operation went ahead while the rebuild was still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(finish)
+
+	select {
+	case <-quiet:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the operation was still waiting after the rebuild ended")
+	}
+
+	if m.inBackground(context.Background(), rt, &rt.apps, func(context.Context) {
+		t.Error("a rebuild ran in a seat an operation holds")
+	}) {
+		t.Error("a rebuild was let into a seat an operation holds")
+	}
+}
+
 // A Delete that worked takes the seat's runtime record with it, and the end of
 // the operation must not put one back: it used to log "deleting done" and
 // reconcile by name, which made a fresh record, and a seat created again under
