@@ -66,6 +66,11 @@ type Manager struct {
 	pool       *library.Pool
 	libraryErr string
 
+	// setups is what is known about the folders' setup scripts, which are
+	// allowed and which wait to run where. nil when there is no pool. See
+	// foldersetup.go.
+	setups *folderSetups
+
 	// syncMu serialises library work. The timer and the interface's own
 	// buttons both start passes, and two of them cloning into the same seat at
 	// once would race over the same directories.

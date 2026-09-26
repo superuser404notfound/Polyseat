@@ -202,6 +202,7 @@ func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker
 	guarded.HandleFunc("POST /api/library/unwatch", s.unwatchLibrary)
 	guarded.HandleFunc("DELETE /api/library/{appid}", s.removeTitle)
 	guarded.HandleFunc("POST /api/library/{appid}/offer/{seat}", s.offerTitle)
+	guarded.HandleFunc("POST /api/library/setups/{folder}", s.allowFolderSetup)
 	guarded.HandleFunc("POST /api/seats/{name}/{action}", s.seatAction)
 
 	mux.Handle("/api/", s.requireSession(guarded))
@@ -1421,6 +1422,10 @@ func (s *Server) libraryStatus() seat.LibraryStatus {
 		status.Sources = []string{}
 	}
 
+	if status.Setups == nil {
+		status.Setups = []seat.FolderSetup{}
+	}
+
 	for i, title := range status.Titles {
 		if title.In == nil {
 			status.Titles[i].In = []string{}
@@ -1541,6 +1546,41 @@ func (s *Server) removeTitle(w http.ResponseWriter, r *http.Request) {
 func (s *Server) offerTitle(w http.ResponseWriter, r *http.Request) {
 	err := s.manager.OfferToSeat(r.Context(), r.PathValue("seat"), r.PathValue("appid"))
 	if err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.libraryStatus())
+}
+
+// allowFolderSetup lets one shared folder's polyseat-setup.sh run, in the
+// version the pool holds now. The body names the hash the page showed, so that
+// what is allowed is what was read.
+func (s *Server) allowFolderSetup(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SHA256 string `json:"sha256"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if req.SHA256 == "" {
+		fail(w, http.StatusBadRequest, errors.New("no sha256 given"))
+
+		return
+	}
+
+	if err := s.manager.ApproveFolderSetup(r.PathValue("folder"), req.SHA256); err != nil {
+		if errors.Is(err, seat.ErrSetupChanged) {
+			fail(w, http.StatusConflict, err)
+
+			return
+		}
+
 		fail(w, statusFor(err), err)
 
 		return

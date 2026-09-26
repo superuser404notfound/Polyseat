@@ -115,7 +115,22 @@ func hostFolders(uid int) string {
 		return ""
 	}
 
-	return sharedIn(who.HomeDir)
+	return foldersFor(uid, who.HomeDir)
+}
+
+// foldersFor is hostFolders once the home is known, apart so that the uid rule
+// can be tested against a home that has the directory.
+//
+// A library owned by root or a system account does not take part in this half.
+// What arrives here is meant for a person's own Lutris, and the setup scripts
+// that come with it are never run as such an account, see minOwnerUID, so the
+// folders would arrive in /root and do nothing.
+func foldersFor(uid int, home string) string {
+	if uid < minOwnerUID {
+		return ""
+	}
+
+	return sharedIn(home)
 }
 
 // ownerOf is the passwd entry for one uid, or nil when the system has none.

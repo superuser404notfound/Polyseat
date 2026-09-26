@@ -65,6 +65,10 @@ type LibraryStatus struct {
 	// once already.
 	Outside []string `json:"outside"`
 
+	// Setups are the folders' setup scripts waiting for somebody to allow
+	// them, see foldersetup.go. Always a list, never null.
+	Setups []FolderSetup `json:"setups"`
+
 	library.Inventory
 }
 
@@ -266,6 +270,16 @@ func (m *Manager) openLibrary() {
 	}
 
 	m.pool = pool
+
+	// A record that cannot be read is logged and started over. What that
+	// costs is a question asked again; see openSetups.
+	setups, err := openSetups(filepath.Join(m.cfg.StateDir, setupFile))
+	if err != nil {
+		m.log.Warn("the record of allowed folder setup scripts could not be read, "+
+			"so every one will be asked about again", "err", err)
+	}
+
+	m.setups = setups
 
 	m.log.Info("shared library ready", "dir", m.cfg.LibraryDir)
 }
@@ -507,6 +521,12 @@ func (m *Manager) syncLibrary(ctx context.Context) {
 		return
 	}
 
+	// On every pass and not only on one that delivered something: a run that
+	// was waiting for its seat to be switched on, or for somebody to allow
+	// it, has nothing in this report to say so. It returns at once, and it
+	// asks nothing when nothing waits.
+	m.settleSoon()
+
 	for _, problem := range report.Problems {
 		m.log.Warn("library", "problem", problem)
 	}
@@ -536,11 +556,6 @@ func (m *Manager) syncLibrary(ctx context.Context) {
 	}
 
 	m.notify()
-
-	// Last, and outside the lock taken above: a folder that has just arrived
-	// may carry a script to make itself usable where it landed, and running one
-	// takes minutes rather than milliseconds.
-	m.settleFolders(ctx, members, report)
 }
 
 // syncOnce is the part of a pass that holds the lock.
@@ -568,6 +583,11 @@ func (m *Manager) syncOnce(ctx context.Context, members []library.Member) (libra
 
 		return library.Report{}, false
 	}
+
+	// Under the lock, so that the version written down for a folder with a
+	// setup script is the one just delivered and not one a pass started from
+	// the interface has taken in since.
+	m.noteDeliveries(members, report)
 
 	return report, true
 }
@@ -619,6 +639,7 @@ func (m *Manager) Library() LibraryStatus {
 		Sources:    sources,
 		Receiving:  receiving,
 		Outside:    m.outside(),
+		Setups:     m.folderSetupsWaiting(),
 		Inventory:  inv,
 	}
 }
@@ -699,7 +720,16 @@ func (m *Manager) RemoveFromLibrary(appID string) error {
 	m.syncMu.Lock()
 	defer m.syncMu.Unlock()
 
-	return m.pool.Remove(appID)
+	if err := m.pool.Remove(appID); err != nil {
+		return err
+	}
+
+	// A folder that leaves the pool takes its approval with it, see forget.
+	if name, ok := library.FolderName(appID); ok && m.setups != nil {
+		return m.setups.forget(name)
+	}
+
+	return nil
 }
 
 // OfferToSeat clears a seat's refusal so the next pass hands the title over
