@@ -107,6 +107,17 @@ type Manager struct {
 	// test. See filer in files.go.
 	files filer
 
+	// sweeper reads a seat in place of sweepSeat, and is nil everywhere except
+	// in a test. What a sweep reads comes from Incus and from execs into the
+	// container, and what a test of the main loop needs to see is only whether
+	// the loop waits for it.
+	sweeper func(ctx context.Context, name string)
+
+	// syncing is set while a library pass started by the timer is running, so
+	// that a pass which outlasts the timer's minute is not joined by another
+	// queueing behind it on syncMu. Guarded by mu. See syncSoon.
+	syncing bool
+
 	// asker answers what a seat is behind on in place of Freshness, and is nil
 	// everywhere except in a test, for the same reason libraries is a seam:
 	// the real one runs pacman in a container.
@@ -387,7 +398,7 @@ func (m *Manager) Run(ctx context.Context) error {
 			m.reconcileAll(ctx)
 
 		case <-sync.C:
-			m.syncLibrary(ctx)
+			m.syncSoon(ctx)
 
 		// Handed off, both of them. A freshness pass is a pacman -Sy in every
 		// running seat, one after another, and run here it held up every
@@ -669,11 +680,28 @@ func (m *Manager) onLifecycle(ctx context.Context, ev incusx.Lifecycle) {
 		m.setState(ev.Instance, StateAbsent)
 	}
 
-	m.reconcile(ctx, ev.Instance)
+	// On a goroutine of its own, because it waits for a sweep of this seat
+	// that is already reading it, and that sweep is as slow as the seat makes
+	// it. Waited for here, it held up every event behind it, for every seat.
+	// Two events for one seat queue on the seat's sweep lock and each reads
+	// what is true when its turn comes, so their order does not matter.
+	go m.reconcile(ctx, ev.Instance)
 }
 
 // ---------------------------------------------------------------- reconcile
 
+// reconcileAll starts a sweep of every seat, each on a goroutine of its own,
+// and does not wait for any of them.
+//
+// It used to visit the seats one after another on the daemon's main loop, and a
+// sweep is a handful of execs into the seat, each allowed quickTimeout. A seat
+// that answered slowly, which a player can arrange from inside it, held up the
+// sweep of every other seat and every Incus event for as long as it took, every
+// ten seconds. Now it holds up its own sweep.
+//
+// A seat whose last sweep is still running is left to it rather than queued
+// behind it: that sweep is already reading what this one would. So there is at
+// most one sweep per seat, and a slow seat costs a TryLock every ten seconds.
 func (m *Manager) reconcileAll(ctx context.Context) {
 	seats, err := m.store.List()
 	if err != nil {
@@ -683,35 +711,53 @@ func (m *Manager) reconcileAll(ctx context.Context) {
 	}
 
 	for _, s := range seats {
-		m.reconcileWith(ctx, s.Name, false)
+		rt := m.runtimeOf(s.Name)
+
+		sweep, end, ok := m.beginSweep(ctx, rt, false)
+		if !ok {
+			continue
+		}
+
+		go func(name string) {
+			defer end()
+
+			m.sweepSeat(sweep, name)
+		}(s.Name)
 	}
 }
 
-// reconcile refreshes what is observed about a seat.
+// reconcile refreshes what is observed about a seat, waiting for a sweep of it
+// that is already in progress.
 //
 // It deliberately does not act. Bringing a seat back up after it stopped by
 // itself is a decision, not a repair, and the interface shows it instead.
-func (m *Manager) reconcile(ctx context.Context, name string) {
-	m.reconcileWith(ctx, name, true)
-}
-
-// reconcileWith is reconcile, told whether to wait for a sweep of the same seat
-// that is already in progress or to leave the seat to it.
 //
-// The timer's pass does not wait. The sweep in progress is already reading
-// what this one would, and the timer runs on the goroutine that also delivers
-// Incus's events, which should not stand still behind one slow seat. Everything
-// else waits: an event or the end of an operation has something new to read,
-// and a sweep that started before it might not have seen it.
-func (m *Manager) reconcileWith(ctx context.Context, name string, wait bool) {
+// Unlike the timer's pass it waits: an event or the end of an operation has
+// something new to read, and a sweep that started before it might not have
+// seen it. Nothing on the main loop calls this any more, so the wait is only
+// ever the caller's own.
+func (m *Manager) reconcile(ctx context.Context, name string) {
 	rt := m.runtimeOf(name)
 
-	ctx, end, ok := m.beginSweep(ctx, rt, wait)
+	ctx, end, ok := m.beginSweep(ctx, rt, true)
 	if !ok {
 		return
 	}
 
 	defer end()
+
+	m.sweepSeat(ctx, name)
+}
+
+// sweepSeat is one sweep of a seat, run while holding its sweep lane.
+func (m *Manager) sweepSeat(ctx context.Context, name string) {
+	if m.sweeper != nil {
+		m.sweeper(ctx, name)
+
+		return
+	}
+
+	rt := m.runtimeOf(name)
 
 	status, err := m.client.Status(name)
 	if err != nil {
@@ -840,6 +886,38 @@ func (m *Manager) inBackground(ctx context.Context, rt *runtime, l *lane, work f
 		defer end()
 
 		work(ctx)
+	}()
+
+	return true
+}
+
+// alone runs work on a goroutine of its own unless the flag says one is already
+// running, and reports whether it started it. The flag is guarded by mu.
+//
+// For the passes over every seat that the main loop starts on a timer. The
+// loop must not wait for them, and a pass that outlasts its interval must not
+// be joined by a second one doing the same work beside it or queueing behind
+// it on a lock.
+func (m *Manager) alone(flag *bool, work func()) bool {
+	m.mu.Lock()
+
+	if *flag {
+		m.mu.Unlock()
+
+		return false
+	}
+
+	*flag = true
+	m.mu.Unlock()
+
+	go func() {
+		defer func() {
+			m.mu.Lock()
+			*flag = false
+			m.mu.Unlock()
+		}()
+
+		work()
 	}()
 
 	return true

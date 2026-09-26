@@ -882,17 +882,6 @@ func (m *Manager) CheckFreshness(name string) (Freshness, error) {
 // this often harmless: a seat with a current reading is skipped without
 // anything being asked of it.
 func (m *Manager) freshenSoon(ctx context.Context) {
-	m.mu.Lock()
-
-	if m.freshening {
-		m.mu.Unlock()
-
-		return
-	}
-
-	m.freshening = true
-	m.mu.Unlock()
-
 	// Without the caller's cancel. The sweep is the commonest caller and its
 	// context ends the moment the sweep does, which is before the pass has
 	// asked its first seat anything: every pass started this way gave up at
@@ -900,13 +889,5 @@ func (m *Manager) freshenSoon(ctx context.Context) {
 	// six hour timer came round.
 	ctx = context.WithoutCancel(ctx)
 
-	go func() {
-		defer func() {
-			m.mu.Lock()
-			m.freshening = false
-			m.mu.Unlock()
-		}()
-
-		m.updateFreshness(ctx)
-	}()
+	m.alone(&m.freshening, func() { m.updateFreshness(ctx) })
 }
