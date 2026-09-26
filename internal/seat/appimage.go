@@ -737,7 +737,10 @@ func (m *Manager) InstallAppImage(name, rawURL string) error {
 		}
 
 		if code != 0 {
-			_, _, _ = m.client.Try(ctx, name, "rm", "-f", part)
+			// As the player like everything else here: ~/Applications is
+			// theirs, and root removing a name in it follows a link that
+			// stands in its place.
+			_, _, _ = m.client.Try(ctx, name, m.playerEnv("rm", "-f", "--", part)...)
 
 			return fmt.Errorf("%s could not be downloaded: %s", rawURL, watch.tail())
 		}
@@ -746,7 +749,7 @@ func (m *Manager) InstallAppImage(name, rawURL string) error {
 			"python3", "-I", "-c", appImageProbe, part)...); err != nil {
 			return err
 		} else if code != 0 {
-			_, _, _ = m.client.Try(ctx, name, "rm", "-f", part)
+			_, _, _ = m.client.Try(ctx, name, m.playerEnv("rm", "-f", "--", part)...)
 
 			return fmt.Errorf("what arrived is not an AppImage, so it was not kept")
 		}
