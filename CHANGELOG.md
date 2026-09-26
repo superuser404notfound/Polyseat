@@ -10,6 +10,22 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.32.2
+
+**The daemon can be restarted while somebody is streaming.** With anybody
+playing, the update banner and the Updates panel offered only a disabled
+"Restart when nobody is playing", so a stream left running in an empty room, or
+an update that could not wait for a game to end, meant waiting or a shell.
+Beside it there is now "Restart anyway", which asks once before it does
+anything. Seats, games and streams keep running through a restart; what drops
+for a moment is every controller, while the input brokers restart with the
+daemon. The plain "Restart now", and the restart offered after preparing the
+machine, ask the same question when somebody started streaming after the page
+was drawn, instead of only showing the refusal. A restart refused because the
+machine is being prepared is still refused, with no way past it.
+
+No seat needs to be built again.
+
 ## 0.32.1
 
 **0.32.0 had no Arch package.** One of its new tests checks that a setup
