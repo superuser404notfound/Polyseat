@@ -55,6 +55,21 @@ async function api(method, path, body) {
   return data;
 }
 
+// apiPath builds an API path with every interpolated value encoded.
+//
+// Used as a tag, apiPath`/api/library/${id}`, so that no call site can forget.
+// They were interpolated raw, which held for seat names only because those
+// are checked to be plain: a title from a folder is folder:<its name>, and a
+// folder called "Tom & Jerry #2" turned into a request for a different path
+// with a fragment on the end, which the daemon answered with a 404 for a title
+// it had just listed.
+function apiPath(strings, ...values) {
+  return strings.reduce(
+    (out, part, i) => out + part + (i < values.length ? encodeURIComponent(values[i]) : ""),
+    "",
+  );
+}
+
 // One fetch at a time, and always one more after the last thing that asked.
 //
 // The daemon pushes a token on every change, and during provisioning or an
@@ -1097,7 +1112,7 @@ function titleRow(title) {
     button.title =
       seat + " uninstalled this, so it is not offered again. Click to send it back.";
     button.onclick = () =>
-      run(() => api("POST", `/api/library/${title.appid}/offer/${seat}`));
+      run(() => api("POST", apiPath`/api/library/${title.appid}/offer/${seat}`));
     where.append(" ", button);
   });
 
@@ -1121,7 +1136,7 @@ function titleRow(title) {
       return;
     }
 
-    run(() => api("DELETE", `/api/library/${title.appid}`));
+    run(() => api("DELETE", apiPath`/api/library/${title.appid}`));
   };
 
   actions.append(remove);
@@ -1330,7 +1345,7 @@ async function loadSoftware(seat, body, fresh) {
   let status;
 
   try {
-    status = await api("GET", `/api/seats/${seat.name}/software`);
+    status = await api("GET", apiPath`/api/seats/${seat.name}/software`);
   } catch (err) {
     if (err.unauthorized) return showLogin();
 
@@ -1391,7 +1406,7 @@ function drawSoftware(seat, body, status) {
       remove.className = "danger";
       remove.onclick = () =>
         run(async () => {
-          await api("DELETE", `/api/seats/${seat.name}/software/${app.id}`);
+          await api("DELETE", apiPath`/api/seats/${seat.name}/software/${app.id}`);
           await loadSoftware(seat, body, true);
         });
 
@@ -1427,7 +1442,7 @@ function drawSoftware(seat, body, status) {
           add.textContent = "Installing";
 
           try {
-            await api("POST", `/api/seats/${seat.name}/software`, { id: entry.id });
+            await api("POST", apiPath`/api/seats/${seat.name}/software`, { id: entry.id });
             await loadSoftware(seat, body, true);
           } finally {
             add.disabled = false;
@@ -1495,7 +1510,7 @@ function drawAppImages(seat, body, status) {
         run(async () => {
           await api(
             "DELETE",
-            `/api/seats/${seat.name}/appimages/${encodeURIComponent(image.file)}`,
+            apiPath`/api/seats/${seat.name}/appimages/${image.file}`,
           );
           await loadSoftware(seat, body, true);
         });
@@ -1534,7 +1549,7 @@ function drawAppImages(seat, body, status) {
       submit.textContent = "Downloading";
 
       try {
-        await api("POST", `/api/seats/${seat.name}/appimages`, {
+        await api("POST", apiPath`/api/seats/${seat.name}/appimages`, {
           url: address.value.trim(),
         });
 
@@ -1581,9 +1596,7 @@ function searchForm(seat, body, results, have) {
       try {
         const found = await api(
           "GET",
-          `/api/seats/${seat.name}/software/search?q=${encodeURIComponent(
-            query.value.trim(),
-          )}`,
+          apiPath`/api/seats/${seat.name}/software/search?q=${query.value.trim()}`,
         );
 
         drawResults(seat, body, results, found.results || [], have);
@@ -1634,7 +1647,7 @@ function drawResults(seat, body, results, found, have) {
           add.textContent = "Installing";
 
           try {
-            await api("POST", `/api/seats/${seat.name}/software`, { id: entry.id });
+            await api("POST", apiPath`/api/seats/${seat.name}/software`, { id: entry.id });
             await loadSoftware(seat, body, true);
           } finally {
             add.disabled = false;
@@ -1868,7 +1881,7 @@ async function send(name, chosen) {
   drawUpload(name);
 
   try {
-    const got = await upload(`/api/seats/${name}/files`, form, (sent) => {
+    const got = await upload(apiPath`/api/seats/${name}/files`, form, (sent) => {
       const now = uploading.get(name);
 
       if (!now) return;
@@ -2013,9 +2026,9 @@ async function loadPairing(seat, body) {
 
   try {
     const [clients, access, pending] = await Promise.all([
-      api("GET", `/api/seats/${seat.name}/clients`),
-      api("GET", `/api/seats/${seat.name}/sunshine`),
-      api("GET", `/api/seats/${seat.name}/pending`),
+      api("GET", apiPath`/api/seats/${seat.name}/clients`),
+      api("GET", apiPath`/api/seats/${seat.name}/sunshine`),
+      api("GET", apiPath`/api/seats/${seat.name}/pending`),
     ]);
 
     const devices = clients.devices || [];
@@ -2066,7 +2079,7 @@ function deviceList(seat, devices, body) {
     remove.className = "danger";
     remove.onclick = () =>
       run(async () => {
-        await api("POST", `/api/seats/${seat.name}/unpair`, { uuid: device.uuid });
+        await api("POST", apiPath`/api/seats/${seat.name}/unpair`, { uuid: device.uuid });
         await loadPairing(seat, body);
       });
 
@@ -2140,7 +2153,7 @@ function waitingPanel(seat, pending, form) {
 
       run(async () => {
         try {
-          const fresh = await api("GET", `/api/seats/${seat.name}/pending`);
+          const fresh = await api("GET", apiPath`/api/seats/${seat.name}/pending`);
           draw(fresh.pairings);
         } finally {
           again.disabled = false;
@@ -2197,7 +2210,7 @@ async function settleAfterPairing(seat, body, before) {
     let devices;
 
     try {
-      devices = (await api("GET", `/api/seats/${seat.name}/clients`)).devices || [];
+      devices = (await api("GET", apiPath`/api/seats/${seat.name}/clients`)).devices || [];
     } catch (err) {
       // Whatever went wrong, the full redraw below reports it properly. The
       // binding is unused and written out anyway: an omitted one is ES2019 and
@@ -2242,7 +2255,7 @@ function pairForm(seat, body, paired) {
 
     run(async () => {
       try {
-        await api("POST", `/api/seats/${seat.name}/pair`, {
+        await api("POST", apiPath`/api/seats/${seat.name}/pair`, {
           pin: pin.value.trim(),
           name: label.value.trim(),
         });
@@ -2488,15 +2501,15 @@ function actions(seat) {
 
   const running = seat.state === "running" || seat.state === "starting";
 
-  if (running) button("Stop", () => api("POST", `/api/seats/${seat.name}/stop`));
-  else button("Start", () => api("POST", `/api/seats/${seat.name}/start`), "primary");
+  if (running) button("Stop", () => api("POST", apiPath`/api/seats/${seat.name}/stop`));
+  else button("Start", () => api("POST", apiPath`/api/seats/${seat.name}/start`), "primary");
 
   // A seat nobody has built yet gets Start and nothing else. Start builds it,
   // and offering Build beside it was offering the same thing twice under two
   // names, one of which read as though something had gone wrong with a seat
   // created a minute ago.
   if (seat.built) {
-    button("Rebuild", () => api("POST", `/api/seats/${seat.name}/provision`));
+    button("Rebuild", () => api("POST", apiPath`/api/seats/${seat.name}/provision`));
   }
 
   // Asking is always available and installing is not. The check reads and
@@ -2516,13 +2529,13 @@ function actions(seat) {
     // the mirrors can take to answer.
     const check = button("Check for updates", () =>
       whileWaiting(check, () =>
-        api("POST", `/api/seats/${seat.name}/check-updates`),
+        api("POST", apiPath`/api/seats/${seat.name}/check-updates`),
       ),
     );
 
     if (behind(seat.updates)) {
       button("Update software", () =>
-        api("POST", `/api/seats/${seat.name}/update-software`),
+        api("POST", apiPath`/api/seats/${seat.name}/update-software`),
       );
     }
   }
@@ -2540,7 +2553,7 @@ function actions(seat) {
           `installed in it?\n\nCancel keeps the container and only removes the seat.`,
       );
 
-      return api("DELETE", `/api/seats/${seat.name}?keep_container=${keep ? 1 : 0}`);
+      return api("DELETE", apiPath`/api/seats/${seat.name}?keep_container=${keep ? 1 : 0}`);
     },
     "danger",
   );
@@ -2549,7 +2562,7 @@ function actions(seat) {
   if (seat.busy) {
     const cancel = document.createElement("button");
     cancel.textContent = "Cancel";
-    cancel.onclick = () => run(() => api("POST", `/api/seats/${seat.name}/cancel`));
+    cancel.onclick = () => run(() => api("POST", apiPath`/api/seats/${seat.name}/cancel`));
     bar.append(cancel);
   }
 
@@ -2607,7 +2620,7 @@ function refreshOpenLogs() {
 
 async function loadLog(name, pre) {
   try {
-    const data = await api("GET", `/api/seats/${name}/log`);
+    const data = await api("GET", apiPath`/api/seats/${name}/log`);
     pre.textContent = data.lines.join("\n") || "nothing yet";
     pre.scrollTop = pre.scrollHeight;
   } catch (err) {
@@ -2958,7 +2971,7 @@ async function saveSeat() {
   };
 
   if (editing) {
-    await api("PATCH", `/api/seats/${editing.name}`, body);
+    await api("PATCH", apiPath`/api/seats/${editing.name}`, body);
 
     return;
   }
