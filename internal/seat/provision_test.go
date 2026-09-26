@@ -285,3 +285,26 @@ func TestDetachedOutlivesACancelledRunAndStillEnds(t *testing.T) {
 		t.Errorf("the deadline is %s away, want within %s", left, quickTimeout)
 	}
 }
+
+// Closing Steam ends whatever game somebody is streaming, so steamQuiet may do
+// it only on a clear idle. The readings are what streamCheck prints: the first
+// busy one is the case the old test for the session file alone let through, a
+// stream that survived a reconnect and so has sockets but no file.
+func TestSteamIsOnlyClosedOnAClearIdle(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  string
+		code int
+		idle bool
+	}{
+		{"sockets and no session file", "streaming\n", 0, false},
+		{"sockets and a session file", "streaming\n{\"app\":\"Steam Big Picture\"}\n", 0, false},
+		{"an answer nobody understands", "", 0, false},
+		{"a check that failed", "idle\n", 1, false},
+		{"idle", "idle\n", 0, true},
+	} {
+		if got := streamIdleReading(tc.out, tc.code); got != tc.idle {
+			t.Errorf("%s: idle = %v, want %v", tc.name, got, tc.idle)
+		}
+	}
+}

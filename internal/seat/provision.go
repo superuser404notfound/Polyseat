@@ -1274,13 +1274,18 @@ func (p *Provisioner) steamQuiet(ctx context.Context) (bool, error) {
 		}
 	}
 
-	_, code, err := p.Client.Try(ctx, p.name(), "test", "-e", SessionPath)
+	// The same question the manager asks before anything that could end a
+	// stream, and asked the same way. This used to look for the session file
+	// alone, which readSession explains is not there through a stream that
+	// survived a reconnect: the one moment somebody is certainly still playing
+	// is the one it would have closed Steam under them.
+	out, code, err := p.Client.Try(ctx, p.name(), "sh", "-c", streamCheck)
 	if err != nil {
 		return false, err
 	}
 
-	if code == 0 {
-		p.Log("Steam is running and somebody is streaming from this seat, so it was left alone")
+	if !streamIdleReading(out, code) {
+		p.Log("Steam is running and somebody may be streaming from this seat, so it was left alone")
 
 		return false, nil
 	}
@@ -1330,6 +1335,22 @@ func (p *Provisioner) steamQuiet(ctx context.Context) (bool, error) {
 	p.Log("! Steam did not close within %s, so nothing below it was changed", steamShutdownWait)
 
 	return false, nil
+}
+
+// streamIdleReading reads streamCheck's answer for the one caller that is
+// about to close Steam, and only a clear idle lets it.
+//
+// A function of its own so that the case the old file test missed can be
+// shown without a seat: sockets that say streaming and no session file to
+// describe them.
+func streamIdleReading(out string, code int) bool {
+	if code != 0 {
+		return false
+	}
+
+	_, state := parseStreamCheck(out)
+
+	return state == streamIdle
 }
 
 // steamShutdownWait is how long Steam is given to leave after being asked.
