@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // StateInstalled is the value of StateFlags for a game that is fully installed
@@ -30,9 +32,19 @@ type App struct {
 	StateFlags int    `json:"state_flags"`
 	SizeOnDisk int64  `json:"size_on_disk"`
 
-	// Manifest is the file the app was read from, kept so it can be copied
-	// verbatim rather than regenerated.
+	// Manifest is the file the app was read from, for messages.
 	Manifest string `json:"-"`
+
+	// data is the manifest exactly as it was parsed, which is what gets copied
+	// on, verbatim rather than regenerated. Kept rather than read again from
+	// Manifest when it is copied: a second read gets whatever the file says
+	// by then, and the member writing it can make that a manifest the checks
+	// here never saw, one with no installdir, say, which Remove would later
+	// have turned into the whole pool.
+	data []byte
+
+	// modTime is when the manifest last changed, from the same open as data.
+	modTime time.Time
 }
 
 // Installed reports whether the app is complete and current.
@@ -76,16 +88,40 @@ func Newer(a, b string) bool {
 // writes these files while it works and a torn read is normal; failing the
 // whole scan because one file was caught mid-write would make the sync loop
 // stop for a reason that fixes itself a second later.
+//
+// The path form, trusting every directory on the way; the pool opens a
+// member's library itself and calls readAppsAt.
 func ReadApps(steamapps string) ([]App, error) {
-	matches, err := filepath.Glob(filepath.Join(steamapps, "appmanifest_*.acf"))
+	dir, err := openOwn(steamapps)
+	if err != nil {
+		// A glob over a directory that is not there matched nothing, which
+		// is what this answered before it opened the directory itself.
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	defer dir.Close()
+
+	return readAppsAt(dir)
+}
+
+func readAppsAt(dir *os.File) ([]App, error) {
+	names, err := readNames(dir)
 	if err != nil {
 		return nil, err
 	}
 
 	var out []App
 
-	for _, path := range matches {
-		app, err := ReadApp(path)
+	for _, name := range names {
+		if !strings.HasPrefix(name, "appmanifest_") || !strings.HasSuffix(name, ".acf") {
+			continue
+		}
+
+		app, err := readAppAt(dir, name)
 		if err != nil {
 			continue
 		}
@@ -100,9 +136,40 @@ func ReadApps(steamapps string) ([]App, error) {
 
 // ReadApp parses one appmanifest.
 func ReadApp(path string) (App, error) {
-	data, err := os.ReadFile(path)
+	dir, err := openOwn(filepath.Dir(path))
 	if err != nil {
 		return App{}, err
+	}
+
+	defer dir.Close()
+
+	return readAppAt(dir, filepath.Base(path))
+}
+
+// maxManifest is far more than any real manifest, whose size is a few lines per
+// depot. It is there so that a file somebody made enormous is refused rather
+// than read into memory.
+const maxManifest = 16 << 20
+
+// readAppAt parses one appmanifest in an open directory. Only a regular file:
+// a link is not followed, and a fifo would otherwise block the read forever.
+func readAppAt(dir *os.File, name string) (App, error) {
+	f, st, err := openFileAt(dir, name)
+	if err != nil {
+		return App{}, err
+	}
+
+	defer f.Close()
+
+	path := f.Name()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxManifest+1))
+	if err != nil {
+		return App{}, err
+	}
+
+	if len(data) > maxManifest {
+		return App{}, fmt.Errorf("%s is larger than any manifest", path)
 	}
 
 	app, err := parseManifest(data)
@@ -111,6 +178,8 @@ func ReadApp(path string) (App, error) {
 	}
 
 	app.Manifest = path
+	app.data = data
+	app.modTime = mtimeOf(&st)
 
 	return app, nil
 }
@@ -192,11 +261,34 @@ func parseManifest(data []byte) (App, error) {
 		}
 	}
 
-	if err := safeName(ManifestName(app.AppID)); err != nil {
-		return app, fmt.Errorf("appid: %w", err)
+	// Digits and nothing else, which is what every Steam app id is. safeName
+	// alone let a space through, and the id does not stay in this package: it
+	// ends up in file names, in steam:// links and in the command lines of
+	// Sunshine entries, which are split on whitespace. A manifest a seat wrote
+	// itself could otherwise carry a second argument into one of those.
+	if !numeric(app.AppID) {
+		return app, fmt.Errorf("appid %q is not a number", app.AppID)
 	}
 
 	return app, nil
+}
+
+// numeric reports whether s is a non-empty run of ASCII digits. Not
+// strconv.ParseUint, which is the same answer plus a limit on length that an
+// app id has no reason to be held to and a leading sign it has no reason to
+// carry.
+func numeric(s string) bool {
+	if s == "" {
+		return false
+	}
+
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+
+	return true
 }
 
 // parsePair splits a `"key"<tab>"value"` line.

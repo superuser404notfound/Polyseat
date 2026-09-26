@@ -328,3 +328,52 @@ func TestFoldersAndSteamTitlesShareOneInventory(t *testing.T) {
 		}
 	}
 }
+
+// An update to a shared folder with a wine prefix in it. The saves are carried
+// into the new tree, and the rename that does it stamps drive_c with the
+// present; the folder then measured newer than the copy it came from and the
+// pool and the seats handed it back and forth after every update.
+func TestAFolderWithSavesSettlesAfterAnUpdate(t *testing.T) {
+	pool := openPool(t)
+	seats := updatable("seat1", "seat2")
+
+	game := filepath.Join(pool.SeatFolders("seat1"), "Viva Pinata")
+
+	mkdirs(t, pool.SeatFolders("seat1"))
+	prefix(t, game, "seat1's garden")
+	mkdirs(t, filepath.Join(game, "drive_c", "Program Files"))
+	write(t, filepath.Join(game, "drive_c", "Program Files", "game.exe"), "version one", 0o644)
+	age(t, game, 2*time.Hour)
+
+	if _, err := pool.Sync(seats, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Lstat(filepath.Join(pool.SeatFolders("seat2"), "Viva Pinata")); err != nil {
+		t.Fatalf("the first delivery did not happen: %v", err)
+	}
+
+	// Patched in seat1, an hour later than the install.
+	write(t, filepath.Join(game, "drive_c", "Program Files", "game.exe"), "version two", 0o644)
+	age(t, game, time.Hour)
+
+	report, err := pool.Sync(seats, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(report.Harvested) != 1 || len(report.Delivered) != 1 {
+		t.Fatalf("the update did not go round once: %+v", report)
+	}
+
+	for i := range 3 {
+		report, err := pool.Sync(seats, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if !report.Empty() {
+			t.Fatalf("pass %d after the update was not idle, the copies are chasing each other: %+v", i, report)
+		}
+	}
+}

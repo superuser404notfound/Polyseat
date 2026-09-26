@@ -38,7 +38,6 @@ import (
 	"sort"
 	"strings"
 	"syscall"
-	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -111,13 +110,31 @@ func SupportsReflink(dir string) error {
 // here, including the error ones. Writing there is not a liberty we would not
 // take anyway: the first library the pool tracks is the one it clones games
 // into.
+//
+// Reached the way an external member is, since that is what from is about to
+// become: a link somebody put on the way would otherwise have the daemon write
+// the probe wherever it pointed.
 func SharesBlocks(from, to string) error {
-	src, err := os.CreateTemp(from, ".polyseat-probe-src-")
+	dir, err := openAnchored(from)
 	if err != nil {
 		return err
 	}
 
-	defer os.Remove(src.Name())
+	defer dir.Close()
+
+	name := tempName(".polyseat-probe-src-")
+
+	// Read and write, since the clone below reads from it. O_EXCL does not
+	// follow a link in the name's place either.
+	fd, err := unix.Openat(fdOf(dir), name,
+		unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return pathError("create", dir, name, err)
+	}
+
+	src := os.NewFile(uintptr(fd), filepath.Join(from, name))
+
+	defer unix.Unlinkat(fdOf(dir), name, 0)
 	defer src.Close()
 
 	// A full block, for the reason SupportsReflink gives: an empty file can be
@@ -183,8 +200,12 @@ var Keep = Owner{UID: -1, GID: -1}
 // The tree is built next to dst under a temporary name and moved into place at
 // the end, so an interrupted clone never leaves a half-populated game directory
 // that Steam would report as installed and then fail to launch.
+//
+// Every directory on the way to src and to dst is trusted, which is right for
+// the tests that call this and for nothing else: the pool reaches a member's
+// library through cloneAt, with the member's directory already open.
 func Clone(src, dst string, owner Owner) (Result, error) {
-	return clone(src, dst, owner, nil)
+	return clonePaths(src, dst, owner, false)
 }
 
 // CloneFolder is Clone for the shared folders, where what the seat owns lives
@@ -196,58 +217,88 @@ func Clone(src, dst string, owner Owner) (Result, error) {
 // none is given the source's, which is what makes a game playable in a seat
 // that has never seen it. See private.go for where the line is drawn and why.
 func CloneFolder(src, dst string, owner Owner) (Result, error) {
-	return clone(src, dst, owner, privateDirs(dst))
+	return clonePaths(src, dst, owner, true)
 }
 
-func clone(src, dst string, owner Owner, carry map[string]bool) (Result, error) {
+func clonePaths(src, dst string, owner Owner, private bool) (Result, error) {
+	from, err := openOwn(filepath.Dir(src))
+	if err != nil {
+		return Result{}, err
+	}
+
+	defer from.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return Result{}, err
+	}
+
+	to, err := openOwn(filepath.Dir(dst))
+	if err != nil {
+		return Result{}, err
+	}
+
+	defer to.Close()
+
+	return cloneAt(from, filepath.Base(src), to, filepath.Base(dst), owner, private)
+}
+
+// beforeOpen runs between looking at an entry and opening it. Only a test sets
+// it, to swap a directory for a link at exactly the moment the old walk trusted
+// what it had just been told.
+var beforeOpen func(path string)
+
+// cloneAt copies the directory srcName in srcDir to dstName in dstDir.
+//
+// Both sides are directories already open, and nothing below them is reached by
+// path; see nofollow.go. private says the destination's seat private
+// directories survive, which is what CloneFolder wants and Clone does not.
+func cloneAt(srcDir *os.File, srcName string, dstDir *os.File, dstName string, owner Owner, private bool) (Result, error) {
 	var result Result
 
-	info, err := os.Lstat(src)
+	src, err := openDirAt(srcDir, srcName)
 	if err != nil {
 		return result, err
 	}
 
-	if !info.IsDir() {
-		return result, fmt.Errorf("%s is not a directory", src)
-	}
+	defer src.Close()
 
-	parent := filepath.Dir(dst)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	var info unix.Stat_t
+
+	if err := unix.Fstat(fdOf(src), &info); err != nil {
 		return result, err
 	}
 
-	staging, err := os.MkdirTemp(parent, ".polyseat-clone-")
+	carry := map[string]bool{}
+	if private {
+		carry = privateDirsAt(dstDir, dstName)
+	}
+
+	// Made 0700 and owned by root, and kept that way until everything that
+	// has to happen inside it has happened. It sits in the member's directory,
+	// where the member can see its name; closed like this the member cannot
+	// look into it or put anything there while the daemon is working.
+	stagingName, staging, err := mkdirTempAt(dstDir, ".polyseat-clone-")
 	if err != nil {
 		return result, err
 	}
 
-	// The staging directory is removed on every path out of here. On success
-	// it has already been renamed away and this is a cheap no-op; on failure it
-	// is what keeps a failed clone from occupying space forever.
-	defer os.RemoveAll(staging)
+	defer staging.Close()
+
+	// The staging directory is removed on every path out of here that did not
+	// move it into place, and it is what keeps a failed clone from occupying
+	// space forever. Emptied through the handle and then removed by name only
+	// if it is empty, so that if something else has taken the name in the
+	// meantime it is left alone.
+	keep := false
+
+	defer func() {
+		if !keep {
+			emptyDir(staging)
+			unix.Unlinkat(fdOf(dstDir), stagingName, unix.AT_REMOVEDIR)
+		}
+	}()
 
 	if err := cloneTree(src, staging, "", owner, carry, &result); err != nil {
-		return result, err
-	}
-
-	// The root of the tree needs the same treatment as everything inside it,
-	// and this is easy to forget because the staging directory already exists
-	// by the time the contents are written.
-	//
-	// Forgotten once, and it broke the feature completely while looking like it
-	// worked: MkdirTemp creates 0700 owned by the daemon, so every game
-	// directory arrived in a seat as root with no permissions for anybody else.
-	// The files were there, the sizes were right, the blocks were shared, and
-	// the player inside the container could not open a single one of them.
-	if err := os.Lchown(staging, owner.UID, owner.GID); err != nil {
-		return result, err
-	}
-
-	if err := os.Chmod(staging, info.Mode().Perm()); err != nil {
-		return result, err
-	}
-
-	if err := os.Chtimes(staging, time.Time{}, info.ModTime()); err != nil {
 		return result, err
 	}
 
@@ -256,45 +307,101 @@ func clone(src, dst string, owner Owner, carry map[string]bool) (Result, error) 
 	// of leaving the seat with nothing.
 	previous := ""
 
-	if _, err := os.Lstat(dst); err == nil {
-		previous = dst + ".polyseat-old"
+	if _, err := lstatAt(dstDir, dstName); err == nil {
+		previous = dstName + ".polyseat-old"
 
-		if err := os.RemoveAll(previous); err != nil {
+		if err := removeAllAt(dstDir, previous); err != nil {
 			return result, err
 		}
 
-		if err := os.Rename(dst, previous); err != nil {
+		if err := renameAt(dstDir, dstName, dstDir, previous); err != nil {
 			return result, err
 		}
+	}
+
+	var (
+		old   *os.File
+		moved map[string]bool
+	)
+
+	// Every failure from here on has to leave the destination as it was, and
+	// that is two steps in this order: what was carried goes back out of the
+	// staging tree, and then the old copy is renamed back. The other order, or
+	// only the second step, restores the old copy without the saves that were
+	// taken out of it, and the staging directory holding them is about to be
+	// removed. That is how a carry that failed half way used to lose the half
+	// it had already moved.
+	//
+	// Should putting them back fail as well, the staging directory is kept
+	// rather than removed, and the error says where it is. Saves somebody has
+	// to fish out by hand are still saves.
+	rollback := func(err error) (Result, error) {
+		if len(moved) > 0 {
+			if _, back := carryPrivate(staging, old, moved, owner); back != nil {
+				keep = true
+
+				return result, fmt.Errorf("%w, and the saves could not be put back, they are in %s: %v",
+					err, filepath.Join(dstDir.Name(), stagingName), back)
+			}
+		}
+
+		if previous != "" {
+			renameAt(dstDir, previous, dstDir, dstName)
+		}
+
+		return result, err
 	}
 
 	// What the destination owned moves into the tree about to replace it. A
 	// move and not a copy: it is a rename inside one directory, so the saves
 	// are never duplicated and never rewritten, however large they have got.
-	moved, err := carryPrivate(previous, staging, carry)
+	if previous != "" && len(carry) > 0 {
+		old, err = openDirAt(dstDir, previous)
+		if err != nil {
+			return rollback(err)
+		}
+
+		defer old.Close()
+	}
+
+	moved, err = carryPrivate(old, staging, carry, owner)
 	if err != nil {
-		if previous != "" {
-			os.Rename(previous, dst)
-		}
-
-		return result, err
+		return rollback(err)
 	}
 
-	if err := os.Rename(staging, dst); err != nil {
-		if previous != "" {
-			// Back where they came from first, or restoring the old copy
-			// would restore it without the saves that were just taken out of
-			// it, and the staging directory carrying them is about to be
-			// removed.
-			carryPrivate(staging, previous, moved)
-			os.Rename(previous, dst)
-		}
-
-		return result, err
+	// The root of the tree needs the same treatment as everything inside it,
+	// and this is easy to forget because the staging directory already exists
+	// by the time the contents are written.
+	//
+	// Forgotten once, and it broke the feature completely while looking like it
+	// worked: the staging directory is created 0700 and owned by the daemon, so
+	// every game directory arrived in a seat as root with no permissions for
+	// anybody else. The files were there, the sizes were right, the blocks
+	// were shared, and the player inside the container could not open a single
+	// one of them.
+	//
+	// Last, after the carry, because this is the moment the member can reach
+	// into the tree.
+	if err := staging.Chown(owner.UID, owner.GID); err != nil {
+		return rollback(err)
 	}
+
+	if err := staging.Chmod(os.FileMode(info.Mode).Perm()); err != nil {
+		return rollback(err)
+	}
+
+	if err := setMtime(staging, info.Mtim); err != nil {
+		return rollback(err)
+	}
+
+	if err := renameAt(dstDir, stagingName, dstDir, dstName); err != nil {
+		return rollback(err)
+	}
+
+	keep = true
 
 	if previous != "" {
-		os.RemoveAll(previous)
+		removeAllAt(dstDir, previous)
 	}
 
 	return result, nil
@@ -308,10 +415,15 @@ func clone(src, dst string, owner Owner, carry map[string]bool) (Result, error) 
 // backwards call possible and is not the same as what it was asked to move: a
 // directory that has since gone is not an error, it is a seat that uninstalled
 // something while the daemon was working.
-func carryPrivate(from, to string, carry map[string]bool) (map[string]bool, error) {
+//
+// A link anywhere on the way, on either side, is refused. The tree being moved
+// into came from the pool, which is to say from whichever seat shared the
+// folder, and a drive_c there that is a link to a directory of that seat's
+// choosing would otherwise have been where this seat's saves were moved to.
+func carryPrivate(from, to *os.File, carry map[string]bool, owner Owner) (map[string]bool, error) {
 	moved := map[string]bool{}
 
-	if from == "" || len(carry) == 0 {
+	if from == nil || len(carry) == 0 {
 		return moved, nil
 	}
 
@@ -323,42 +435,201 @@ func carryPrivate(from, to string, carry map[string]bool) (map[string]bool, erro
 	sort.Strings(names)
 
 	for _, name := range names {
-		source := filepath.Join(from, name)
+		parent, base := filepath.Split(name)
 
-		if _, err := os.Lstat(source); err != nil {
+		source, err := openRel(from, parent)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+
+			return moved, err
+		}
+
+		if _, err := lstatAt(source, base); err != nil {
+			source.Close()
+
 			continue
 		}
 
-		target := filepath.Join(to, name)
+		// A rename changes the modification time of both directories it
+		// touches, and a folder's version is the newest time inside it. The
+		// drive_c the saves were moved into had just been given its source's
+		// time by the clone, and the move stamped it with the present, so
+		// every copy that carried saves measured newer than what it was
+		// copied from: the pool took it back from the seat, gave it to the
+		// others, took theirs back in turn, and so on after every update to
+		// every folder with a prefix in it. So the times of every directory
+		// on both sides are taken before the move and put back after it.
+		var times stamps
+
+		err = times.keep(source, nil)
 
 		// The parent is normally already there, because it came from the tree
 		// being copied. It is not when the game dropped the directory that
 		// used to hold the prefix, and then the saves still have to land
 		// somewhere rather than being thrown away.
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return moved, err
+		var target *os.File
+
+		if err == nil {
+			target, err = ensureRel(to, parent, owner, from, &times)
 		}
 
-		if err := os.Rename(source, target); err != nil {
-			return moved, err
+		if err == nil {
+			err = renameAt(source, base, target, base)
+			target.Close()
+
+			if err == nil {
+				moved[name] = true
+			}
 		}
 
-		moved[name] = true
+		source.Close()
+
+		if back := times.restore(); err == nil {
+			err = back
+		}
+
+		if err != nil {
+			return moved, err
+		}
 	}
 
 	return moved, nil
 }
 
-func cloneTree(src, dst, rel string, owner Owner, carry map[string]bool, result *Result) error {
-	entries, err := os.ReadDir(src)
+// ensureRel opens a relative directory below dir, making what is missing on
+// the way with the given owner.
+//
+// Every directory on the way is added to times with the modification time it
+// should have once the caller is done: the one it has now, or for one this
+// made, the time of the directory at the same place under like, which is the
+// tree the missing part is being recreated from.
+func ensureRel(dir *os.File, rel string, owner Owner, like *os.File, times *stamps) (*os.File, error) {
+	cur, err := dupDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := times.keep(cur, nil); err != nil {
+		cur.Close()
+
+		return nil, err
+	}
+
+	prefix := ""
+
+	for _, part := range strings.Split(filepath.Clean(rel), "/") {
+		if part == "." {
+			continue
+		}
+
+		prefix = filepath.Join(prefix, part)
+
+		next, created, err := ensureDirAt(cur, part, 0o755)
+		if err == nil && created {
+			err = next.Chown(owner.UID, owner.GID)
+		}
+
+		cur.Close()
+
+		if err == nil {
+			var when *unix.Timespec
+			if created {
+				when = mtimeIn(like, prefix)
+			}
+
+			err = times.keep(next, when)
+		}
+
+		if err != nil {
+			if next != nil {
+				next.Close()
+			}
+
+			return nil, err
+		}
+
+		cur = next
+	}
+
+	return cur, nil
+}
+
+// mtimeIn is the modification time of a directory below dir, or nil when there
+// is none to be had.
+func mtimeIn(dir *os.File, rel string) *unix.Timespec {
+	f, err := openRel(dir, rel)
+	if err != nil {
+		return nil
+	}
+
+	defer f.Close()
+
+	var st unix.Stat_t
+
+	if err := unix.Fstat(fdOf(f), &st); err != nil {
+		return nil
+	}
+
+	return &st.Mtim
+}
+
+// stamps are directories and the modification times to give them back.
+type stamps []stamp
+
+type stamp struct {
+	dir   *os.File
+	mtime unix.Timespec
+}
+
+// keep remembers a directory with the time it has now, or with when if given.
+// It holds a handle of its own, so the caller may close the one it passed.
+func (s *stamps) keep(dir *os.File, when *unix.Timespec) error {
+	var st unix.Stat_t
+
+	if when == nil {
+		if err := unix.Fstat(fdOf(dir), &st); err != nil {
+			return &os.PathError{Op: "stat", Path: dir.Name(), Err: err}
+		}
+
+		when = &st.Mtim
+	}
+
+	held, err := dupDir(dir)
 	if err != nil {
 		return err
 	}
 
-	for _, entry := range entries {
-		srcPath := filepath.Join(src, entry.Name())
-		dstPath := filepath.Join(dst, entry.Name())
-		here := filepath.Join(rel, entry.Name())
+	*s = append(*s, stamp{dir: held, mtime: *when})
+
+	return nil
+}
+
+// restore gives every directory its time back and lets go of the handles,
+// answering with the first thing that failed.
+func (s stamps) restore() error {
+	var first error
+
+	for i := len(s) - 1; i >= 0; i-- {
+		if err := setMtime(s[i].dir, s[i].mtime); err != nil && first == nil {
+			first = err
+		}
+
+		s[i].dir.Close()
+	}
+
+	return first
+}
+
+func cloneTree(src, dst *os.File, rel string, owner Owner, carry map[string]bool, result *Result) error {
+	names, err := readNames(src)
+	if err != nil {
+		return err
+	}
+
+	for _, name := range names {
+		here := filepath.Join(rel, name)
 
 		// Left out because the destination has its own and is about to get it
 		// back. Copying it first and overwriting it afterwards would be the
@@ -367,72 +638,31 @@ func cloneTree(src, dst, rel string, owner Owner, carry map[string]bool, result 
 			continue
 		}
 
-		info, err := entry.Info()
+		st, err := lstatAt(src, name)
 		if err != nil {
 			return err
 		}
 
-		switch {
-		case info.IsDir():
-			if err := os.Mkdir(dstPath, info.Mode().Perm()); err != nil {
+		if beforeOpen != nil {
+			beforeOpen(filepath.Join(src.Name(), name))
+		}
+
+		// What an entry is decides how it is opened, and the open itself
+		// refuses a link. So an entry replaced after the lstat above is either
+		// refused or is again what it claimed to be; it is never followed.
+		switch st.Mode & unix.S_IFMT {
+		case unix.S_IFDIR:
+			if err := cloneDir(src, dst, name, here, owner, carry, result); err != nil {
 				return err
 			}
 
-			if err := cloneTree(srcPath, dstPath, here, owner, carry, result); err != nil {
+		case unix.S_IFLNK:
+			if err := cloneLink(src, dst, name, &st, owner, result); err != nil {
 				return err
 			}
 
-			// Ownership and permissions are applied on the way out, after the
-			// contents are in. Setting them first and then writing into the
-			// directory as root would work, but a mode without write permission
-			// would not.
-			if err := os.Lchown(dstPath, owner.UID, owner.GID); err != nil {
-				return err
-			}
-
-			if err := os.Chmod(dstPath, info.Mode().Perm()); err != nil {
-				return err
-			}
-
-			if err := os.Chtimes(dstPath, time.Time{}, info.ModTime()); err != nil {
-				return err
-			}
-
-			result.Dirs++
-
-		case info.Mode()&os.ModeSymlink != 0:
-			target, err := os.Readlink(srcPath)
-			if err != nil {
-				return err
-			}
-
-			if err := os.Symlink(target, dstPath); err != nil {
-				return err
-			}
-
-			if err := os.Lchown(dstPath, owner.UID, owner.GID); err != nil {
-				return err
-			}
-
-			// The link's own timestamp, for the same reason files and
-			// directories get theirs back: measure() stats every entry in the
-			// tree, symlinks included, and takes the newest as the folder's
-			// version. A fresh link would make every copy newer than the
-			// original it was made from, and the pool would carry the two
-			// back and forth for as long as it ran.
-			//
-			// os.Chtimes follows the link, which would stamp the target
-			// instead, and for a link pointing outside the pool the target is
-			// not the pool's to touch. Lutimes is the one that does not
-			// follow.
-			if err := lutimes(dstPath, info.ModTime()); err != nil {
-				return err
-			}
-
-			result.Symlinks++
-
-		case info.Mode().IsRegular():
-			if err := cloneFile(srcPath, dstPath, info, owner, result); err != nil {
+		case unix.S_IFREG:
+			if err := cloneFile(src, dst, name, owner, result); err != nil {
 				return err
 			}
 
@@ -441,43 +671,115 @@ func cloneTree(src, dst, rel string, owner Owner, carry map[string]bool, result 
 			// directory is one of these, and recreating a device node inside a
 			// tree that gets mounted into a container is not something to do by
 			// accident.
-			return fmt.Errorf("%s is neither a file, a directory nor a symlink", srcPath)
+			return fmt.Errorf("%s is neither a file, a directory nor a symlink",
+				filepath.Join(src.Name(), name))
 		}
 	}
 
 	return nil
 }
 
-// lutimes sets a path's times without following it, so that it works on a
-// symlink itself rather than on whatever the link points at.
-//
-// The access time is set to the modification time rather than preserved. A
-// symlink's atime is not something the pool has any use for, and reading it
-// back only to write it again would be two syscalls to keep a number nobody
-// looks at.
-func lutimes(path string, modTime time.Time) error {
-	stamp := unix.NsecToTimespec(modTime.UnixNano())
+func cloneDir(src, dst *os.File, name, here string, owner Owner, carry map[string]bool, result *Result) error {
+	in, err := openDirAt(src, name)
+	if err != nil {
+		return err
+	}
 
-	return unix.UtimesNanoAt(unix.AT_FDCWD, path,
-		[]unix.Timespec{stamp, stamp}, unix.AT_SYMLINK_NOFOLLOW)
+	defer in.Close()
+
+	// The stat of what was opened, not the one the caller made: the entry
+	// may have been replaced by another directory in between, and this is
+	// the one being copied.
+	var st unix.Stat_t
+
+	if err := unix.Fstat(fdOf(in), &st); err != nil {
+		return err
+	}
+
+	// Created closed, like the staging directory, and given its real mode on
+	// the way out. Setting the mode first and then writing into the directory
+	// works as root, but not for a mode without write permission when the
+	// tests run this as themselves.
+	if err := unix.Mkdirat(fdOf(dst), name, 0o700); err != nil {
+		return pathError("mkdir", dst, name, err)
+	}
+
+	out, err := openDirAt(dst, name)
+	if err != nil {
+		return err
+	}
+
+	defer out.Close()
+
+	if err := cloneTree(in, out, here, owner, carry, result); err != nil {
+		return err
+	}
+
+	if err := out.Chown(owner.UID, owner.GID); err != nil {
+		return err
+	}
+
+	if err := out.Chmod(os.FileMode(st.Mode).Perm()); err != nil {
+		return err
+	}
+
+	if err := setMtime(out, st.Mtim); err != nil {
+		return err
+	}
+
+	result.Dirs++
+
+	return nil
 }
 
-func cloneFile(srcPath, dstPath string, info os.FileInfo, owner Owner, result *Result) error {
-	src, err := os.Open(srcPath)
+func cloneLink(src, dst *os.File, name string, st *unix.Stat_t, owner Owner, result *Result) error {
+	target, err := readlinkAt(src, name)
 	if err != nil {
 		return err
 	}
 
-	defer src.Close()
+	if err := unix.Symlinkat(target, fdOf(dst), name); err != nil {
+		return pathError("symlink", dst, name, err)
+	}
 
-	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, info.Mode().Perm())
+	if err := unix.Fchownat(fdOf(dst), name, owner.UID, owner.GID, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return pathError("lchown", dst, name, err)
+	}
+
+	// The link's own timestamp, for the same reason files and directories get
+	// theirs back: measure() stats every entry in the tree, symlinks included,
+	// and takes the newest as the folder's version. A fresh link would make
+	// every copy newer than the original it was made from, and the pool would
+	// carry the two back and forth for as long as it ran.
+	//
+	// Stamped without following, which would stamp the target instead, and
+	// for a link pointing outside the pool the target is not the pool's to
+	// touch.
+	if err := setMtimeAt(dst, name, st.Mtim); err != nil {
+		return err
+	}
+
+	result.Symlinks++
+
+	return nil
+}
+
+func cloneFile(src, dst *os.File, name string, owner Owner, result *Result) error {
+	in, st, err := openFileAt(src, name)
 	if err != nil {
 		return err
 	}
 
-	defer dst.Close()
+	defer in.Close()
 
-	err = unix.IoctlFileClone(int(dst.Fd()), int(src.Fd()))
+	out, err := createFileAt(dst, name, os.FileMode(st.Mode).Perm())
+	if err != nil {
+		return err
+	}
+
+	defer out.Close()
+
+	err = unix.IoctlFileClone(fdOf(out), fdOf(in))
 	switch {
 	case err == nil:
 		// The whole point.
@@ -488,17 +790,17 @@ func cloneFile(srcPath, dstPath string, info os.FileInfo, owner Owner, result *R
 		// a zero length file, and the other two mean the filesystem has no such
 		// ioctl. All of them are recoverable by copying, and the count in the
 		// result is what tells the operator the pool stopped saving anything.
-		if _, err := io.Copy(dst, src); err != nil {
+		if _, err := io.Copy(out, in); err != nil {
 			return err
 		}
 
 		result.Copied++
 
 	default:
-		return fmt.Errorf("clone %s: %w", srcPath, err)
+		return fmt.Errorf("clone %s: %w", in.Name(), err)
 	}
 
-	if err := dst.Chown(owner.UID, owner.GID); err != nil {
+	if err := out.Chown(owner.UID, owner.GID); err != nil {
 		return err
 	}
 
@@ -508,12 +810,12 @@ func cloneFile(srcPath, dstPath string, info os.FileInfo, owner Owner, result *R
 	// a folder shared without manifests is versioned by the newest time inside
 	// it, so a clone that stamped itself with now would always look newer than
 	// the original it came from and be copied back and forth forever.
-	if err := os.Chtimes(dstPath, time.Time{}, info.ModTime()); err != nil {
+	if err := setMtime(out, st.Mtim); err != nil {
 		return err
 	}
 
 	result.Files++
-	result.Bytes += info.Size()
+	result.Bytes += st.Size
 
 	return nil
 }
