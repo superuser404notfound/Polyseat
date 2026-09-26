@@ -88,6 +88,36 @@ func TestSeatValidate(t *testing.T) {
 		}
 	})
 
+	// Both end up in the seat's networkd file through Sprintf, so a value that
+	// only has to contain a slash could carry a line break and a directive of
+	// its own after it.
+	t.Run("address and gateway have to parse", func(t *testing.T) {
+		for _, tc := range []struct{ address, gateway string }{
+			{"10.20.30.71/24\nDNS=6.6.6.6", "10.20.30.1"},
+			{"10.20.30.71/24", "10.20.30.1\n[Route]\nGateway=6.6.6.6"},
+			{"garbage/24", "10.20.30.1"},
+			{"10.20.30.71/99", "10.20.30.1"},
+			{"10.20.30.71/24", "gateway.example"},
+			{"10.20.30.71/24", "fe80::1%eth1"},
+			{"10.20.30.71/24", "fd00::1"},
+			{"", "10.20.30.1"},
+		} {
+			s := base
+			s.Address, s.Gateway = tc.address, tc.gateway
+
+			if err := s.Validate(); err == nil {
+				t.Errorf("accepted address %q with gateway %q", tc.address, tc.gateway)
+			}
+		}
+
+		s := base
+		s.Address, s.Gateway = "fd00::71/64", "fd00::1"
+
+		if err := s.Validate(); err != nil {
+			t.Errorf("rejected a complete IPv6 static address: %v", err)
+		}
+	})
+
 	t.Run("empty address means DHCP and needs no gateway", func(t *testing.T) {
 		s := base
 		s.Address = ""
