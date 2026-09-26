@@ -1,6 +1,7 @@
 package seat
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -602,5 +603,142 @@ func TestAnAdoptedSeatUsesThePlayerUIDItWasBuiltWith(t *testing.T) {
 
 	if got := m.asPlayer("vince", "true"); !strings.Contains(strings.Join(got, " "), "/run/user/1001") {
 		t.Errorf("commands in the adopted seat are run as %q", got)
+	}
+}
+
+// An operation and a reading of the same seat must not overlap: a sweep that
+// looked at busy, found it empty and then went on execing while Stop brought
+// the container down is how an exec lands in a shutdown. This walks the
+// handshake the two go through, with the real functions, in the order that
+// used to go wrong: the sweep is already reading when the operation arrives.
+func TestAnOperationStopsAndWaitsOutTheSweepInProgress(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+	rt := m.runtimeOf("vince")
+
+	ctx, end, ok := m.beginSweep(context.Background(), rt, true)
+	if !ok {
+		t.Fatal("an idle seat could not be swept")
+	}
+
+	if err := m.claim(rt, "stopping", func() {}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	if ctx.Err() == nil {
+		t.Error("the sweep in progress was not told to stop, so its next exec goes ahead")
+	}
+
+	quiet := make(chan struct{})
+
+	go func() {
+		rt.quiesce()
+		close(quiet)
+	}()
+
+	select {
+	case <-quiet:
+		t.Fatal("the operation went ahead while the sweep was still reading")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	end()
+
+	select {
+	case <-quiet:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the operation was still waiting after the sweep ended")
+	}
+
+	// And the other order: a sweep that arrives once the operation holds the
+	// seat does not read it at all, whether it would have waited or not.
+	for _, wait := range []bool{true, false} {
+		if _, _, ok := m.beginSweep(context.Background(), rt, wait); ok {
+			t.Errorf("a sweep (wait %v) was let into a seat an operation holds", wait)
+		}
+	}
+}
+
+// The timer's sweep leaves a seat to one already being read rather than
+// queueing behind it, because it runs on the goroutine that delivers Incus's
+// events.
+func TestTheTimersSweepDoesNotQueueBehindAnother(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+	rt := m.runtimeOf("vince")
+
+	_, end, ok := m.beginSweep(context.Background(), rt, true)
+	if !ok {
+		t.Fatal("an idle seat could not be swept")
+	}
+	defer end()
+
+	done := make(chan bool, 1)
+
+	go func() {
+		_, _, ok := m.beginSweep(context.Background(), rt, false)
+		done <- ok
+	}()
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Error("two sweeps were reading the same seat at once")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the timer's sweep waited for the one in progress")
+	}
+}
+
+// A Delete that worked takes the seat's runtime record with it, and the end of
+// the operation must not put one back: it used to log "deleting done" and
+// reconcile by name, which made a fresh record, and a seat created again under
+// that name then showed the old one's log. No Incus client here, so a
+// reconcile that still runs fails this test by panicking.
+func TestADeletedSeatStaysForgotten(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}, subs: map[int]chan struct{}{}}
+	old := m.runtimeOf("vince")
+
+	ran := make(chan struct{})
+
+	err := m.operate("vince", "deleting", func(context.Context) error {
+		m.mu.Lock()
+		delete(m.rt, "vince")
+		m.mu.Unlock()
+		close(ran)
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("operate: %v", err)
+	}
+
+	<-ran
+
+	deadline := time.Now().Add(5 * time.Second)
+
+	for {
+		m.mu.Lock()
+		busy := old.busy
+		m.mu.Unlock()
+
+		if busy == "" {
+			break
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("the operation never finished")
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Whatever the end of the operation would still do, give it the moment.
+	time.Sleep(50 * time.Millisecond)
+
+	m.mu.Lock()
+	_, back := m.rt["vince"]
+	m.mu.Unlock()
+
+	if back {
+		t.Errorf("the deleted seat has a runtime record again, with log %q", m.Log("vince"))
 	}
 }

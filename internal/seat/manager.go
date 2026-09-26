@@ -103,6 +103,12 @@ type runtime struct {
 	lastErr string
 	cancel  context.CancelFunc
 
+	// sweep is held for the whole of a reconcile, and sweepCancel ends the one
+	// in progress. Together they are what keeps a reading of the seat and an
+	// operation on it from overlapping. See beginSweep.
+	sweep       sync.Mutex
+	sweepCancel context.CancelFunc
+
 	log    *Log
 	broker *supervise.Process
 
@@ -641,7 +647,7 @@ func (m *Manager) reconcileAll(ctx context.Context) {
 	}
 
 	for _, s := range seats {
-		m.reconcile(ctx, s.Name)
+		m.reconcileWith(ctx, s.Name, false)
 	}
 }
 
@@ -650,19 +656,26 @@ func (m *Manager) reconcileAll(ctx context.Context) {
 // It deliberately does not act. Bringing a seat back up after it stopped by
 // itself is a decision, not a repair, and the interface shows it instead.
 func (m *Manager) reconcile(ctx context.Context, name string) {
+	m.reconcileWith(ctx, name, true)
+}
+
+// reconcileWith is reconcile, told whether to wait for a sweep of the same seat
+// that is already in progress or to leave the seat to it.
+//
+// The timer's pass does not wait. The sweep in progress is already reading
+// what this one would, and the timer runs on the goroutine that also delivers
+// Incus's events, which should not stand still behind one slow seat. Everything
+// else waits: an event or the end of an operation has something new to read,
+// and a sweep that started before it might not have seen it.
+func (m *Manager) reconcileWith(ctx context.Context, name string, wait bool) {
 	rt := m.runtimeOf(name)
 
-	m.mu.Lock()
-	busy := rt.busy
-	state := rt.state
-	m.mu.Unlock()
-
-	// Never talk to a container that is being built, started or stopped by an
-	// operation of ours. That operation knows what it is doing and this would
-	// only race with it.
-	if busy != "" || state == StateStopping {
+	ctx, end, ok := m.beginSweep(ctx, rt, wait)
+	if !ok {
 		return
 	}
+
+	defer end()
 
 	status, err := m.client.Status(name)
 	if err != nil {
@@ -692,6 +705,91 @@ func (m *Manager) reconcile(ctx context.Context, name string) {
 	}
 
 	m.refreshSession(ctx, name)
+}
+
+// beginSweep claims a seat for one reconcile, or reports that it may not have
+// it.
+//
+// Never talk to a container that is being built, started or stopped by an
+// operation of ours. That operation knows what it is doing and this would only
+// race with it. That rule used to be a look at busy before the reads, and a
+// look is not a claim: Stop could begin a moment later, while this was still
+// halfway through its execs, and the next of them landed in the middle of the
+// container's shutdown. That is the exact shape of the exec that once wedged
+// the Incus daemon, see the Manager's own comment.
+//
+// So the look happens under the sweep lock, and the lock is held until the
+// reads are done. claim, which every operation goes through, sets busy first
+// and then cancels whatever sweep is running, and the operation's goroutine
+// waits for that sweep to let go before it does anything. A sweep that starts
+// after busy was set sees it and returns; one that started before is stopped
+// and waited out. Either way no read and no operation share a moment.
+//
+// The context returned is the one the reads must use, so that the cancel
+// reaches them. end has to be called when they are finished.
+func (m *Manager) beginSweep(ctx context.Context, rt *runtime, wait bool) (context.Context, func(), bool) {
+	if wait {
+		rt.sweep.Lock()
+	} else if !rt.sweep.TryLock() {
+		return nil, nil, false
+	}
+
+	m.mu.Lock()
+
+	if rt.busy != "" || rt.state == StateStopping {
+		m.mu.Unlock()
+		rt.sweep.Unlock()
+
+		return nil, nil, false
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	rt.sweepCancel = cancel
+	m.mu.Unlock()
+
+	end := func() {
+		m.mu.Lock()
+		rt.sweepCancel = nil
+		m.mu.Unlock()
+
+		cancel()
+		rt.sweep.Unlock()
+	}
+
+	return ctx, end, true
+}
+
+// claim marks a seat as busy with an operation, and stops the sweep that is
+// reading it, if there is one. See beginSweep for why both halves are needed.
+func (m *Manager) claim(rt *runtime, label string, cancel context.CancelFunc) error {
+	m.mu.Lock()
+
+	if rt.busy != "" {
+		m.mu.Unlock()
+
+		return ErrBusy
+	}
+
+	rt.busy = label
+	rt.cancel = cancel
+	rt.lastErr = ""
+	rt.progress = -1
+	sweep := rt.sweepCancel
+	m.mu.Unlock()
+
+	if sweep != nil {
+		sweep()
+	}
+
+	return nil
+}
+
+// quiesce waits until no sweep is reading the seat. Called by an operation after
+// claim, which has already made sure that none will start and that the one in
+// progress has been told to stop, so this is a wait of milliseconds.
+func (rt *runtime) quiesce() {
+	rt.sweep.Lock()
+	rt.sweep.Unlock() //nolint:staticcheck // taken only to wait for the holder
 }
 
 // refreshSession reads what the session inside a running seat is doing.
@@ -759,6 +857,16 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		// zero value, as it was, every seat spent the whole of its build being
 		// treated as one somebody might be playing in.
 		stream = streamIdle
+	}
+
+	// A sweep an operation stopped part way read nothing worth acting on: every
+	// exec after the cancel came back as "unknown". Written down, that would
+	// put a running seat's card through "starting" for no reason; acted on, it
+	// could rewrite a configuration or end a stream on the strength of reads
+	// that never happened. So it stops here, before anything is decided, and
+	// the operation that now owns the seat says what state it is in.
+	if ctx.Err() != nil {
+		return
 	}
 
 	m.checkOrigins(ctx, name, addresses)
@@ -1668,25 +1776,23 @@ var ErrBusy = fmt.Errorf("the seat is busy")
 func (m *Manager) operate(name, label string, fn func(ctx context.Context) error) error {
 	rt := m.runtimeOf(name)
 
-	m.mu.Lock()
-
-	if rt.busy != "" {
-		m.mu.Unlock()
-
-		return ErrBusy
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
-	rt.busy = label
-	rt.cancel = cancel
-	rt.lastErr = ""
-	rt.progress = -1
-	m.mu.Unlock()
+
+	if err := m.claim(rt, label, cancel); err != nil {
+		cancel()
+
+		return err
+	}
 
 	m.logf(name, "== %s", label)
 	m.notify()
 
 	go func() {
+		// Here rather than before returning, because the sweep being waited
+		// for can take a moment to notice it was cancelled, and the request
+		// that started this should not wait for that.
+		rt.quiesce()
+
 		err := fn(ctx)
 
 		m.mu.Lock()
@@ -1698,7 +1804,22 @@ func (m *Manager) operate(name, label string, fn func(ctx context.Context) error
 			rt.lastErr = err.Error()
 		}
 
+		// The operation took the seat away with it, which is what a
+		// successful Delete does. Everything below reaches the seat by name,
+		// and runtimeOf would make a fresh record under that name to hold a
+		// "deleting done" and whatever the reconcile found: a seat created
+		// again under the same name then started life with the old one's log
+		// and state.
+		gone := m.rt[name] != rt
+
 		m.mu.Unlock()
+
+		if gone {
+			cancel()
+			m.notify()
+
+			return
+		}
 
 		if err != nil {
 			m.logf(name, "! %s failed: %v", label, err)
