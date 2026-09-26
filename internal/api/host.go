@@ -359,7 +359,7 @@ func NewSetup(cfg config.Config, credentials *auth.Store, updates *update.Checke
 	mux.Handle("/api/", s.requireSession(guarded))
 	mux.Handle("/", web.Handler())
 
-	return logging(logger, mux)
+	return logging(logger, requests(mux))
 }
 
 func (s *Server) setupState(w http.ResponseWriter, r *http.Request) {

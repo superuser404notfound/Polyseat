@@ -215,7 +215,7 @@ func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker
 	// outright rather than guessing.
 	mux.Handle("/", web.Handler())
 
-	return logging(logger, mux)
+	return logging(logger, requests(mux))
 }
 
 // requireSession rejects anything without a valid session cookie.
