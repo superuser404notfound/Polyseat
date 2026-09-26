@@ -10,6 +10,19 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.32.1
+
+**0.32.0 had no Arch package.** One of its new tests checks that a setup
+script's background child is gone once the run is ended, and it counted a killed
+process that nobody had reaped yet as still running. The Arch package is built
+in a container whose first process reaps nothing, so there the child stayed a
+zombie, the test failed and makepkg refused to build. The test now counts a
+zombie as gone. Nothing in Polyseat itself changed; the `.deb` and the `.rpm`
+of 0.32.0 were built and are the same code.
+
+Everything 0.32.0 says applies, including that seats have to be built again
+(recipe generation 59) when coming from 0.31.x.
+
 ## 0.32.0
 
 This release is an audit. On 2026-09-26 the daemon, the seat scripts, the input

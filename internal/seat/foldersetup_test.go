@@ -1,8 +1,10 @@
 package seat
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -357,12 +359,17 @@ func TestRunBoundedEndsEverything(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// Reaped by init once killed, so give it a moment to go.
+			// Reaped by init once killed, so give it a moment to go. A zombie
+			// counts as gone: it has been killed and runs nothing, and whether
+			// anybody reaps it is up to whatever is PID 1. The Arch package is
+			// built in a container whose PID 1 reaps nothing, and there the
+			// killed child stayed a zombie for good and failed the build of
+			// 0.32.0 while the run under test had done its job.
 			if tc.spawn == "sleep 60 &" {
 				gone := false
 
 				for i := 0; i < 50 && !gone; i++ {
-					gone = syscall.Kill(pid, 0) != nil
+					gone = !alive(pid)
 					time.Sleep(20 * time.Millisecond)
 				}
 
@@ -455,4 +462,22 @@ func TestTailBuffer(t *testing.T) {
 	if got := b.String(); got != "defgh" {
 		t.Errorf("kept %q", got)
 	}
+}
+
+// alive reports whether a process exists and is not a zombie.
+func alive(pid int) bool {
+	if syscall.Kill(pid, 0) != nil {
+		return false
+	}
+
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+
+	// The state follows the command name, which is in parentheses and may
+	// itself contain them.
+	rest := stat[bytes.LastIndexByte(stat, ')')+1:]
+
+	return !bytes.HasPrefix(bytes.TrimSpace(rest), []byte("Z"))
 }
