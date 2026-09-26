@@ -185,6 +185,12 @@ jobs:
       - name: The seat handling in lan-bridge.sh
         run: ./host/test-lan-bridge.sh
 
+      # How check-hardening.sh reads kernel.sysrq out of the sysctl files, and
+      # what its --fix would pin, against sysctl trees built in a temporary
+      # directory. It once pinned kernel.sysrq = 1 on a machine that had it.
+      - name: The sysrq reading in check-hardening.sh
+        run: ./host/test-hardening.sh
+
   # The one decision in this project that can be wrong without anybody noticing.
   #
   # A device that fails to reach a seat is a complaint within the minute. A
