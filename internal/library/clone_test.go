@@ -359,6 +359,15 @@ func TestSafeName(t *testing.T) {
 
 // -------------------------------------------------------------------- helpers
 
+// lutimes sets a path's modification time without following it, so that it
+// works on a symlink itself rather than on whatever the link points at.
+func lutimes(path string, modTime time.Time) error {
+	stamp := unix.NsecToTimespec(modTime.UnixNano())
+
+	return unix.UtimesNanoAt(unix.AT_FDCWD, path,
+		[]unix.Timespec{stamp, stamp}, unix.AT_SYMLINK_NOFOLLOW)
+}
+
 func mkdirs(t *testing.T, paths ...string) {
 	t.Helper()
 

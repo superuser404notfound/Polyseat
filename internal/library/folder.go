@@ -1,10 +1,13 @@
 package library
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Folders are how everything that is not Steam is shared.
@@ -62,8 +65,11 @@ func (f Folder) Settled(quiet time.Duration) bool {
 //
 // One level only. A folder is a game; what is inside it is the launcher's
 // business and none of the pool's.
+//
+// The path form, trusting every directory on the way; the pool opens a
+// member's directory itself and calls scanFoldersAt.
 func ScanFolders(dir string) ([]Folder, error) {
-	entries, err := os.ReadDir(dir)
+	d, err := openOwn(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -72,26 +78,37 @@ func ScanFolders(dir string) ([]Folder, error) {
 		return nil, err
 	}
 
+	defer d.Close()
+
+	return scanFoldersAt(d)
+}
+
+func scanFoldersAt(dir *os.File) ([]Folder, error) {
+	names, err := readNames(dir)
+	if err != nil {
+		return nil, err
+	}
+
 	var out []Folder
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	for _, name := range names {
+		if !isDirAt(dir, name) {
 			continue
 		}
 
-		if err := safeName(entry.Name()); err != nil {
+		if err := safeName(name); err != nil {
 			// Skipped rather than refused. This directory is written by whoever
 			// uses the seat, so an odd name in it is not a reason to stop
 			// sharing everything else.
 			continue
 		}
 
-		folder, err := measure(filepath.Join(dir, entry.Name()))
+		folder, err := measureAt(dir, name)
 		if err != nil {
 			continue
 		}
 
-		folder.Name = entry.Name()
+		folder.Name = name
 		out = append(out, folder)
 	}
 
@@ -102,11 +119,22 @@ func ScanFolders(dir string) ([]Folder, error) {
 
 // FolderAt measures one named folder under dir.
 func FolderAt(dir, name string) (Folder, error) {
+	d, err := openOwn(dir)
+	if err != nil {
+		return Folder{}, err
+	}
+
+	defer d.Close()
+
+	return folderAt(d, name)
+}
+
+func folderAt(dir *os.File, name string) (Folder, error) {
 	if err := safeName(name); err != nil {
 		return Folder{}, err
 	}
 
-	folder, err := measure(filepath.Join(dir, name))
+	folder, err := measureAt(dir, name)
 	if err != nil {
 		return Folder{}, err
 	}
@@ -116,7 +144,19 @@ func FolderAt(dir, name string) (Folder, error) {
 	return folder, nil
 }
 
-// measure walks a tree for its size and its newest modification time.
+// measure is measureAt for a path, trusting the directories leading to it.
+func measure(root string) (Folder, error) {
+	parent, err := openOwn(filepath.Dir(root))
+	if err != nil {
+		return Folder{}, err
+	}
+
+	defer parent.Close()
+
+	return measureAt(parent, filepath.Base(root))
+}
+
+// measureAt walks a tree for its size and its newest modification time.
 //
 // A full walk, which is the cost of having no manifest to read. It is stat only
 // and the kernel keeps the directory entries cached, so on a warm filesystem a
@@ -128,46 +168,86 @@ func FolderAt(dir, name string) (Folder, error) {
 // prefix's user directory would make every evening at the game a new version
 // of it: the folder would be taken into the pool again and copied over the
 // other seat, several gigabytes at a time, because somebody saved.
-func measure(root string) (Folder, error) {
+//
+// Never the root itself, which is only ever looked at as the tree it is: a
+// folder that is nothing but a prefix would otherwise measure as empty and lose
+// to every copy of itself.
+func measureAt(parent *os.File, name string) (Folder, error) {
 	var folder Folder
 
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	root, err := openDirAt(parent, name)
+	if err != nil {
+		return folder, err
+	}
+
+	defer root.Close()
+
+	var st unix.Stat_t
+
+	if err := unix.Fstat(fdOf(root), &st); err != nil {
+		return folder, err
+	}
+
+	folder.Newest = mtimeOf(&st)
+
+	err = measureTree(parent, root, name, &folder)
+
+	return folder, err
+}
+
+func measureTree(up, dir *os.File, dirName string, folder *Folder) error {
+	names, err := readNames(dir)
+	if err != nil {
+		return err
+	}
+
+	for _, name := range names {
+		st, err := lstatAt(dir, name)
 		if err != nil {
 			// A file that vanished under the walk is normal while a launcher is
 			// still writing, and it does not make the rest of the tree
 			// unreadable.
-			if os.IsNotExist(err) {
-				return nil
+			if errors.Is(err, os.ErrNotExist) {
+				continue
 			}
 
 			return err
 		}
 
-		// Never the root itself: a folder that is nothing but a prefix would
-		// otherwise measure as empty and lose to every copy of itself.
-		if d.IsDir() && path != root && seatPrivate(path) {
-			return filepath.SkipDir
+		isDir := st.Mode&unix.S_IFMT == unix.S_IFDIR
+
+		if isDir && seatPrivateAt(up, dirName, name) {
+			continue
 		}
 
-		info, err := d.Info()
+		if when := mtimeOf(&st); when.After(folder.Newest) {
+			folder.Newest = when
+		}
+
+		if st.Mode&unix.S_IFMT == unix.S_IFREG {
+			folder.Bytes += st.Size
+		}
+
+		if !isDir {
+			continue
+		}
+
+		sub, err := openDirAt(dir, name)
 		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
+			if errors.Is(err, os.ErrNotExist) {
+				continue
 			}
 
 			return err
 		}
 
-		if info.ModTime().After(folder.Newest) {
-			folder.Newest = info.ModTime()
+		err = measureTree(dir, sub, name, folder)
+		sub.Close()
+
+		if err != nil {
+			return err
 		}
+	}
 
-		if d.Type().IsRegular() {
-			folder.Bytes += info.Size()
-		}
-
-		return nil
-	})
-
-	return folder, err
+	return nil
 }

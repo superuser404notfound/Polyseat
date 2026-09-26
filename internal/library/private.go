@@ -37,13 +37,25 @@ import (
 // By shape, because there is nothing to ask. A prefix is a `drive_c` with the
 // registry beside it, and nothing else in a game folder looks like that.
 func isWinePrefix(path string) bool {
-	info, err := os.Lstat(filepath.Join(path, "drive_c"))
-	if err != nil || !info.IsDir() {
+	dir, err := openOwn(path)
+	if err != nil {
+		return false
+	}
+
+	defer dir.Close()
+
+	return isWinePrefixAt(dir)
+}
+
+// isWinePrefixAt is isWinePrefix for a directory already open, which is how
+// the walks below meet one.
+func isWinePrefixAt(dir *os.File) bool {
+	if !isDirAt(dir, "drive_c") {
 		return false
 	}
 
 	for _, name := range []string{"system.reg", "user.reg"} {
-		if _, err := os.Lstat(filepath.Join(path, name)); err == nil {
+		if _, err := lstatAt(dir, name); err == nil {
 			return true
 		}
 	}
@@ -53,62 +65,86 @@ func isWinePrefix(path string) bool {
 
 // seatPrivate reports whether a directory inside a shared folder belongs to
 // the seat holding it rather than to the pool.
+func seatPrivate(path string) bool {
+	drive := filepath.Dir(path)
+
+	prefix, err := openOwn(filepath.Dir(drive))
+	if err != nil {
+		return false
+	}
+
+	defer prefix.Close()
+
+	return seatPrivateAt(prefix, filepath.Base(drive), filepath.Base(path))
+}
+
+// seatPrivateAt is seatPrivate for the entry name inside a directory called
+// dirName, whose own parent is prefix.
 //
 // The check is cheap on the way past: only a directory actually called `users`
 // inside something actually called `drive_c` costs a look at the filesystem.
-func seatPrivate(path string) bool {
-	if filepath.Base(path) != "users" {
+func seatPrivateAt(prefix *os.File, dirName, name string) bool {
+	if name != "users" || dirName != "drive_c" || prefix == nil {
 		return false
 	}
 
-	drive := filepath.Dir(path)
-	if filepath.Base(drive) != "drive_c" {
-		return false
-	}
-
-	return isWinePrefix(filepath.Dir(drive))
+	return isWinePrefixAt(prefix)
 }
 
-// privateDirs lists what the copy at root already owns, relative to it.
+// privateDirsAt lists what the copy at name in parent already owns, relative
+// to it.
 //
 // Used against the destination of a clone, to decide what must survive the
 // swap. A tree with no prefix in it answers with nothing and costs one walk.
-func privateDirs(root string) map[string]bool {
+//
+// A destination that is not there yet owns nothing, which is the ordinary case
+// for the first delivery and not a failure. Nor does one that is a link: it is
+// not followed, so there is nothing behind it to keep.
+func privateDirsAt(parent *os.File, name string) map[string]bool {
 	found := map[string]bool{}
 
-	// A destination that is not there yet owns nothing, which is the ordinary
-	// case for the first delivery and not a failure.
-	if _, err := os.Lstat(root); err != nil {
+	root, err := openDirAt(parent, name)
+	if err != nil {
 		return found
 	}
 
-	walk(root, "", found)
+	defer root.Close()
+
+	walk(parent, root, name, "", found)
 
 	return found
 }
 
 // walk descends looking for seat private directories, and does not descend
 // into one once it has found it: what is inside belongs to the same seat.
-func walk(dir, rel string, found map[string]bool) {
-	entries, err := os.ReadDir(dir)
+//
+// up is the directory holding dir, because whether an entry is private depends
+// on the directory two levels above it.
+func walk(up, dir *os.File, dirName, rel string, found map[string]bool) {
+	names, err := readNames(dir)
 	if err != nil {
 		return
 	}
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	for _, name := range names {
+		if !isDirAt(dir, name) {
 			continue
 		}
 
-		path := filepath.Join(dir, entry.Name())
-		here := filepath.Join(rel, entry.Name())
+		here := filepath.Join(rel, name)
 
-		if seatPrivate(path) {
+		if seatPrivateAt(up, dirName, name) {
 			found[here] = true
 
 			continue
 		}
 
-		walk(path, here, found)
+		sub, err := openDirAt(dir, name)
+		if err != nil {
+			continue
+		}
+
+		walk(dir, sub, name, here, found)
+		sub.Close()
 	}
 }

@@ -3,6 +3,7 @@ package library
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -202,7 +203,7 @@ func TestRewrite(t *testing.T) {
 		t.Fatalf("the rewritten manifest does not parse: %v", err)
 	}
 
-	if before != after {
+	if !reflect.DeepEqual(before, after) {
 		t.Errorf("the rewrite changed the parsed fields:\n before %+v\n after  %+v", before, after)
 	}
 }

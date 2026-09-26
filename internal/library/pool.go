@@ -2,6 +2,7 @@ package library
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Layout on the host, under the directory named in the configuration:
@@ -230,19 +233,14 @@ func (p *Pool) SeatFolders(seat string) string {
 	return filepath.Join(p.SeatRoot(seat), sharedDir)
 }
 
-// apps and folders are where a member's copies actually live: under the pool
-// root for a seat, wherever its owner put it for an external member.
+// folders is where a member's shared folders live: under the pool root for a
+// seat, wherever its owner put it for an external member. It comes back empty
+// for an external member that named none, which is the signal that it takes
+// part in the Steam side only.
 //
-// folders comes back empty for an external member that named none, which is the
-// signal that it takes part in the Steam side only.
-func (p *Pool) apps(m Member) string {
-	if m.External() {
-		return m.Apps
-	}
-
-	return p.SeatApps(m.Name)
-}
-
+// A path for callers outside the package. Inside it foldersDir is what gets
+// used, because a path under a member's directory means only what the member
+// lets it mean.
 func (p *Pool) folders(m Member) string {
 	if m.External() {
 		return m.Folders
@@ -256,27 +254,123 @@ func (p *Pool) folders(m Member) string {
 // does not take part in this half.
 func (p *Pool) FoldersOf(m Member) string { return p.folders(m) }
 
+// appsDir and foldersDir open where a member's copies live, which is the last
+// point anything is reached by path. See nofollow.go for why.
+//
+// A seat's directory is opened from the pool's seats directory, which is the
+// daemon's own, and everything below that is the seat's and is walked without
+// following a link. An external member's path runs through somebody's home, so
+// it is walked from the root with the stricter rule openAnchored describes.
+func (p *Pool) appsDir(m Member) (*os.File, error) {
+	if m.External() {
+		return openAnchored(m.Apps)
+	}
+
+	return p.seatDir(m.Name, steamApps)
+}
+
+// foldersDir answers nil without an error for a member that has no folder
+// directory, which is how a host takes no part in that side.
+func (p *Pool) foldersDir(m Member) (*os.File, error) {
+	var (
+		dir *os.File
+		err error
+	)
+
+	switch {
+	case !m.External():
+		dir, err = p.seatDir(m.Name, sharedDir)
+
+	case m.Folders != "":
+		dir, err = openAnchored(m.Folders)
+
+	default:
+		return nil, nil
+	}
+
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+
+	return dir, err
+}
+
+func (p *Pool) seatDir(seat, sub string) (*os.File, error) {
+	seats, err := openOwn(filepath.Join(p.root, seatsDir))
+	if err != nil {
+		return nil, err
+	}
+
+	defer seats.Close()
+
+	root, err := openDirAt(seats, seat)
+	if err != nil {
+		return nil, err
+	}
+
+	defer root.Close()
+
+	return openDirAt(root, sub)
+}
+
 // Ensure creates a seat's library with the ownership the container needs.
 //
 // Does nothing for an external member. That directory already exists, it is not
 // the daemon's, and creating or chowning parts of somebody's own Steam library
 // is not a thing to do on the way to copying a game into it.
+//
+// Everything below the seat's own directory is the seat's, so it is created and
+// chowned through handles, never by path: a steamapps the seat replaced with a
+// link to /etc used to have the host's configuration chowned to the seat. Such
+// a link is refused, and the seat's library stays broken until the link is
+// gone, which is the seat's doing and nobody else's problem.
 func (p *Pool) Ensure(m Member) error {
 	if m.External() {
 		return nil
 	}
 
-	for _, dir := range []string{
-		p.SeatRoot(m.Name),
-		p.SeatApps(m.Name),
-		filepath.Join(p.SeatApps(m.Name), commonDir),
-		p.SeatFolders(m.Name),
+	seats, err := openOwn(filepath.Join(p.root, seatsDir))
+	if err != nil {
+		return err
+	}
+
+	defer seats.Close()
+
+	root, _, err := ensureDirAt(seats, m.Name, 0o755)
+	if err != nil {
+		return err
+	}
+
+	defer root.Close()
+
+	if err := root.Chown(m.Owner.UID, m.Owner.GID); err != nil {
+		return err
+	}
+
+	apps, _, err := ensureDirAt(root, steamApps, 0o755)
+	if err != nil {
+		return err
+	}
+
+	defer apps.Close()
+
+	for _, dir := range []struct {
+		in   *os.File
+		name string
+	}{
+		{root, steamApps},
+		{apps, commonDir},
+		{root, sharedDir},
 	} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		f, _, err := ensureDirAt(dir.in, dir.name, 0o755)
+		if err != nil {
 			return err
 		}
 
-		if err := os.Chown(dir, m.Owner.UID, m.Owner.GID); err != nil {
+		err = f.Chown(m.Owner.UID, m.Owner.GID)
+		f.Close()
+
+		if err != nil {
 			return err
 		}
 	}
@@ -358,16 +452,30 @@ func (p *Pool) Sync(members []Member, log Logger) (Report, error) {
 			continue
 		}
 
-		if err := p.harvestFrom(source, "host", p.own, &report, log); err != nil {
+		if err := p.harvestSource(source, &report, log); err != nil {
 			report.Problems = append(report.Problems, fmt.Sprintf("%s: %v", source, err))
 		}
 	}
 
+	// A member whose library cannot be prepared is left out of this pass
+	// rather than ending it. A seat can make it fail on purpose, with a file or
+	// a link where its steamapps should be, and one seat must not be able to
+	// stop the pool for every other.
+	ready := make([]Member, 0, len(members))
+
 	for _, m := range members {
 		if err := p.Ensure(m); err != nil {
-			return report, err
+			report.Problems = append(report.Problems, fmt.Sprintf("%s: %v", m.Name, err))
+
+			continue
 		}
 
+		ready = append(ready, m)
+	}
+
+	members = ready
+
+	for _, m := range members {
 		if err := p.harvest(m, &report, log); err != nil {
 			report.Problems = append(report.Problems, fmt.Sprintf("%s: %v", m.Name, err))
 		}
@@ -406,7 +514,14 @@ func (p *Pool) Sync(members []Member, log Logger) (Report, error) {
 
 // harvest takes finished installs out of a member's library and into the pool.
 func (p *Pool) harvest(m Member, report *Report, log Logger) error {
-	apps, err := ReadApps(p.apps(m))
+	dir, err := p.appsDir(m)
+	if err != nil {
+		return err
+	}
+
+	defer dir.Close()
+
+	apps, err := readAppsAt(dir)
 	if err != nil {
 		return err
 	}
@@ -417,7 +532,25 @@ func (p *Pool) harvest(m Member, report *Report, log Logger) error {
 		p.mark(m.Name, app.AppID, statusDelivered)
 	}
 
-	return p.harvestFrom(p.apps(m), m.Name, p.own, report, log)
+	return p.harvestFrom(dir, apps, m.Name, p.own, report, log)
+}
+
+// harvestSource is harvest for a tracked library that is not a member, which
+// the pool reads and never writes into.
+func (p *Pool) harvestSource(steamapps string, report *Report, log Logger) error {
+	dir, err := openAnchored(steamapps)
+	if err != nil {
+		return err
+	}
+
+	defer dir.Close()
+
+	apps, err := readAppsAt(dir)
+	if err != nil {
+		return err
+	}
+
+	return p.harvestFrom(dir, apps, "host", p.own, report, log)
 }
 
 // harvestFrom takes finished installs out of any Steam library into the pool.
@@ -426,18 +559,40 @@ func (p *Pool) harvest(m Member, report *Report, log Logger) error {
 // the two are the same operation seen from different sides: read a library,
 // take what is complete and newer than what the pool holds, never write back.
 // The from label is only for the log and the report.
-func (p *Pool) harvestFrom(steamapps, from string, owner Owner, report *Report, log Logger) error {
-	apps, err := ReadApps(steamapps)
+func (p *Pool) harvestFrom(steamapps *os.File, apps []App, from string, owner Owner, report *Report, log Logger) error {
+	common, err := openDirAt(steamapps, commonDir)
+	if err != nil {
+		// A library with no common directory has nothing installed in it,
+		// which is not a problem to report every minute.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+
+		return err
+	}
+
+	defer common.Close()
+
+	poolApps, err := openOwn(p.PoolApps())
 	if err != nil {
 		return err
 	}
+
+	defer poolApps.Close()
+
+	poolCommon, err := openDirAt(poolApps, commonDir)
+	if err != nil {
+		return err
+	}
+
+	defer poolCommon.Close()
 
 	for _, app := range apps {
 		if !app.Installed() {
 			continue
 		}
 
-		if !settled(app.Manifest, p.Settle) {
+		if !settled(app, p.Settle) {
 			continue
 		}
 
@@ -445,8 +600,8 @@ func (p *Pool) harvestFrom(steamapps, from string, owner Owner, report *Report, 
 		// the library carries a strictly newer build; one that is a patch
 		// behind must not overwrite the pool and hand that older build to
 		// everybody else.
-		have, err := ReadApp(filepath.Join(p.PoolApps(), ManifestName(app.AppID)))
-		if err == nil && exists(filepath.Join(p.PoolApps(), commonDir, have.InstallDir)) {
+		have, err := readAppAt(poolApps, ManifestName(app.AppID))
+		if err == nil && isDirAt(poolCommon, have.InstallDir) {
 			if !Newer(app.BuildID, have.BuildID) {
 				continue
 			}
@@ -455,8 +610,7 @@ func (p *Pool) harvestFrom(steamapps, from string, owner Owner, report *Report, 
 				from, app.Name, app.BuildID, have.BuildID)
 		}
 
-		source := filepath.Join(steamapps, commonDir, app.InstallDir)
-		if !exists(source) {
+		if !isDirAt(common, app.InstallDir) {
 			// A manifest without files. Steam leaves these behind after a
 			// failed install; taking it into the pool would hand every other
 			// seat a game that is not there.
@@ -468,7 +622,7 @@ func (p *Pool) harvestFrom(steamapps, from string, owner Owner, report *Report, 
 		// The pool belongs to the daemon: nothing reads it except the daemon,
 		// and a seat that could write here could reach every other seat's
 		// library.
-		result, err := Clone(source, filepath.Join(p.PoolApps(), commonDir, app.InstallDir), owner)
+		result, err := cloneAt(common, app.InstallDir, poolCommon, app.InstallDir, owner, false)
 		if err != nil {
 			return fmt.Errorf("clone %s: %w", app.Name, err)
 		}
@@ -480,7 +634,7 @@ func (p *Pool) harvestFrom(steamapps, from string, owner Owner, report *Report, 
 				app.Name, result.Copied))
 		}
 
-		if err := p.copyManifest(app.Manifest, filepath.Join(p.PoolApps(), ManifestName(app.AppID)), owner); err != nil {
+		if err := copyManifest(app.data, poolApps, ManifestName(app.AppID), owner); err != nil {
 			return err
 		}
 
@@ -498,15 +652,24 @@ func (p *Pool) harvestFrom(steamapps, from string, owner Owner, report *Report, 
 // stands in for StateFlags, and the newest time inside the tree stands in for
 // buildid. Only ever forward, for the same reason.
 func (p *Pool) harvestFolders(m Member, report *Report, log Logger) error {
-	dir := p.folders(m)
-	if dir == "" {
-		return nil
+	dir, err := p.foldersDir(m)
+	if err != nil || dir == nil {
+		return err
 	}
 
-	folders, err := ScanFolders(dir)
+	defer dir.Close()
+
+	folders, err := scanFoldersAt(dir)
 	if err != nil {
 		return err
 	}
+
+	pool, err := openOwn(p.PoolFolders())
+	if err != nil {
+		return err
+	}
+
+	defer pool.Close()
 
 	for _, folder := range folders {
 		p.mark(m.Name, folderKey(folder.Name), statusDelivered)
@@ -516,17 +679,13 @@ func (p *Pool) harvestFolders(m Member, report *Report, log Logger) error {
 		}
 
 		have, known := p.state.Folders[folder.Name]
-		if known && exists(filepath.Join(p.PoolFolders(), folder.Name)) && !folder.Newer(have) {
+		if known && isDirAt(pool, folder.Name) && !folder.Newer(have) {
 			continue
 		}
 
 		log("taking the folder %s from %s into the pool", folder.Name, m.Name)
 
-		result, err := CloneFolder(
-			filepath.Join(dir, folder.Name),
-			filepath.Join(p.PoolFolders(), folder.Name),
-			p.own,
-		)
+		result, err := cloneAt(dir, folder.Name, pool, folder.Name, p.own, true)
 		if err != nil {
 			return fmt.Errorf("clone %s: %w", folder.Name, err)
 		}
@@ -540,7 +699,7 @@ func (p *Pool) harvestFolders(m Member, report *Report, log Logger) error {
 
 		// Measured again from the copy rather than carried over, so the
 		// recorded version describes what the pool actually holds.
-		stored, err := FolderAt(p.PoolFolders(), folder.Name)
+		stored, err := folderAt(pool, folder.Name)
 		if err != nil {
 			return err
 		}
@@ -557,14 +716,16 @@ func (p *Pool) harvestFolders(m Member, report *Report, log Logger) error {
 
 // distributeFolders offers every shared folder in the pool to one seat.
 func (p *Pool) distributeFolders(m Member, report *Report, log Logger) error {
-	dir := p.folders(m)
-	if dir == "" {
-		return nil
+	dir, err := p.foldersDir(m)
+	if err != nil || dir == nil {
+		return err
 	}
+
+	defer dir.Close()
 
 	here := map[string]Folder{}
 
-	folders, err := ScanFolders(dir)
+	folders, err := scanFoldersAt(dir)
 	if err != nil {
 		return err
 	}
@@ -572,6 +733,13 @@ func (p *Pool) distributeFolders(m Member, report *Report, log Logger) error {
 	for _, folder := range folders {
 		here[folder.Name] = folder
 	}
+
+	pool, err := openOwn(p.PoolFolders())
+	if err != nil {
+		return err
+	}
+
+	defer pool.Close()
 
 	names := make([]string, 0, len(p.state.Folders))
 	for name := range p.state.Folders {
@@ -583,7 +751,7 @@ func (p *Pool) distributeFolders(m Member, report *Report, log Logger) error {
 	for _, name := range names {
 		pooled := p.state.Folders[name]
 
-		if !exists(filepath.Join(p.PoolFolders(), name)) {
+		if !isDirAt(pool, name) {
 			continue
 		}
 
@@ -621,11 +789,7 @@ func (p *Pool) distributeFolders(m Member, report *Report, log Logger) error {
 			log("giving the folder %s to %s", name, m.Name)
 		}
 
-		result, err := CloneFolder(
-			filepath.Join(p.PoolFolders(), name),
-			filepath.Join(dir, name),
-			m.Owner,
-		)
+		result, err := cloneAt(pool, name, dir, name, m.Owner, true)
 		if err != nil {
 			return fmt.Errorf("clone %s: %w", name, err)
 		}
@@ -644,7 +808,14 @@ func (p *Pool) distributeFolders(m Member, report *Report, log Logger) error {
 func (p *Pool) distribute(m Member, pool []App, report *Report, log Logger) error {
 	present := map[string]App{}
 
-	apps, err := ReadApps(p.apps(m))
+	dir, err := p.appsDir(m)
+	if err != nil {
+		return err
+	}
+
+	defer dir.Close()
+
+	apps, err := readAppsAt(dir)
 	if err != nil {
 		return err
 	}
@@ -652,6 +823,26 @@ func (p *Pool) distribute(m Member, pool []App, report *Report, log Logger) erro
 	for _, app := range apps {
 		present[app.AppID] = app
 	}
+
+	poolCommon, err := openOwn(filepath.Join(p.PoolApps(), commonDir))
+	if err != nil {
+		return err
+	}
+
+	defer poolCommon.Close()
+
+	// Opened when the first title is given rather than here, because an
+	// external library without a common directory is somebody's library that
+	// has never had anything installed in it, and making one on the way to
+	// finding there is nothing to give would be the daemon deciding about their
+	// directory for no reason.
+	var common *os.File
+
+	defer func() {
+		if common != nil {
+			common.Close()
+		}
+	}()
 
 	for _, app := range pool {
 		if !app.Installed() {
@@ -699,19 +890,33 @@ func (p *Pool) distribute(m Member, pool []App, report *Report, log Logger) erro
 			continue
 		}
 
-		source := filepath.Join(p.PoolApps(), commonDir, app.InstallDir)
-		if !exists(source) {
+		if !isDirAt(poolCommon, app.InstallDir) {
 			continue
+		}
+
+		if common == nil {
+			var created bool
+
+			common, created, err = ensureDirAt(dir, commonDir, 0o755)
+			if err != nil {
+				return err
+			}
+
+			if created {
+				if err := common.Chown(m.Owner.UID, m.Owner.GID); err != nil {
+					return err
+				}
+			}
 		}
 
 		log("giving %s (%s) to %s", app.Name, app.AppID, m.Name)
 
-		result, err := Clone(source, filepath.Join(p.apps(m), commonDir, app.InstallDir), m.Owner)
+		result, err := cloneAt(poolCommon, app.InstallDir, common, app.InstallDir, m.Owner, false)
 		if err != nil {
 			return fmt.Errorf("clone %s: %w", app.Name, err)
 		}
 
-		if err := p.copyManifest(app.Manifest, filepath.Join(p.apps(m), ManifestName(app.AppID)), m.Owner); err != nil {
+		if err := copyManifest(app.data, dir, ManifestName(app.AppID), m.Owner); err != nil {
 			return err
 		}
 
@@ -730,25 +935,40 @@ func (p *Pool) distribute(m Member, pool []App, report *Report, log Logger) erro
 // The files land under a temporary name first. Steam globs this directory
 // constantly, and a manifest it reads while it is being written is a manifest
 // it may act on while it is half there.
-func (p *Pool) copyManifest(from, to string, owner Owner) error {
-	data, err := os.ReadFile(from)
+//
+// The temporary name is known in advance and the directory is usually the
+// member's, so whatever is found under it is removed first, without following
+// it, and the file is then created exclusively. A link planted there used to be
+// written through, which overwrote any file on the host with a manifest and
+// then chowned it to the seat.
+func copyManifest(data []byte, dir *os.File, name string, owner Owner) error {
+	tmp := name + ".polyseat-tmp"
+
+	if err := removeAllAt(dir, tmp); err != nil {
+		return err
+	}
+
+	f, err := createFileAt(dir, tmp, 0o644)
 	if err != nil {
 		return err
 	}
 
-	tmp := to + ".polyseat-tmp"
+	_, err = f.Write(Rewrite(data))
+	if err == nil {
+		err = f.Chown(owner.UID, owner.GID)
+	}
 
-	if err := os.WriteFile(tmp, Rewrite(data), 0o644); err != nil {
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+
+	if err != nil {
+		unix.Unlinkat(fdOf(dir), tmp, 0)
+
 		return err
 	}
 
-	if err := os.Chown(tmp, owner.UID, owner.GID); err != nil {
-		os.Remove(tmp)
-
-		return err
-	}
-
-	return os.Rename(tmp, to)
+	return renameAt(dir, tmp, dir, name)
 }
 
 // AddSource starts tracking a Steam library outside the seats and harvests it
@@ -801,7 +1021,7 @@ func (p *Pool) AddSource(steamapps string, log Logger) (Report, error) {
 		return s == resolved
 	})
 
-	if err := p.harvestFrom(resolved, "host", p.own, &report, log); err != nil {
+	if err := p.harvestSource(resolved, &report, log); err != nil {
 		return report, err
 	}
 
@@ -975,7 +1195,14 @@ func (p *Pool) Inventory(members []Member) (Inventory, error) {
 	seatApps := map[string]map[string]string{}
 
 	for _, m := range members {
-		have, err := ReadApps(p.apps(m))
+		dir, err := p.appsDir(m)
+		if err != nil {
+			continue
+		}
+
+		have, err := readAppsAt(dir)
+		dir.Close()
+
 		if err != nil {
 			continue
 		}
@@ -1049,12 +1276,13 @@ func (p *Pool) Inventory(members []Member) (Inventory, error) {
 		}
 
 		for _, m := range members {
-			dir := p.folders(m)
-			if dir == "" {
+			dir, err := p.foldersDir(m)
+			if err != nil || dir == nil {
 				continue
 			}
 
-			mine, err := FolderAt(dir, name)
+			mine, err := folderAt(dir, name)
+			dir.Close()
 
 			switch {
 			case err == nil:
@@ -1173,11 +1401,6 @@ func exists(path string) bool {
 }
 
 // settled reports whether a manifest has been quiet long enough to trust.
-func settled(manifest string, quiet time.Duration) bool {
-	info, err := os.Stat(manifest)
-	if err != nil {
-		return false
-	}
-
-	return time.Since(info.ModTime()) >= quiet
+func settled(app App, quiet time.Duration) bool {
+	return time.Since(app.modTime) >= quiet
 }
