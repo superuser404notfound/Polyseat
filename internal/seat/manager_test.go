@@ -3,6 +3,9 @@ package seat
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -818,5 +821,85 @@ func TestABuildWithOutdatedSettingsIsNotCalledCurrent(t *testing.T) {
 
 	if got.Provisioned == Generation {
 		t.Error("a seat built with the old resolution is marked current")
+	}
+}
+
+// sessionProbe folds four execs into one script, so the script is what has to
+// be right, and it is run here for real under a shell with the seat's tools
+// replaced. systemctl answers in the format it gave on the machine this was
+// written on, blocks in the order asked for, separated by a blank line.
+func TestTheSessionProbeReadsWhatTheFourExecsDid(t *testing.T) {
+	run := func(t *testing.T, stubs map[string]string) sessionReading {
+		t.Helper()
+
+		bin := t.TempDir()
+
+		for name, body := range stubs {
+			if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		cmd := exec.Command("/bin/sh", "-c", sessionProbe(1001))
+		cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
+
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("the probe did not exit cleanly: %v\n%s", err, out)
+		}
+
+		return parseSessionProbe(string(out))
+	}
+
+	units := "cat <<'EOF'\n" +
+		"Id=polyseat-sway.service\nActiveState=active\nExecMainStartTimestampMonotonic=12069483\n\n" +
+		"Id=polyseat-sunshine.service\nActiveState=activating\nExecMainStartTimestampMonotonic=12070195\n" +
+		"EOF\n"
+
+	t.Run("a seat somebody is streaming from", func(t *testing.T) {
+		got := run(t, map[string]string{
+			"systemctl": units,
+			"swaymsg":   `echo '[{"name":"HEADLESS-1","current_mode":{"width":2560,"height":1440,"refresh":60000}}]'` + "\n",
+			"ss":        "case \"$*\" in *-Huan*) echo 'UNCONN 0 0 0.0.0.0:47998 0.0.0.0:*' ;; esac\n",
+		})
+
+		if got.sway != "active" || got.sunshine != "activating" || got.sunshineStarted != "12070195" {
+			t.Errorf("units read as sway %q, sunshine %q started %q", got.sway, got.sunshine, got.sunshineStarted)
+		}
+
+		if got.output != "2560x1440@60Hz" {
+			t.Errorf("output read as %q", got.output)
+		}
+
+		if got.stream != streamBusy {
+			t.Errorf("a seat with its stream sockets open read as %v", got.stream)
+		}
+	})
+
+	// swaymsg failing is what readOutput answered "" for, and the stream check
+	// still has to run after it rather than being taken down with it.
+	t.Run("an idle seat whose compositor does not answer", func(t *testing.T) {
+		got := run(t, map[string]string{
+			"systemctl": units,
+			"swaymsg":   "echo 'unable to connect' >&2\nexit 1\n",
+			"ss":        "exit 0\n",
+		})
+
+		if got.output != "" {
+			t.Errorf("a failed swaymsg gave output %q", got.output)
+		}
+
+		if got.stream != streamIdle {
+			t.Errorf("an idle seat read as %v", got.stream)
+		}
+
+		if got.sway != "active" {
+			t.Errorf("the units were lost along the way: sway %q", got.sway)
+		}
+	})
+
+	// Nothing at all is a seat that did not answer, not an idle one.
+	if got := parseSessionProbe(""); got.stream != streamUnknown || got.sway != "unknown" || got.sunshine != "unknown" {
+		t.Errorf("an empty answer read as %+v", got)
 	}
 }

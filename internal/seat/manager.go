@@ -827,8 +827,8 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		m.mu.Unlock()
 	}
 
-	sway, _ := m.unitState(ctx, name, "polyseat-sway.service")
-	sunshine, sunshineStarted := m.unitState(ctx, name, "polyseat-sunshine.service")
+	reading := m.probeSession(ctx, name)
+	sway, sunshine, sunshineStarted := reading.sway, reading.sunshine, reading.sunshineStarted
 
 	devices, err := m.attachedDevices(name)
 	if err != nil {
@@ -852,8 +852,8 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 			encoder, codecs = m.readEncoders(ctx, name)
 		}
 
-		output = m.readOutput(ctx, name)
-		session, stream = m.readSession(ctx, name)
+		output = reading.output
+		session, stream = reading.session, reading.stream
 
 	case sunshine == "unknown":
 		// The seat was not asked successfully, so the last thing known about
@@ -1603,28 +1603,143 @@ func (m *Manager) streaming(ctx context.Context, name string) bool {
 	return state != streamIdle
 }
 
-// readOutput reports the size the seat's screen is actually running at.
+// sessionReading is what one look inside a running seat finds.
+type sessionReading struct {
+	sway, sunshine  string
+	sunshineStarted string
+	output          string
+	session         *Session
+	stream          streamState
+}
+
+// The markers between the three parts of sessionProbe's answer. Nothing any of
+// the three commands prints can look like one of these.
+const (
+	markUnits  = "@@polyseat-units@@"
+	markOutput = "@@polyseat-output@@"
+	markStream = "@@polyseat-stream@@"
+)
+
+// sessionProbe is everything the sweep reads from inside a seat, as one script.
+//
+// It used to be four execs every ten seconds for every running seat: the state
+// of the session's two units, one each, the size of the output and the stream.
+// An exec is a round trip through the Incus daemon and a process in the seat,
+// and these happen underneath whatever somebody is playing. So they are one,
+// and each part answers what its own exec answered before:
+//
+//   - the units by key, with Id so that the two blocks cannot be mistaken for
+//     each other, see parseUnitShow;
+//   - the output only when swaymsg succeeded, which is when readOutput used to
+//     report anything;
+//   - the stream as streamCheck, in a subshell so that its own exit ends only
+//     its own part.
+//
+// The script itself always exits zero. Only an exec that did not run at all
+// reads as a seat that did not answer, which is what each of the four did.
+func sessionProbe(uid int64) string {
+	return fmt.Sprintf(`echo '%s'
+systemctl --user show polyseat-sway.service polyseat-sunshine.service \
+    -p Id -p ActiveState -p ExecMainStartTimestampMonotonic 2>/dev/null
+echo '%s'
+if out=$(SWAYSOCK=$(ls -t /run/user/%d/sway-ipc.* 2>/dev/null | head -1) swaymsg -t get_outputs 2>/dev/null); then
+    printf '%%s\n' "$out"
+fi
+echo '%s'
+(
+%s
+)
+exit 0`, markUnits, markOutput, uid, markStream, streamCheck)
+}
+
+// probeSession runs sessionProbe in a seat.
+func (m *Manager) probeSession(ctx context.Context, name string) sessionReading {
+	ctx, cancel := quick(ctx)
+	defer cancel()
+
+	out, _, err := m.client.Try(ctx, name, m.asPlayer(name, "sh", "-c", sessionProbe(m.uidOf(name)))...)
+	if err != nil {
+		return sessionReading{sway: "unknown", sunshine: "unknown", stream: streamUnknown}
+	}
+
+	return parseSessionProbe(out)
+}
+
+// parseSessionProbe takes sessionProbe's answer apart. A part that is missing
+// reads the way its own exec failing used to: a unit state of "unknown", no
+// output, a stream nobody can vouch for.
+func parseSessionProbe(out string) sessionReading {
+	parts := map[string]string{}
+	current := ""
+
+	var section strings.Builder
+
+	flush := func() {
+		if current != "" {
+			parts[current] = section.String()
+		}
+
+		section.Reset()
+	}
+
+	for _, line := range strings.Split(out, "\n") {
+		switch strings.TrimSpace(line) {
+		case markUnits, markOutput, markStream:
+			flush()
+
+			current = strings.TrimSpace(line)
+
+			continue
+		}
+
+		section.WriteString(line)
+		section.WriteString("\n")
+	}
+
+	flush()
+
+	reading := sessionReading{sway: "unknown", sunshine: "unknown", stream: streamUnknown}
+
+	for _, block := range strings.Split(parts[markUnits], "\n\n") {
+		state, started := parseUnitShow(block)
+
+		switch unitID(block) {
+		case "polyseat-sway.service":
+			reading.sway = state
+		case "polyseat-sunshine.service":
+			reading.sunshine, reading.sunshineStarted = state, started
+		}
+	}
+
+	reading.output = parseOutputs(parts[markOutput])
+
+	if stream, ok := parts[markStream]; ok {
+		reading.session, reading.stream = parseStreamCheck(stream)
+	}
+
+	return reading
+}
+
+// unitID is the Id line of one block of `systemctl show`.
+func unitID(block string) string {
+	for _, line := range strings.Split(block, "\n") {
+		if id, found := strings.CutPrefix(strings.TrimSpace(line), "Id="); found {
+			return id
+		}
+	}
+
+	return ""
+}
+
+// parseOutputs reports the size the seat's screen is actually running at, from
+// what `swaymsg -t get_outputs` printed.
 //
 // Which is not what the seat was configured with, and the difference is the
 // point: the output is virtual, so it becomes whatever a connecting client
 // asked for and goes back afterwards. The interface was showing the configured
 // value and calling it the resolution, so a seat streaming at 2560x1600 still
 // claimed 1920x1080.
-func (m *Manager) readOutput(ctx context.Context, name string) string {
-	ctx, cancel := quick(ctx)
-	defer cancel()
-
-	uid := m.uidOf(name)
-
-	argv := m.asPlayer(name, "sh", "-c", fmt.Sprintf(
-		"SWAYSOCK=$(ls -t /run/user/%d/sway-ipc.* 2>/dev/null | head -1) "+
-			"swaymsg -t get_outputs 2>/dev/null", uid))
-
-	out, code, err := m.client.Try(ctx, name, argv...)
-	if err != nil || code != 0 {
-		return ""
-	}
-
+func parseOutputs(out string) string {
 	var outputs []struct {
 		CurrentMode struct {
 			Width   int `json:"width"`
