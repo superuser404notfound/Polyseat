@@ -11,6 +11,13 @@
 # going.
 set -e
 
+# Before the upgrade case returns, because an upgrade is a removal of the old
+# unit too. Why this is here at all is in postinstall.sh; here it is what stops
+# systemd holding on to a unit whose file has gone.
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
 case "${1:-}" in
     upgrade|failed-upgrade|1) exit 0 ;;
 esac
