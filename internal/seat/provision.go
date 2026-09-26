@@ -86,6 +86,12 @@ type Provisioner struct {
 
 	uid int64 // the player's uid inside the container, learned during the run
 
+	// home is what every read and write in the player's home goes through,
+	// always as the player. Nil means Client. A field so that a test can stand
+	// a directory of its own in for the home and see that a link the player
+	// put there is replaced rather than written through; see writeHome.
+	home execer
+
 	// closedSteam records that steamQuiet closed a Steam this run, so that
 	// whoever finishes the run can put one back. Not a parameter, because the
 	// closing happens three levels down in whichever step needed Steam out of
@@ -643,6 +649,12 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		// already and fusermount3 is setuid, so this one package is the whole
 		// of what was missing.
 		"fuse2",
+		// unsquashfs, which is how the scan reads an AppImage's name and icon
+		// without running the file, see extract in appimage.go. Nothing a seat
+		// installs pulls it in: on Arch it is a dependency of incus, archiso and
+		// the like, never of anything here. Without it every AppImage keeps
+		// its file name and no picture.
+		"squashfs-tools",
 		// Named rather than left to arrive as somebody else's dependency,
 		// because the box art depends on it now: an AppImage often carries its
 		// icon only as an SVG, Eden among them, and rsvg-convert is what turns
@@ -1279,7 +1291,11 @@ func (p *Provisioner) steamQuiet(ctx context.Context) (bool, error) {
 	// alone, which readSession explains is not there through a stream that
 	// survived a reconnect: the one moment somebody is certainly still playing
 	// is the one it would have closed Steam under them.
-	out, code, err := p.Client.Try(ctx, p.name(), "sh", "-c", streamCheck)
+	//
+	// As the player and bounded, because streamCheck reads the session file out
+	// of the player's home. As root that followed a link the player put there,
+	// and a FIFO in its place held the whole provisioning run for good.
+	out, code, err := p.Client.Try(ctx, p.name(), asPlayerFor(scanPatience, "sh", "-c", streamCheck)...)
 	if err != nil {
 		return false, err
 	}
@@ -1459,12 +1475,27 @@ func (p *Provisioner) stepSteamPlay(ctx context.Context) error {
 		return nil
 	}
 
+	return p.setCompatTool(ctx)
+}
+
+// setCompatTool writes the default into Steam's configuration, once Steam is
+// known not to be running.
+//
+// Read and written as the player, see writeHome. The file sits five levels
+// down in a home the player owns, and any of those levels can be a link.
+func (p *Provisioner) setCompatTool(ctx context.Context) error {
 	// A seat whose Steam has never started has no file, which is not a problem
 	// to report: it is the ordinary state of a seat being built, and the setting
 	// is written into a file Steam then fills in around.
-	existing, readErr := p.Client.ReadFile(p.name(), steamConfigPath)
-	if readErr != nil {
-		existing = nil
+	//
+	// A read that failed is not the same thing, and used to be taken for it:
+	// the default went into an empty file written over the one Steam had,
+	// which lost everything else in it.
+	existing, err := p.readHome(ctx, steamConfigPath)
+	if err != nil {
+		p.Log("! Steam's configuration was left alone because it could not be read: %v", err)
+
+		return nil
 	}
 
 	updated, changed, err := SetCompatTool(existing, protonName)
@@ -1478,18 +1509,12 @@ func (p *Provisioner) stepSteamPlay(ctx context.Context) error {
 		return nil
 	}
 
-	if p.uid == 0 {
-		if err := p.readUID(ctx); err != nil {
-			return err
-		}
-	}
-
-	// The directory comes from PushFile, which creates every missing component
-	// as the player. It used to be `install -d -o uid -g uid`, and that is the
-	// bug takeHomeBack exists to repair: install applies the ownership it is
-	// given to the last component only, so a seat being built for the first
-	// time got .local, .local/share and Steam belonging to root.
-	if err := p.Client.PushFile(p.name(), steamConfigPath, updated, 0o644, p.uid, p.uid); err != nil {
+	// Missing directories on the way are made by the player, who then owns
+	// them. It used to be `install -d -o uid -g uid`, and that is the bug
+	// takeHomeBack exists to repair: install applies the ownership it is given
+	// to the last component only, so a seat being built for the first time got
+	// .local, .local/share and Steam belonging to root.
+	if err := p.writeHome(ctx, steamConfigPath, updated); err != nil {
 		return err
 	}
 
@@ -1853,14 +1878,39 @@ func playerDirs() []string {
 	return dirs
 }
 
-// giveBackHome is run inside the seat, over playerDirs.
-const giveBackHome = `set -e
-for d in "$@"; do
-	if [ -d "$d" ] && [ "$(stat -c %U "$d")" != "` + Player + `" ]; then
-		chown ` + Player + `:` + Player + ` "$d"
-		echo "$d"
-	fi
-done
+// giveBackHome is run inside the seat as root, with the home, the player's uid
+// and playerDirs.
+//
+// Root, because what it repairs is a directory root owns, and so it must not
+// follow a link on the way to one. This was a chown of each path, and chown
+// follows links in every component: a player who made ~/.local a link to /etc
+// was given /etc on the next provisioning run, which is root in the seat. So
+// every step from the home down is opened without following anything, a link
+// or anything else that is not a directory quietly ends that path, and the
+// ownership is changed on what was opened rather than on a name that could be
+// swapped for a link in between. An fd reached that way is a directory that
+// really is inside the home.
+const giveBackHome = `import os, sys
+
+home, uid = sys.argv[1], int(sys.argv[2])
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+for path in sys.argv[3:]:
+    fd = os.open(home, flags)
+    try:
+        for part in os.path.relpath(path, home).split("/"):
+            try:
+                inner = os.open(part, flags, dir_fd=fd)
+            except OSError:
+                break
+            os.close(fd)
+            fd = inner
+        else:
+            if os.fstat(fd).st_uid != uid:
+                os.fchown(fd, uid, uid)
+                print(path)
+    finally:
+        os.close(fd)
 `
 
 // takeHomeBack gives the player the directories in their own home that an
@@ -1891,7 +1941,8 @@ done
 // the shared library is mounted, which belongs to the host and to every other
 // seat sharing it.
 func (p *Provisioner) takeHomeBack(ctx context.Context) error {
-	argv := append([]string{"sh", "-c", giveBackHome, "sh"}, playerDirs()...)
+	argv := append([]string{"python3", "-I", "-c", giveBackHome,
+		playerHome, strconv.FormatInt(p.uid, 10)}, playerDirs()...)
 
 	out, code, err := p.Client.Try(ctx, p.name(), argv...)
 	if err != nil {
@@ -2069,6 +2120,124 @@ func (p *Provisioner) readUID(ctx context.Context) error {
 	p.uid = uid
 
 	return nil
+}
+
+// ------------------------------------------------------------ player's home
+
+// Everything the daemon keeps in the player's home is read and written as the
+// player, through the three calls below, and never through the Incus file API
+// or a root shell.
+//
+// The file API writes as root, follows a symlink standing anywhere on the way,
+// and gives a file it creates to the uid it was asked for. The player owns
+// their home and can put a link at any name in it, so a rebuild that pushed
+// ~/.config/polyseat/pointer.conf after the player had made that a link to
+// /etc/ld.so.preload handed the player that file, which in a container is
+// root. MakeDir the same, one component at a time, so ~/.config made a link to
+// /etc gave the player a directory of their own under /etc. The player has no
+// sudo precisely so that nothing like this is possible.
+//
+// Looking with an Lstat first and then writing is not a fix while the seat
+// runs, and it always runs here: a player's process from the last session can
+// swap the link in between. Written by the player, a link leads only where the
+// player could already write. That holds on a seat being built for the first
+// time too, where nobody has had a chance to put anything in the home yet: the
+// same road for both, rather than a second one that is only safe on the day it
+// was reasoned about.
+
+// homeExec is where the home is reached: the seat, or a test's stand in.
+func (p *Provisioner) homeExec() execer {
+	if p.home != nil {
+		return p.home
+	}
+
+	return p.Client
+}
+
+// writeHome puts one file in the player's home, as the player. See dropScript
+// for how a link or a directory standing at the name is dealt with.
+func (p *Provisioner) writeHome(ctx context.Context, path string, body []byte) error {
+	return writeAsPlayer(ctx, p.homeExec(), p.name(), path, bytes.NewReader(body))
+}
+
+// homeDirs is run as the player over the directories makeHomeDirs is given.
+//
+// umask rather than -m, because -m applies to the last component only and the
+// parents mkdir -p makes on the way would come out with whatever the player's
+// umask is.
+const homeDirs = `umask 022
+exec mkdir -p -- "$@"
+`
+
+// makeHomeDirs makes directories in the player's home, as the player.
+func (p *Provisioner) makeHomeDirs(ctx context.Context, dirs ...string) error {
+	complaint := &cappedBuffer{limit: 4096}
+
+	argv := append([]string{"sudo", "-u", Player, "env", "HOME=" + playerHome,
+		"sh", "-c", homeDirs, "sh"}, dirs...)
+
+	code, err := p.homeExec().Exec(ctx, p.name(), argv, nil, io.Discard, complaint)
+	if err != nil {
+		return err
+	}
+
+	if code != 0 {
+		return fmt.Errorf("the seat said: %s", lastLines(complaint.String(), 2))
+	}
+
+	return nil
+}
+
+// homeLimit is the largest file readHome takes. Steam's config.vdf is the
+// largest of those it is used for, and that is tens of kilobytes.
+const homeLimit = 4 << 20
+
+// homeAbsent is what homeRead exits with when there is no file.
+const homeAbsent = 3
+
+// homeRead prints one file, or exits homeAbsent when there is none.
+//
+// As the player, so that a link at the name shows the daemon only what the
+// player could read anyway, and cannot carry a file only root may read into
+// something the daemon then writes back where the player reads it. One byte
+// past the limit, so that a file over it is told apart from one exactly at it.
+var homeRead = `[ -e "$1" ] || [ -L "$1" ] || exit ` + strconv.Itoa(homeAbsent) + `
+exec head -c ` + strconv.Itoa(homeLimit+1) + ` -- "$1"
+`
+
+// readHome reads one file in the player's home, as the player, and answers
+// nothing without an error when there is none.
+//
+// Standard output on its own, because a warning from sudo in front of a VDF
+// file would be taken for part of it.
+func (p *Provisioner) readHome(ctx context.Context, path string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, scanPatience+15*time.Second)
+	defer cancel()
+
+	out := &cappedBuffer{limit: homeLimit + 1}
+	complaint := &cappedBuffer{limit: 4096}
+
+	code, err := p.homeExec().Exec(ctx, p.name(),
+		asPlayerFor(scanPatience, "sh", "-c", homeRead, "sh", path),
+		nil, out, complaint)
+
+	return homeAnswer(out.String(), complaint.String(), code, err)
+}
+
+// homeAnswer turns what homeRead did into the file or a reason.
+func homeAnswer(out, complaint string, code int, err error) ([]byte, error) {
+	switch {
+	case err != nil:
+		return nil, err
+	case code == homeAbsent:
+		return nil, nil
+	case code != 0:
+		return nil, fmt.Errorf("exit %d: %s", code, lastLines(complaint, 2))
+	case len(out) > homeLimit:
+		return nil, fmt.Errorf("it is over %d bytes, which is more than it should ever be", homeLimit)
+	}
+
+	return []byte(out), nil
 }
 
 // ----------------------------------------------------------------------- gpu
@@ -2694,14 +2863,19 @@ func (p *Provisioner) registerLibrary(ctx context.Context) error {
 		return nil
 	}
 
-	if err := p.Client.MakeDir(p.name(), LibraryMount+"/steamapps", 0o755, p.uid, p.uid); err != nil {
-		return err
-	}
+	return p.shareLibrary(ctx)
+}
 
-	// The launcher agnostic half. Steam gets a library folder it understands;
-	// everything else gets a directory and a note, because there is no format
-	// Heroic, Lutris, Bottles and a downloaded installer all agree on.
-	if err := p.Client.MakeDir(p.name(), LibraryMount+"/shared", 0o755, p.uid, p.uid); err != nil {
+// shareLibrary is registerLibrary's part inside a running seat.
+//
+// Everything here is in the mount, which is in the player's home and belongs
+// to the player, so all of it is done as the player, see writeHome.
+func (p *Provisioner) shareLibrary(ctx context.Context) error {
+	// The launcher agnostic half is shared/. Steam gets a library folder it
+	// understands; everything else gets a directory and a note, because there
+	// is no format Heroic, Lutris, Bottles and a downloaded installer all agree
+	// on.
+	if err := p.makeHomeDirs(ctx, LibraryMount+"/steamapps", LibraryMount+"/shared"); err != nil {
 		return err
 	}
 
@@ -2725,8 +2899,7 @@ func (p *Provisioner) registerLibrary(ctx context.Context) error {
 		"The other seats keep their copies. Nothing here is a licence: a game\n" +
 		"still has to be one you are allowed to run.\n"
 
-	if err := p.Client.PushFile(p.name(), LibraryMount+"/shared/README.txt",
-		[]byte(readme), 0o644, p.uid, p.uid); err != nil {
+	if err := p.writeHome(ctx, LibraryMount+"/shared/README.txt", []byte(readme)); err != nil {
 		return err
 	}
 
@@ -2734,7 +2907,8 @@ func (p *Provisioner) registerLibrary(ctx context.Context) error {
 	// folder. It is removed rather than left: the directory is still there and
 	// still shared, but it is no longer a Steam library, and a file claiming
 	// otherwise is an invitation to add the same games a second time.
-	if _, _, err := p.Client.Try(ctx, p.name(), "rm", "-f", LibraryMount+"/libraryfolder.vdf"); err != nil {
+	if _, err := p.homeExec().Exec(ctx, p.name(), []string{"sudo", "-u", Player,
+		"rm", "-f", "--", LibraryMount + "/libraryfolder.vdf"}, nil, nil, nil); err != nil {
 		return err
 	}
 
@@ -2753,10 +2927,18 @@ func (p *Provisioner) unregisterOldLibrary(ctx context.Context) error {
 		steamRoot + "/config/libraryfolders.vdf",
 		steamApps + "/libraryfolders.vdf",
 	} {
-		existing, err := p.Client.ReadFile(p.name(), path)
+		// As the player, like the write below: both files are in the home,
+		// and the second is in the mount, which is the player's as well.
+		existing, err := p.readHome(ctx, path)
 		if err != nil {
-			// No file, which is a seat where Steam has never run. Nothing to
-			// take out, and Steam writes its own on first start.
+			p.Log("! %s was left alone because it could not be read: %v", path, err)
+
+			continue
+		}
+
+		// No file, which is a seat where Steam has never run. Nothing to take
+		// out, and Steam writes its own on first start.
+		if existing == nil {
 			continue
 		}
 
@@ -2765,7 +2947,7 @@ func (p *Provisioner) unregisterOldLibrary(ctx context.Context) error {
 			continue
 		}
 
-		if err := p.Client.PushFile(p.name(), path, dropped, 0o644, p.uid, p.uid); err != nil {
+		if err := p.writeHome(ctx, path, dropped); err != nil {
 			return err
 		}
 
@@ -2786,83 +2968,35 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		}
 	}
 
-	home := "/home/" + Player
-
-	for _, dir := range []string{
-		home + "/.config",
-		home + "/.config/sway",
-		home + "/.config/waybar",
-		home + "/.config/nwg-drawer",
-		home + "/.config/sunshine",
-		home + "/.config/systemd",
-		home + "/.config/systemd/user",
-		home + "/.config/systemd/user/polyseat-sunshine.service.d",
-		home + "/.config/systemd/user/polyseat-sway.service.d",
-		// Where AppImages live. Made here rather than when the first one
-		// arrives, because it is also a place somebody is meant to find with a
-		// file manager: an empty directory called Applications says what to do
-		// with it, and a directory that appears only after the daemon has
-		// already put something in it says nothing to anybody.
-		home + "/Applications",
-		// Where a browser saves, and therefore where the scan looks for an
-		// AppImage to adopt. Firefox makes it on first use, which is too late:
-		// the scan would look at a directory that does not exist for as long as
-		// nobody had downloaded anything.
-		home + "/Downloads",
-	} {
-		if err := p.Client.MakeDir(p.name(), dir, 0o755, p.uid, p.uid); err != nil {
-			return err
-		}
-	}
-
-	sway, err := render("assets/sway.config", map[string]string{
-		"Resolution": p.Seat.Resolution,
-		"Keyboard":   hostKeyboard().swayInput(),
-	})
-	if err != nil {
+	if err := p.sessionHome(ctx); err != nil {
 		return err
 	}
 
-	bar, err := render("assets/waybar.config", map[string]string{"Seat": p.Seat.Name})
-	if err != nil {
-		return err
-	}
-
-	files := []struct {
+	for _, f := range []struct {
 		path    string
 		content []byte
-		mode    int
-		uid     int64
 	}{
-		{home + "/.config/sway/config", sway, 0o644, p.uid},
-		{home + "/.config/waybar/config", bar, 0o644, p.uid},
-		{home + "/.config/waybar/style.css", asset("assets/waybar.css"), 0o644, p.uid},
-		{home + "/.config/nwg-drawer/drawer.css", asset("assets/drawer.css"), 0o644, p.uid},
-		{home + "/.config/systemd/user/polyseat-sway.service", asset("assets/polyseat-sway.service"), 0o644, p.uid},
-		{home + "/.config/systemd/user/polyseat-sunshine.service", asset("assets/polyseat-sunshine.service"), 0o644, p.uid},
-		{"/usr/local/bin/polyseat-sunshine-run", asset("assets/sunshine-run.sh"), 0o755, 0},
-		{"/usr/local/bin/polyseat-resize", asset("assets/resize.sh"), 0o755, 0},
-		{"/usr/local/bin/polyseat-fps", asset("assets/fps.sh"), 0o755, 0},
-		{"/usr/local/bin/polyseat-session", asset("assets/session.sh"), 0o755, 0},
-		{"/usr/local/bin/polyseat-welcome", asset("assets/welcome.sh"), 0o755, 0},
-		{"/usr/local/bin/polyseat-keyboard", asset("assets/keyboard.sh"), 0o755, 0},
-		{"/usr/local/bin/polyseat-launcher", asset("assets/launcher.sh"), 0o755, 0},
-		{cappedPath, asset("assets/capped.sh"), 0o755, 0},
-		{"/usr/local/bin/polyseat-boxart", asset("assets/boxart.py"), 0o755, 0},
-		{"/usr/local/bin/polyseat-icons", asset("assets/icons.py"), 0o755, 0},
-		{steamScriptPath, asset("assets/steam.sh"), 0o755, 0},
-		{workspacePath, asset("assets/workspace.sh"), 0o755, 0},
-		{"/usr/local/bin/polyseat-pad-pointer", asset("assets/pad-pointer.py"), 0o755, 0},
-		{"/usr/local/bin/polyseat-bigpicture-watch", asset("assets/bigpicture-watch.py"), 0o755, 0},
-	}
-
-	for _, f := range files {
-		if err := p.Client.PushFile(p.name(), f.path, f.content, f.mode, f.uid, f.uid); err != nil {
+		{"/usr/local/bin/polyseat-sunshine-run", asset("assets/sunshine-run.sh")},
+		{"/usr/local/bin/polyseat-resize", asset("assets/resize.sh")},
+		{"/usr/local/bin/polyseat-fps", asset("assets/fps.sh")},
+		{"/usr/local/bin/polyseat-session", asset("assets/session.sh")},
+		{"/usr/local/bin/polyseat-welcome", asset("assets/welcome.sh")},
+		{"/usr/local/bin/polyseat-keyboard", asset("assets/keyboard.sh")},
+		{"/usr/local/bin/polyseat-launcher", asset("assets/launcher.sh")},
+		{cappedPath, asset("assets/capped.sh")},
+		{"/usr/local/bin/polyseat-boxart", asset("assets/boxart.py")},
+		{"/usr/local/bin/polyseat-icons", asset("assets/icons.py")},
+		{steamScriptPath, asset("assets/steam.sh")},
+		{workspacePath, asset("assets/workspace.sh")},
+		{"/usr/local/bin/polyseat-pad-pointer", asset("assets/pad-pointer.py")},
+		{"/usr/local/bin/polyseat-bigpicture-watch", asset("assets/bigpicture-watch.py")},
+	} {
+		if err := p.Client.PushFile(p.name(), f.path, f.content, 0o755, 0, 0); err != nil {
 			return err
 		}
 	}
 
-	if err := p.tidyLauncher(); err != nil {
+	if err := p.tidyLauncher(ctx); err != nil {
 		return err
 	}
 
@@ -2899,51 +3033,6 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		"rm -f /home/"+Player+"/.local/share/polyseat/art/*.none"+
 			" /home/"+Player+"/.local/share/polyseat/icons/*.none"); err != nil {
 		return err
-	}
-
-	// The seat tag inside the device names.
-	//
-	// Sunshine reads XDG_SEAT and appends the seat name to its virtual input
-	// devices as soon as the seat is not "seat0", turning "Keyboard
-	// passthrough" into "Keyboard passthrough (seat1)". Without it every seat's
-	// devices carry identical names. A drop-in rather than part of the unit,
-	// because the value differs per seat.
-	//
-	// Not what makes attribution possible, which is how this comment used to
-	// read. The broker traces a uinput device to the cgroup of whatever holds
-	// the descriptor that made it, and that is per container and independent of
-	// every name. The tag is a cross-check there and the only answer for
-	// gamepads that the uhid observer missed. Builds after the move to
-	// libvirtualhid ignore XDG_SEAT entirely, so this is set for the ones that
-	// still read it and for the seat's own session, which greets people with
-	// it.
-	dropin := fmt.Sprintf("[Service]\nEnvironment=XDG_SEAT=%s\n", p.Seat.Name)
-
-	// The same value for the session itself, so that everything started inside
-	// the seat knows which seat it is in rather than only Sunshine. What made
-	// this worth doing was seeing the first terminal in a seat greet somebody
-	// with "Polyseat seat: unknown": sway inherited nothing, so neither did its
-	// children.
-	// The graphics vendor's variables, for the same reason: what they say
-	// depends on the card in the host, so they cannot live in a unit file that
-	// is the same everywhere. Both units get them, because sway has to render
-	// on the card and Sunshine has to encode from it.
-	gpuDropin := p.stack().dropIn()
-
-	for _, unit := range []string{"polyseat-sunshine.service.d", "polyseat-sway.service.d"} {
-		err = p.Client.PushFile(p.name(),
-			home+"/.config/systemd/user/"+unit+"/10-seat.conf",
-			[]byte(dropin), 0o644, p.uid, p.uid)
-		if err != nil {
-			return err
-		}
-
-		err = p.Client.PushFile(p.name(),
-			home+"/.config/systemd/user/"+unit+"/20-gpu.conf",
-			gpuDropin, 0o644, p.uid, p.uid)
-		if err != nil {
-			return err
-		}
 	}
 
 	if err := p.WritePointerConfig(ctx); err != nil {
@@ -2983,6 +3072,115 @@ func (p *Provisioner) stepSession(ctx context.Context) error {
 		return err
 	} else if code != 0 {
 		p.Log("! avahi could not be started, Moonlight will need the address typed in")
+	}
+
+	return nil
+}
+
+// sessionHome writes the session's configuration into the player's home.
+//
+// As the player, every directory and every file, see writeHome: this is the
+// part of provisioning a player who wants root in their seat would aim at,
+// because it runs again on every generation and the player can prepare
+// their home for it in between.
+func (p *Provisioner) sessionHome(ctx context.Context) error {
+	home := "/home/" + Player
+
+	if err := p.makeHomeDirs(ctx,
+		home+"/.config",
+		home+"/.config/sway",
+		home+"/.config/waybar",
+		home+"/.config/nwg-drawer",
+		home+"/.config/sunshine",
+		home+"/.config/systemd",
+		home+"/.config/systemd/user",
+		home+"/.config/systemd/user/polyseat-sunshine.service.d",
+		home+"/.config/systemd/user/polyseat-sway.service.d",
+		// Where AppImages live. Made here rather than when the first one
+		// arrives, because it is also a place somebody is meant to find with a
+		// file manager: an empty directory called Applications says what to do
+		// with it, and a directory that appears only after the daemon has
+		// already put something in it says nothing to anybody.
+		home+"/Applications",
+		// Where a browser saves, and therefore where the scan looks for an
+		// AppImage to adopt. Firefox makes it on first use, which is too late:
+		// the scan would look at a directory that does not exist for as long as
+		// nobody had downloaded anything.
+		home+"/Downloads",
+	); err != nil {
+		return err
+	}
+
+	sway, err := render("assets/sway.config", map[string]string{
+		"Resolution": p.Seat.Resolution,
+		"Keyboard":   hostKeyboard().swayInput(),
+	})
+	if err != nil {
+		return err
+	}
+
+	bar, err := render("assets/waybar.config", map[string]string{"Seat": p.Seat.Name})
+	if err != nil {
+		return err
+	}
+
+	files := []struct {
+		path    string
+		content []byte
+	}{
+		{home + "/.config/sway/config", sway},
+		{home + "/.config/waybar/config", bar},
+		{home + "/.config/waybar/style.css", asset("assets/waybar.css")},
+		{home + "/.config/nwg-drawer/drawer.css", asset("assets/drawer.css")},
+		{home + "/.config/systemd/user/polyseat-sway.service", asset("assets/polyseat-sway.service")},
+		{home + "/.config/systemd/user/polyseat-sunshine.service", asset("assets/polyseat-sunshine.service")},
+	}
+
+	for _, f := range files {
+		if err := p.writeHome(ctx, f.path, f.content); err != nil {
+			return err
+		}
+	}
+
+	// The seat tag inside the device names.
+	//
+	// Sunshine reads XDG_SEAT and appends the seat name to its virtual input
+	// devices as soon as the seat is not "seat0", turning "Keyboard
+	// passthrough" into "Keyboard passthrough (seat1)". Without it every seat's
+	// devices carry identical names. A drop-in rather than part of the unit,
+	// because the value differs per seat.
+	//
+	// Not what makes attribution possible, which is how this comment used to
+	// read. The broker traces a uinput device to the cgroup of whatever holds
+	// the descriptor that made it, and that is per container and independent of
+	// every name. The tag is a cross-check there and the only answer for
+	// gamepads that the uhid observer missed. Builds after the move to
+	// libvirtualhid ignore XDG_SEAT entirely, so this is set for the ones that
+	// still read it and for the seat's own session, which greets people with
+	// it.
+	dropin := fmt.Sprintf("[Service]\nEnvironment=XDG_SEAT=%s\n", p.Seat.Name)
+
+	// The same value for the session itself, so that everything started inside
+	// the seat knows which seat it is in rather than only Sunshine. What made
+	// this worth doing was seeing the first terminal in a seat greet somebody
+	// with "Polyseat seat: unknown": sway inherited nothing, so neither did its
+	// children.
+	// The graphics vendor's variables, for the same reason: what they say
+	// depends on the card in the host, so they cannot live in a unit file that
+	// is the same everywhere. Both units get them, because sway has to render
+	// on the card and Sunshine has to encode from it.
+	gpuDropin := p.stack().dropIn()
+
+	for _, unit := range []string{"polyseat-sunshine.service.d", "polyseat-sway.service.d"} {
+		err = p.writeHome(ctx, home+"/.config/systemd/user/"+unit+"/10-seat.conf", []byte(dropin))
+		if err != nil {
+			return err
+		}
+
+		err = p.writeHome(ctx, home+"/.config/systemd/user/"+unit+"/20-gpu.conf", gpuDropin)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -3028,27 +3226,18 @@ var clutter = []string{
 // By writing a user entry of the same name rather than by touching what the
 // packages installed. Hidden means "the user removed this" in the desktop entry
 // specification, so menus drop it, and the next pacman -Syu does not undo it.
-func (p *Provisioner) tidyLauncher() error {
+//
+// As the player, see writeHome: the directory is the player's, and so is a
+// link at any of these names.
+func (p *Provisioner) tidyLauncher(ctx context.Context) error {
 	dir := "/home/" + Player + "/.local/share/applications"
-
-	for _, name := range []string{
-		"/home/" + Player + "/.local",
-		"/home/" + Player + "/.local/share",
-		dir,
-	} {
-		if err := p.Client.MakeDir(p.name(), name, 0o755, p.uid, p.uid); err != nil {
-			return err
-		}
-	}
 
 	entry := "[Desktop Entry]\nType=Application\nName=%s\nNoDisplay=true\nHidden=true\n"
 
 	for _, name := range clutter {
 		body := fmt.Sprintf(entry, name)
 
-		err := p.Client.PushFile(p.name(), dir+"/"+name+".desktop",
-			[]byte(body), 0o644, p.uid, p.uid)
-		if err != nil {
+		if err := p.writeHome(ctx, dir+"/"+name+".desktop", []byte(body)); err != nil {
 			return err
 		}
 	}
@@ -3195,17 +3384,20 @@ func consequences(missing []string) []string {
 // the web interface stops accepting saves with an error that gives no hint
 // where it comes from.
 func (p *Provisioner) WriteSunshineConfig(ctx context.Context) ([]string, error) {
-	if p.uid == 0 {
-		if err := p.readUID(ctx); err != nil {
-			return nil, err
-		}
-	}
-
 	addresses, err := p.Client.Addresses(p.name())
 	if err != nil {
 		return nil, err
 	}
 
+	return p.writeSunshineConfig(ctx, addresses)
+}
+
+// writeSunshineConfig is WriteSunshineConfig once the addresses are known.
+//
+// Written as the player, see writeHome. It is rewritten on every start and
+// every time the address changes, which makes it the easiest of the daemon's
+// files in the home to stand a link in front of.
+func (p *Provisioner) writeSunshineConfig(ctx context.Context, addresses map[string][]string) ([]string, error) {
 	origins := OriginsFor(addresses)
 
 	conf, err := render("assets/sunshine.conf", map[string]string{
@@ -3220,9 +3412,7 @@ func (p *Provisioner) WriteSunshineConfig(ctx context.Context) ([]string, error)
 
 	p.Log("allowed web origins: %s", strings.Join(origins, ", "))
 
-	err = p.Client.PushFile(p.name(), SunshineConfigPath, conf, 0o644, p.uid, p.uid)
-
-	return origins, err
+	return origins, p.writeHome(ctx, SunshineConfigPath, conf)
 }
 
 // The gamepad pointer's speed, in screens per second at full deflection.
@@ -3309,13 +3499,10 @@ const PointerConfigPath = "/home/" + Player + "/.config/polyseat/pointer.conf"
 // holding the controller. It rereads the file when it changes, so moving the
 // slider in the web interface is felt within a couple of seconds without
 // restarting anything or provisioning again.
+//
+// Written as the player, see writeHome. This one is also written whenever the
+// slider moves, into a seat somebody is using at that moment.
 func (p *Provisioner) WritePointerConfig(ctx context.Context) error {
-	if p.uid == 0 {
-		if err := p.readUID(ctx); err != nil {
-			return err
-		}
-	}
-
 	speed := p.Seat.PointerSpeed
 	if speed == 0 {
 		speed = DefaultPointerSpeed
@@ -3328,7 +3515,7 @@ func (p *Provisioner) WritePointerConfig(ctx context.Context) error {
 speed=%.2f
 `, speed)
 
-	return p.Client.PushFile(p.name(), PointerConfigPath, []byte(body), 0o644, p.uid, p.uid)
+	return p.writeHome(ctx, PointerConfigPath, []byte(body))
 }
 
 // SunshineConfigPath is where a seat keeps the configuration the daemon writes.
