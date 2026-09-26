@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """polyseat-icons - the icon a game wears in the seat's own launcher.
 
-Reads a JSON list of {"key", "steam", "lutris", "icon"} on the command line and
+Reads a JSON list of {"key", "steam", "lutris", "icon"} on standard input and
 prints {"key": "/path/to/icon.png"} for the ones it could resolve. "steam" is an
 application id, "lutris" the slug Lutris knows a game by, and "icon" a file that
 is already an icon and only has to be confirmed, which is what an AppImage
@@ -234,11 +234,23 @@ def vdf_tree(data, pos, end, table):
 class AppInfo:
     """What appinfo.vdf says about the apps this run asks about.
 
-    Read once and only if something is missing an icon. It is a megabyte and a
-    half and this runs on a minute timer, so the file is not opened at all for
-    a seat whose icons are all in hand, which after the first pass is every
-    seat.
+    **Kept in a small file of its own, and read from Steam's only when that is
+    out of date.** appinfo.vdf is a megabyte and a half and this runs on a
+    minute timer. The first version said here that the file was never opened
+    for a seat whose icons were all in hand, and it was opened on nearly every
+    pass: the name of the icon file is the hash this reads out of it, so the
+    question "is the icon already there" could not be asked without it.
+
+    So the few values wanted from it are kept beside the icons, with the size
+    and time of the appinfo.vdf they came from. Steam's file is read again when
+    it has changed, or when a title is asked about that the copy does not have,
+    which is a game that has just been installed. A title Steam knows nothing
+    about is kept as knowing nothing, so that it does not cause a read every
+    minute until Steam hears of it; Steam writing its file is what changes that.
     """
+
+    # Everything this file wants out of a title's common section.
+    KEPT = ("linuxclienticon", "clienticon", "icon")
 
     def __init__(self, wanted):
         self.wanted = wanted
@@ -246,19 +258,65 @@ class AppInfo:
 
     def of(self, appid):
         if self.common is None:
-            self.common = {}
-
-            try:
-                with open(APPINFO, "rb") as fh:
-                    apps = vdf_apps(fh.read(), self.wanted)
-            except (OSError, ValueError, IndexError, struct.error):
-                apps = {}
-
-            for key, app in apps.items():
-                section = app.get("common")
-                self.common[key] = section if isinstance(section, dict) else {}
+            self.common = self._load()
 
         return self.common.get(appid, {})
+
+    @staticmethod
+    def _stamp():
+        try:
+            info = os.stat(APPINFO)
+        except OSError:
+            return None
+
+        return [info.st_mtime_ns, info.st_size]
+
+    def _load(self):
+        # Looked up at the time of asking rather than at import, so that a test
+        # pointing OUT somewhere else points this there as well.
+        cache = os.path.join(OUT, "appinfo.json")
+        stamp = self._stamp()
+
+        try:
+            with open(cache) as fh:
+                kept = json.load(fh)
+
+            apps = kept["apps"]
+
+            if (kept.get("stamp") == stamp and isinstance(apps, dict)
+                    and all(appid in apps for appid in self.wanted)):
+                return apps
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+
+        try:
+            with open(APPINFO, "rb") as fh:
+                found = vdf_apps(fh.read(), self.wanted)
+        except (OSError, ValueError, IndexError, struct.error):
+            found = {}
+
+        apps = {appid: {} for appid in self.wanted}
+
+        for key, app in found.items():
+            section = app.get("common")
+
+            if isinstance(section, dict):
+                apps[key] = {name: section[name] for name in self.KEPT
+                             if isinstance(section.get(name), str)}
+
+        try:
+            os.makedirs(OUT, exist_ok=True)
+
+            tmp = cache + ".tmp"
+
+            with open(tmp, "w") as fh:
+                json.dump({"stamp": stamp, "apps": apps}, fh)
+
+            os.replace(tmp, cache)
+        except OSError:
+            pass
+
+        return apps
 
 
 def largest(data, name):
@@ -481,12 +539,32 @@ def sweep(keep):
             pass
 
 
+def request():
+    """The list to work on.
+
+    Standard input, because the daemon's list is every game in the seat and an
+    argument has a ceiling: one string on a command line may be 128 KiB, and a
+    large library passes that, at which point the command does not run at all.
+    The first argument is still read when nothing arrives on standard input,
+    which is what a daemon from before this sends to a seat built after it.
+    """
+    data = ""
+
+    if sys.stdin is not None and not sys.stdin.isatty():
+        data = sys.stdin.read()
+
+    if not data.strip() and len(sys.argv) > 1:
+        data = sys.argv[1]
+
+    return json.loads(data) if data.strip() else []
+
+
 def main():
-    if len(sys.argv) < 2:
+    items = request()
+
+    if not items:
         print("{}")
         return
-
-    items = json.loads(sys.argv[1])
 
     info = AppInfo({str(item.get("steam")) for item in items if item.get("steam")})
     budget = {"left": FETCH_BUDGET}

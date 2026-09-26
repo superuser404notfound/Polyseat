@@ -1064,23 +1064,7 @@ func (p *Provisioner) gameIcons(ctx context.Context, games []Game) map[string]st
 		return nil
 	}
 
-	query, err := json.Marshal(items)
-	if err != nil {
-		return nil
-	}
-
-	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
-		"HOME=/home/"+Player, "/usr/local/bin/polyseat-icons", string(query))
-	if err != nil || code != 0 {
-		return nil
-	}
-
-	icons := map[string]string{}
-	if json.Unmarshal([]byte(strings.TrimSpace(out)), &icons) != nil {
-		return nil
-	}
-
-	return icons
+	return p.askSeatHelper(ctx, "polyseat-icons", items)
 }
 
 func (p *Provisioner) boxart(ctx context.Context, items []artItem) map[string]string {
@@ -1088,21 +1072,69 @@ func (p *Provisioner) boxart(ctx context.Context, items []artItem) map[string]st
 		return nil
 	}
 
+	return p.askSeatHelper(ctx, "polyseat-boxart", items)
+}
+
+// seatHelperArgMax is how long a list may be and still go on the command line
+// as well. See askSeatHelper.
+const seatHelperArgMax = 64 << 10
+
+// askSeatHelper hands one of the seat's picture helpers a list and reads back
+// the map of pictures it found.
+//
+// **The list goes on standard input.** It used to be the helper's one
+// argument, and the kernel refuses to start a command with any single argument
+// over 128 KiB. A list of every game in a seat reaches that with a large
+// library, and then neither helper ran at all and every game lost its picture,
+// with nothing said anywhere: the failure was thrown away here. A short list
+// still goes on the command line as well, because a seat built before this
+// reads it only from there, and a daemon updated ahead of its seats should
+// not take their pictures away until they are rebuilt.
+//
+// A failure is said out loud now rather than read as "no pictures". It stays
+// best effort all the same, because a picture is not worth failing a seat's
+// app list over. The one failure that is not said is a helper that is not
+// there, which is a seat older than the helper and is expected.
+func (p *Provisioner) askSeatHelper(ctx context.Context, name string, items any) map[string]string {
 	query, err := json.Marshal(items)
 	if err != nil {
 		return nil
 	}
 
-	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
-		"HOME=/home/"+Player, "/usr/local/bin/polyseat-boxart", string(query))
-	if err != nil || code != 0 {
+	out, errOut, code, err := p.Client.TryInput(ctx, p.name(), query, seatHelperArgv(name, query)...)
+
+	switch {
+	case err != nil:
+		p.Log("! %s could not be run: %v", name, err)
+
+		return nil
+	case code == 127:
+		return nil
+	case code != 0:
+		p.Log("! %s failed with status %d: %s", name, code, lastLine(errOut))
+
 		return nil
 	}
 
-	art := map[string]string{}
-	if json.Unmarshal([]byte(strings.TrimSpace(out)), &art) != nil {
+	found := map[string]string{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &found); err != nil {
+		p.Log("! %s answered with something that is not a list of pictures: %v", name, err)
+
 		return nil
 	}
 
-	return art
+	return found
+}
+
+// seatHelperArgv is the command that runs a picture helper as the player, with
+// the list on the command line as well while it is short enough to be allowed
+// there.
+func seatHelperArgv(name string, query []byte) []string {
+	argv := []string{"sudo", "-u", Player, "env", "HOME=/home/" + Player, "/usr/local/bin/" + name}
+
+	if len(query) <= seatHelperArgMax {
+		argv = append(argv, string(query))
+	}
+
+	return argv
 }

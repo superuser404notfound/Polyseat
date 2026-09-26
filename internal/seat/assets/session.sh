@@ -40,9 +40,20 @@ FILE=$DIR/session.json
 say() { echo "polyseat-session: $*" >&2; }
 
 quote() {
-    # Enough JSON escaping for an application name, which is the only value here
-    # that somebody else chose.
-    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+    # Enough JSON escaping for a name somebody else chose: the application's and
+    # the client's. Control characters become spaces rather than escapes, because
+    # JSON does not allow them raw and a name is only ever shown. A line break in
+    # one used to reach the file as it was, which made the whole record
+    # unreadable, and the interface lost what was being played and by whom.
+    printf '%s' "$1" | tr '\001-\037\177' ' ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# Whether a value can go into the record as a number. Sunshine sends digits,
+# and anything else would be written unquoted and make the record unreadable.
+number() {
+    case $1 in
+        ''|*[!0-9]*) return 1 ;;
+    esac
 }
 
 if [ "$1" = "off" ]; then
@@ -59,6 +70,9 @@ mkdir -p "$DIR" 2>/dev/null || {
 width=${SUNSHINE_CLIENT_WIDTH:-}
 height=${SUNSHINE_CLIENT_HEIGHT:-}
 fps=${SUNSHINE_CLIENT_FPS:-}
+number "$width" || width=
+number "$height" || height=
+number "$fps" || fps=
 hdr=${SUNSHINE_CLIENT_HDR:-}
 app=${SUNSHINE_APP_NAME:-}
 # Absent on a seat whose Sunshine predates the pin, and empty is handled the

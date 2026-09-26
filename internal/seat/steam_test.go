@@ -50,6 +50,12 @@ type seatState struct {
 	// gameRunning is somebody playing something. Steam starts a game through
 	// its own reaper, and everything that restarts Steam takes that with it.
 	gameRunning bool
+
+	// slowSteam is a Steam that takes a moment to become a process after
+	// gamescope has started it, which is what a real one does. In that moment
+	// `steam` with anything on its command line starts a Steam of its own,
+	// outside gamescope.
+	slowSteam bool
 }
 
 // A Steam that is running is not a Big Picture that is ready: with -silent
@@ -274,7 +280,22 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		answers = 2
 	}
 
+	// Anything but the start itself is a command for a Steam that is running.
+	// Given to none, the real bootstrapper starts one to carry it out, and that
+	// one is outside gamescope, so the stub writes the command down instead.
+	// Every command also says whether it arrived holding the script's lock,
+	// because a Steam started from it would keep that lock for good.
+	unasked := filepath.Join(home, "unasked")
+	locked := filepath.Join(home, "locked")
+
+	delay := ""
+	if state.slowSteam {
+		delay = "sleep 2\n"
+	}
+
 	stub("steam", "#!/bin/sh\n"+
+		"[ -e /proc/$$/fd/9 ] && echo \"$1\" >> "+locked+"\n"+
+		"case \"$1\" in -silent) ;; *) [ -f "+steamMarker+" ] || echo \"$1\" >> "+unasked+" ;; esac\n"+
 		"case \"$1\" in\n"+
 		// Taking gamescope and the window with it, because that is what
 		// happens in a seat: the reaper ends when its child does, and the
@@ -286,6 +307,7 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		"    echo \"$1\" > "+url+"\n"+
 		"  exit 0 ;;\n"+
 		"esac\n"+
+		delay+
 		"echo \"$* mangohud=$MANGOHUD\" > "+filepath.Join(home, "started")+"\n"+
 		"touch "+steamMarker+"\n")
 
@@ -373,6 +395,16 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		requests = strings.Fields(string(b))
 	}
 
+	unaskedSteam, lockedSteam = nil, nil
+
+	if b, err := os.ReadFile(unasked); err == nil {
+		unaskedSteam = strings.Fields(string(b))
+	}
+
+	if b, err := os.ReadFile(locked); err == nil {
+		lockedSteam = strings.Fields(string(b))
+	}
+
 	return strings.TrimSpace(string(body)), string(out)
 }
 
@@ -388,6 +420,14 @@ var gamescopeDisplay string
 // requests is every url the last run asked Steam for. Counted because asking
 // once and hoping is the bug this file now holds the script to.
 var requests []string
+
+// unaskedSteam is every command the last run gave `steam` while no Steam was
+// running. Each of those starts one outside gamescope in a seat.
+var unaskedSteam []string
+
+// lockedSteam is every command the last run gave `steam` with the script's lock
+// still open on descriptor 9.
+var lockedSteam []string
 
 // stalePid is the process the last run offered as a gamescope left behind by a
 // session that is gone. Here for the same reason as gamescopeArgs: one test
@@ -722,5 +762,88 @@ func TestARunningGameIsNotEndedByAskingForTheDesktop(t *testing.T) {
 
 	if !strings.Contains(said, "game is running") {
 		t.Errorf("said %q, which does not say why nothing was done", said)
+	}
+}
+
+// The retry starts a second gamescope and goes straight on to ask for Big
+// Picture, and the Steam inside that gamescope is not a process yet at that
+// moment. `steam steam://open/bigpicture` with no Steam to hand it to starts
+// one, outside gamescope, which is the arrangement this whole script exists to
+// avoid. The same run used to send -shutdown to a Steam that was not there,
+// which has the same effect.
+func TestTheRetryAsksNothingOfASteamThatIsNotThereYet(t *testing.T) {
+	_, said := runSteamScript(t, seatState{arg: "bigpicture", gamescopeDies: true, slowSteam: true})
+
+	if !strings.Contains(said, "trying once more") {
+		t.Fatalf("the retry never ran, so this tested nothing: %q", said)
+	}
+
+	if len(unaskedSteam) != 0 {
+		t.Errorf("gave `steam` %v while no Steam was running, so one was started outside gamescope",
+			unaskedSteam)
+	}
+
+	if !strings.Contains(said, "Big Picture is up") {
+		t.Errorf("said %q, so the window never came once Steam was there", said)
+	}
+}
+
+// Every command given to `steam` may leave a process behind, and one that
+// inherited the script's lock would hold it for as long as it ran: the next
+// run of the script then waits two minutes and does nothing. The Steam outside
+// gamescope is the path that shuts one down and asks for the window.
+func TestSteamIsNeverHandedTheScriptsLock(t *testing.T) {
+	if _, err := exec.LookPath("flock"); err != nil {
+		t.Skip("SKIPPED: no flock, so the script takes no lock to leak")
+	}
+
+	for name, state := range map[string]seatState{
+		"a Steam outside gamescope": {steamOutside: true, arg: "bigpicture"},
+		"a refresh":                 {arg: "refresh", gamescopeRunning: true},
+		"a leftover gamescope":      {staleGamescope: true},
+	} {
+		runSteamScript(t, state)
+
+		if len(lockedSteam) != 0 {
+			t.Errorf("%s: `steam %s` ran with the lock open", name, strings.Join(lockedSteam, ", "))
+		}
+	}
+}
+
+// Sunshine captures the display sway opened, and learns which one only from
+// the environment sway imports into the user manager. sway starts every exec
+// line at once, so an import on a line of its own is a race Sunshine can win
+// and then start without a display. The start has to come after the import in
+// the same command.
+func TestTheSessionStartsSunshineOnlyAfterImportingTheDisplay(t *testing.T) {
+	out, err := render("assets/sway.config", map[string]string{
+		"Resolution": "1920x1080",
+		"Keyboard":   Keyboard{}.swayInput(),
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	found := false
+
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.HasPrefix(line, "exec ") || !strings.Contains(line, "start polyseat-sunshine") {
+			continue
+		}
+
+		found = true
+
+		importAt := strings.Index(line, "import-environment")
+		if importAt < 0 || !strings.Contains(line[importAt:], "&& systemctl --user start polyseat-sunshine") {
+			t.Errorf("Sunshine is started without waiting for the import: %q", line)
+		}
+
+		if !strings.Contains(line, "WAYLAND_DISPLAY") {
+			t.Errorf("the line that starts Sunshine does not import WAYLAND_DISPLAY: %q", line)
+		}
+	}
+
+	if !found {
+		t.Error("the session never starts Sunshine")
 	}
 }

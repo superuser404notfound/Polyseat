@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Polyseat - keep Steam Big Picture owning the screen.
 
+**A fallback since Steam moved into gamescope, and kept as one.** sway sees a
+single window with the app_id gamescope there, never a Steam window, so on the
+ordinary path this matches nothing and sleeps on sway's socket. It still
+matters when polyseat-steam ends up with a Steam outside gamescope: gamescope
+failing on its second try, or a Steam that would not close. A Big Picture that
+owns the screen is then what stands between the player and a window in a
+corner. Everything below was written for that arrangement, when it was the
+only one, and still describes it.
+
 Two things reported from a couch, both of which look like a Steam problem and
 are neither.
 
