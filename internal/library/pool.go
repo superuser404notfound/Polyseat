@@ -489,9 +489,22 @@ func (p *Pool) Sync(members []Member, log Logger) (Report, error) {
 		return report, err
 	}
 
+	// What each member's folder directory holds, read once and used by both
+	// halves. A scan measures every folder to the last file, and nothing the
+	// pass does in between writes into a member's folders: harvesting only
+	// writes into the pool, and delivering to one member only into that one.
+	// A member missing here has no folder directory or could not be read, and
+	// the second is already in the report.
+	scans := map[string][]Folder{}
+
 	for _, m := range members {
-		if err := p.harvestFolders(m, &report, log); err != nil {
+		folders, scanned, err := p.harvestFolders(m, &report, log)
+		if err != nil {
 			report.Problems = append(report.Problems, fmt.Sprintf("%s: %v", m.Name, err))
+		}
+
+		if scanned {
+			scans[m.Name] = folders
 		}
 	}
 
@@ -500,7 +513,12 @@ func (p *Pool) Sync(members []Member, log Logger) (Report, error) {
 			report.Problems = append(report.Problems, fmt.Sprintf("%s: %v", m.Name, err))
 		}
 
-		if err := p.distributeFolders(m, &report, log); err != nil {
+		folders, scanned := scans[m.Name]
+		if !scanned {
+			continue
+		}
+
+		if err := p.distributeFolders(m, folders, &report, log); err != nil {
 			report.Problems = append(report.Problems, fmt.Sprintf("%s: %v", m.Name, err))
 		}
 	}
@@ -651,22 +669,25 @@ func (p *Pool) harvestFrom(steamapps *os.File, apps []App, from string, owner Ow
 // The same shape as the Steam pass with the two signals replaced: settled
 // stands in for StateFlags, and the newest time inside the tree stands in for
 // buildid. Only ever forward, for the same reason.
-func (p *Pool) harvestFolders(m Member, report *Report, log Logger) error {
+//
+// Answers with what it found in the member's directory, and whether it got as
+// far as reading it, so the delivery half of the pass can use the same scan.
+func (p *Pool) harvestFolders(m Member, report *Report, log Logger) ([]Folder, bool, error) {
 	dir, err := p.foldersDir(m)
 	if err != nil || dir == nil {
-		return err
+		return nil, false, err
 	}
 
 	defer dir.Close()
 
 	folders, err := scanFoldersAt(dir)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 
 	pool, err := openOwn(p.PoolFolders())
 	if err != nil {
-		return err
+		return folders, true, err
 	}
 
 	defer pool.Close()
@@ -687,7 +708,7 @@ func (p *Pool) harvestFolders(m Member, report *Report, log Logger) error {
 
 		result, err := cloneAt(dir, folder.Name, pool, folder.Name, p.own, true)
 		if err != nil {
-			return fmt.Errorf("clone %s: %w", folder.Name, err)
+			return folders, true, fmt.Errorf("clone %s: %w", folder.Name, err)
 		}
 
 		if result.Copied > 0 {
@@ -701,7 +722,7 @@ func (p *Pool) harvestFolders(m Member, report *Report, log Logger) error {
 		// recorded version describes what the pool actually holds.
 		stored, err := folderAt(pool, folder.Name)
 		if err != nil {
-			return err
+			return folders, true, err
 		}
 
 		p.state.Folders[folder.Name] = stored
@@ -711,11 +732,12 @@ func (p *Pool) harvestFolders(m Member, report *Report, log Logger) error {
 		})
 	}
 
-	return nil
+	return folders, true, nil
 }
 
-// distributeFolders offers every shared folder in the pool to one seat.
-func (p *Pool) distributeFolders(m Member, report *Report, log Logger) error {
+// distributeFolders offers every shared folder in the pool to one seat, given
+// what harvestFolders found there.
+func (p *Pool) distributeFolders(m Member, folders []Folder, report *Report, log Logger) error {
 	dir, err := p.foldersDir(m)
 	if err != nil || dir == nil {
 		return err
@@ -724,11 +746,6 @@ func (p *Pool) distributeFolders(m Member, report *Report, log Logger) error {
 	defer dir.Close()
 
 	here := map[string]Folder{}
-
-	folders, err := scanFoldersAt(dir)
-	if err != nil {
-		return err
-	}
 
 	for _, folder := range folders {
 		here[folder.Name] = folder
