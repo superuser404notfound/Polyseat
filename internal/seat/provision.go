@@ -1168,8 +1168,8 @@ func (p *Provisioner) installTool(ctx context.Context, t tool, release protonAss
 		}
 
 		_, _, err = p.Client.Try(ctx, p.name(), "sh", "-c", fmt.Sprintf(
-			"cat > %s/compatibilitytool.vdf <<'VDF'\n%s\nVDF\n",
-			t.dir(), t.manifest(release.tag)))
+			"printf '%%s\\n' %s > %s/compatibilitytool.vdf",
+			shellQuote(t.manifest(release.tag)), t.dir()))
 
 		return err
 	}
@@ -1478,22 +1478,34 @@ func (t tool) script(url, sum, tag string) string {
 	work := ".polyseat-new-" + t.name
 	archive := t.name + ".tar"
 
+	// url, sum and tag are single quoted rather than put through %q. They come
+	// from a release on GitHub, and %q makes a Go string, which a shell reads as
+	// double quoted: $(...) and backticks inside one are run. The manifest
+	// carries the tag too, so it is printed from a quoted argument instead of
+	// a here document, which a line reading VDF in the tag would have ended.
 	return fmt.Sprintf(`set -e
 mkdir -p %[1]s
 cd %[1]s
 rm -rf %[7]q %[8]q
-curl -fsSL --retry 2 -o %[8]q %[2]q
-echo %[3]q'  '%[8]q | sha512sum -c -
+curl -fsSL --retry 2 -o %[8]q %[2]s
+echo %[3]s'  '%[8]q | sha512sum -c -
 mkdir %[7]q
 tar -x%[9]sf %[8]q -C %[7]q --strip-components=1
 rm -f %[8]q
-printf '%%s\n' %[4]q > %[7]q/polyseat-release
-cat > %[7]q/compatibilitytool.vdf <<'VDF'
-%[6]s
-VDF
+printf '%%s\n' %[4]s > %[7]q/polyseat-release
+printf '%%s\n' %[6]s > %[7]q/compatibilitytool.vdf
 rm -rf %[5]q
 mv %[7]q %[5]q
-`, protonDir, url, sum, tag, t.name, t.manifest(tag), work, archive, t.unpack)
+`, protonDir, shellQuote(url), shellQuote(sum), shellQuote(tag), t.name,
+		shellQuote(t.manifest(tag)), work, archive, t.unpack)
+}
+
+// shellQuote makes one word of s for sh, whatever is in it.
+//
+// Single quotes, because nothing inside them is special to a shell except the
+// single quote itself, which is closed, escaped and reopened.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // compatToolManifest is the file Steam identifies the tool by, written here

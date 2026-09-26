@@ -198,3 +198,66 @@ func TestCredentialsCommandHandsSunshineThePasswordFromStdin(t *testing.T) {
 		t.Errorf("sunshine was handed %q, want %q", got, want)
 	}
 }
+
+// The release a tool comes from is somebody else's data, and it went into the
+// install script through %q, which a shell reads as double quotes: $(...) in a
+// URL or a tag ran inside the seat. This runs the real script, pointed at a
+// temporary directory and with curl, sha512sum and tar standing in, and checks
+// that nothing hostile ran and that the tag arrived exactly as it was.
+func TestToolScriptRunsNothingFromTheRelease(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	root := filepath.Join(dir, "tools")
+
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, body := range map[string]string{
+		// Writes whatever follows -o, so the archive exists for the rest.
+		"curl":      "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && : > \"$2\"; shift; done\n",
+		"sha512sum": "#!/bin/sh\ncat > /dev/null\n",
+		"tar":       "#!/bin/sh\nexit 0\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	marker := filepath.Join(dir, "ran")
+	payload := "$(touch " + marker + ")`touch " + marker + "`'\"; touch " + marker + "; '"
+
+	tag := "tag-1\nVDF\n" + payload
+
+	script := cachyOS.script("https://example.invalid/"+payload, strings.Repeat("a", 128)+payload, tag)
+	script = strings.ReplaceAll(script, protonDir, root)
+
+	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the script failed: %v: %s\n%s", err, out, script)
+	}
+
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("something from the release was run as a command:\n%s", script)
+	}
+
+	got, err := os.ReadFile(filepath.Join(root, cachyOS.name, "polyseat-release"))
+	if err != nil {
+		t.Fatalf("the release stamp was not written: %v", err)
+	}
+
+	if string(got) != tag+"\n" {
+		t.Errorf("the release stamp says %q, want %q", got, tag+"\n")
+	}
+
+	manifest, err := os.ReadFile(filepath.Join(root, cachyOS.name, "compatibilitytool.vdf"))
+	if err != nil {
+		t.Fatalf("the manifest was not written: %v", err)
+	}
+
+	if string(manifest) != cachyOS.manifest(tag)+"\n" {
+		t.Errorf("the manifest was cut short or changed:\n%s", manifest)
+	}
+}
