@@ -197,6 +197,14 @@ jobs:
       - name: The network questions in uninstall.sh
         run: ./host/test-uninstall.sh
 
+      # The card detection in prepare.sh, against sysfs trees built in a
+      # temporary directory: an AMD card, two cards, a card with no driver. It
+      # cut its block out of install.sh, and when the installer was split in two
+      # the block moved to prepare.sh and the test failed on every run without
+      # anybody seeing it, because nothing ran it.
+      - name: The card detection in prepare.sh
+        run: ./host/test-gpu-detect.sh
+
   # The one decision in this project that can be wrong without anybody noticing.
   #
   # A device that fails to reach a seat is a complaint within the minute. A

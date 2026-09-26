@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Checks the card detection in install.sh against machines this one is not.
+# Checks the card detection in prepare.sh against machines this one is not.
 #
 # This machine has one NVIDIA card and cannot grow a second one, so every
 # interesting case for the AMD work is a machine nobody here has: an AMD card,
 # two cards at once, a card with no driver bound to it. The answers are built
 # out of directories instead.
 #
-# It runs the detection out of install.sh rather than a copy of it. A copy
+# It runs the detection out of prepare.sh rather than a copy of it. A copy
 # would pass forever after the original changed, which is the failure mode this
 # project has already paid for once.
 #
@@ -14,7 +14,7 @@
 set -uo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL="$HERE/install.sh"
+PREPARE="$HERE/prepare.sh"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -23,12 +23,12 @@ trap 'rm -rf "$work"' EXIT
 # so it can run outside the installer.
 {
     echo 'ok() { :; }; bad() { :; }; warn() { echo "WARN $*"; }; step() { :; }'
-    sed -n '/^step "Graphics"$/,/^step "Prerequisites"$/p' "$INSTALL" | sed '$d'
+    sed -n '/^step "Graphics"$/,/^step "Prerequisites"$/p' "$PREPARE" | sed '$d'
     echo 'echo "vendor=$gpu_vendor node=$gpu_node driver=$gpu_driver"'
 } > "$work/detect.sh"
 
 grep -q 'renderD' "$work/detect.sh" || {
-    echo "the detection block could not be cut out of install.sh, so this tests nothing"
+    echo "the detection block could not be cut out of prepare.sh, so this tests nothing"
     exit 1
 }
 
