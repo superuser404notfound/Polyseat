@@ -43,10 +43,33 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-# git as root over a repository owned by somebody else is the case git refuses
-# by default. It makes an exception when sudo says whose it is, which covers the
-# normal way this is run, and this covers the rest.
-git_() { git -C "$REPO" -c safe.directory="$REPO" "$@"; }
+# Every git command here runs as whoever owns the checkout, not as root.
+#
+# This script runs under sudo, and the checkout belongs to the person who
+# cloned it. A fetch or a checkout done as root writes objects, refs, the index
+# and the working tree as root, and from then on that person's own `git pull`
+# fails on files they cannot write in their own directory. Even `git status`
+# is not read only: it refreshes the index and replaces it, as root. The owner
+# is read from the directory rather than from SUDO_USER, because the checkout
+# is what is being written to and sudo only says who asked.
+#
+# When git has to run as somebody who does not own the tree (root over a root
+# owned tree is fine, root over nobody's is not), it gets safe.directory to be
+# allowed in at all, and hooks and fsmonitor switched off, because both are
+# programs named by files in that tree and would otherwise run with the
+# privileges of whoever is running this.
+owner=$(stat -c %U -- "$REPO")
+
+git_() {
+    if [[ $owner == "$(id -un)" ]]; then
+        git -C "$REPO" "$@"
+    elif [[ $EUID -eq 0 && $owner != UNKNOWN ]]; then
+        runuser -u "$owner" -- git -C "$REPO" "$@"
+    else
+        git -C "$REPO" -c safe.directory="$REPO" \
+            -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"
+    fi
+}
 
 step "This checkout"
 
