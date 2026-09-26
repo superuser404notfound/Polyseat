@@ -313,6 +313,14 @@ func (s *Store) Valid(token string) bool {
 	key := s.creds.SessionKey
 	s.mu.RUnlock()
 
+	// An unclaimed machine has no key, and an HMAC under an empty key is one
+	// anybody can compute: without this, a token signed with nothing was a
+	// valid session on every machine nobody had claimed yet, which reached
+	// every guarded endpoint before the first password was even chosen.
+	if len(key) == 0 {
+		return false
+	}
+
 	if !hmac.Equal([]byte(mac), []byte(sign(key, payload))) {
 		return false
 	}

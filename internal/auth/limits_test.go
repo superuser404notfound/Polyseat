@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 // These are the ways the store could be made to misbehave by asking it many
@@ -78,5 +79,26 @@ func TestClaimsArrivingTogetherHaveOneWinner(t *testing.T) {
 		if e.Name() != "credentials.json" {
 			t.Errorf("left behind in the state directory: %s", e.Name())
 		}
+	}
+}
+
+// A token signed with no key at all is one anybody can make. Before a password
+// is chosen there is no key, and without the guard such a token passed.
+func TestAnUnclaimedStoreHonoursNoSession(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	payload := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10) + ":forged"
+	forged := payload + "." + sign(nil, payload)
+
+	if store.Valid(forged) {
+		t.Error("a session signed with an empty key was accepted before the machine was claimed")
+	}
+
+	// Issued by the store itself as well, which signs with the same nothing.
+	if store.Valid(store.Issue()) {
+		t.Error("an unclaimed store accepted a session it issued with no key")
 	}
 }
