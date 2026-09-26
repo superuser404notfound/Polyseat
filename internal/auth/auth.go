@@ -78,6 +78,12 @@ type Store struct {
 	mu    sync.RWMutex
 	creds Credentials
 
+	// writeMu makes deciding on new credentials, hashing them and writing them
+	// one step. mu cannot do that job: it is held for reads by every request
+	// that checks a session, and holding it across a hash that takes a tenth of
+	// a second would stall the whole interface for that long.
+	writeMu sync.Mutex
+
 	limiter *limiter
 }
 
@@ -134,15 +140,21 @@ func (s *Store) NeedsSetup() bool {
 // otherwise both find it unclaimed, both set a password, and the second would
 // win silently.
 func (s *Store) Claim(username, password string) error {
-	s.mu.Lock()
-	claimed := len(s.creds.Hash) != 0
-	s.mu.Unlock()
+	// Held across the hash and the write, not only across the look. The first
+	// version released its lock between finding the machine unclaimed and
+	// setting the password, so two requests arriving together both found it
+	// unclaimed, both hashed, and both wrote: the second password won without
+	// either browser being told, and the two writes shared one temporary file
+	// name, which can leave a credentials.json the daemon cannot parse on its
+	// next start.
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 
-	if claimed {
+	if !s.NeedsSetup() {
 		return errors.New("this machine already has a password")
 	}
 
-	return s.SetPassword(username, password)
+	return s.setPassword(username, password)
 }
 
 // Username is who logs in.
@@ -155,6 +167,14 @@ func (s *Store) Username() string {
 
 // SetPassword replaces the credentials and ends every existing session.
 func (s *Store) SetPassword(username, password string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	return s.setPassword(username, password)
+}
+
+// setPassword is SetPassword for a caller that already holds writeMu.
+func (s *Store) setPassword(username, password string) error {
 	if len([]rune(password)) < MinPasswordLength {
 		return fmt.Errorf("the password has to be at least %d characters", MinPasswordLength)
 	}
@@ -206,12 +226,37 @@ func (s *Store) write(creds Credentials) error {
 		return err
 	}
 
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	// A name of its own for every write rather than one fixed .tmp beside the
+	// file. writeMu already keeps this process to one write at a time; the
+	// unique name is what keeps that from being the only thing standing
+	// between two writers and a file made of both of them. CreateTemp makes it
+	// 0600, which is what the finished file has to be: it holds the key that
+	// signs sessions.
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), filepath.Base(s.path)+".*.tmp")
+	if err != nil {
 		return err
 	}
 
-	return os.Rename(tmp, s.path)
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+
+		return err
+	}
+
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+
+		return err
+	}
+
+	if err := os.Rename(tmp.Name(), s.path); err != nil {
+		_ = os.Remove(tmp.Name())
+
+		return err
+	}
+
+	return nil
 }
 
 // Check verifies a user name and password.
