@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -319,6 +321,134 @@ func TestAdoptHostLibrary(t *testing.T) {
 
 	if got := pool.Unwatched(); len(got) != 0 {
 		t.Errorf("the note outlived the import: %v", got)
+	}
+}
+
+// Two passes at once is the normal case rather than a stress test: the timer
+// starts one and every library button in the interface starts another, each on
+// its own goroutine. The second has to wait for the first and then find the
+// library already watched, rather than make the same decision beside it.
+//
+// The first pass is held inside the search until the second has had every
+// chance to start its own, which is what makes the overlap certain instead of
+// a matter of scheduling.
+func TestAdoptHostLibraryIsOneDecision(t *testing.T) {
+	root := reflinkDirFor(t)
+
+	pool, err := library.Open(filepath.Join(root, "library"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	host := filepath.Join(root, "home", "player", ".local", "share", "Steam", "steamapps")
+	if err := os.MkdirAll(filepath.Join(host, "common", "Dota 2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var searches atomic.Int32
+
+	inside := make(chan struct{})
+	release := make(chan struct{})
+
+	m := &Manager{
+		pool: pool,
+		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		libraries: func(exclude string, tracked []string) []string {
+			if searches.Add(1) == 1 {
+				close(inside)
+				<-release
+			}
+
+			return []string{host}
+		},
+	}
+
+	var wg sync.WaitGroup
+
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		m.adoptHostLibrary()
+	}()
+
+	<-inside
+
+	go func() {
+		defer wg.Done()
+		m.adoptHostLibrary()
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if n := searches.Load(); n != 1 {
+		t.Errorf("two passes both searched for a library to adopt (%d searches), "+
+			"so both could adopt one", n)
+	}
+
+	if got := pool.Sources(); len(got) != 1 || got[0] != host {
+		t.Errorf("sources after two passes: %v", got)
+	}
+}
+
+// The interface reads the pool on every change the daemon pushes, several times
+// a second while a seat is being built. Whether a member's files may be replaced
+// is a walk over /proc on the host and an exec into every running seat, and
+// nothing the interface shows depends on it, so reading the pool must not ask.
+func TestLibraryDoesNotProbe(t *testing.T) {
+	root := reflinkDirFor(t)
+
+	pool, err := library.Open(filepath.Join(root, "library"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	host := filepath.Join(root, "home", "player", ".local", "share", "Steam", "steamapps")
+	if err := os.MkdirAll(filepath.Join(host, "common"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := pool.AddSource(host, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	asked := 0
+
+	defer func(was func(string, int) bool) { probeHost = was }(probeHost)
+
+	probeHost = func(string, int) bool {
+		asked++
+
+		return true
+	}
+
+	m := &Manager{
+		pool:  pool,
+		store: store,
+		log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	status := m.Library()
+
+	if asked != 0 {
+		t.Errorf("reading the pool for the interface probed the host %d times", asked)
+	}
+
+	if status.Receiving != host {
+		t.Errorf("receiving = %q, want %q", status.Receiving, host)
+	}
+
+	// And the seam is the one a pass goes through, or the zero above would
+	// prove nothing.
+	if members := m.members(true); len(members) != 1 || !members[0].Updatable || asked == 0 {
+		t.Errorf("a pass did not probe the host: %d asks, %+v", asked, members)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // CatalogEntry is something the web interface offers to install into a seat.
@@ -457,12 +458,27 @@ func (m *Manager) refreshAppsWhenNobodyIsStreaming(ctx context.Context, name str
 	m.refreshApps(ctx, name)
 }
 
+// appsPatience is the most one rebuild of the app list may take.
+//
+// Several times what a rebuild costs in the steady state, which is seconds, and
+// enough for the one that reads a new AppImage for the first time. It is a
+// ceiling on how long the sweep can be kept from the other seats, not a
+// schedule.
+const appsPatience = 10 * time.Minute
+
 // refreshApps rewrites the Moonlight app list for a running seat.
 //
 // Quiet unless something actually changed, because this also runs on the
 // periodic sweep and a line every ten seconds would both fill the seat's log
 // and wake the interface each time.
 func (m *Manager) refreshApps(ctx context.Context, name string) {
+	// The rebuild as a whole is bounded as well as each scan in it. This runs
+	// on the sweep, which visits the seats one after another, and every scan
+	// behind it reads what the player owns. Each has its own limit inside the
+	// seat; this is the one for everything that has not, and for the sum.
+	ctx, cancel := context.WithTimeout(ctx, appsPatience)
+	defer cancel()
+
 	s, err := m.store.Get(name)
 	if err != nil {
 		return

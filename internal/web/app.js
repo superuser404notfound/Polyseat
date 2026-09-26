@@ -979,7 +979,87 @@ function renderLibrary() {
     "until a seat updates a game. Sharing files is not sharing licences: a " +
     "seat can only play what its own Steam account owns.";
 
-  body.replaceChildren(...[table, note, ...watching(library), aside].filter(Boolean));
+  body.replaceChildren(
+    ...[...setupsWaiting(library), table, note, ...watching(library), aside].filter(Boolean),
+  );
+}
+
+// The setup scripts shared folders carry, waiting for somebody to allow them.
+//
+// Asked rather than run, because a folder can come from any seat and its script
+// then runs on this host as the owner of the Steam library and in every other
+// seat as that seat's player. So the script is shown, and allowing it names the
+// hash of exactly what was shown.
+function setupsWaiting(pool) {
+  const waiting = pool.setups || [];
+
+  return waiting.map((setup) => {
+    const box = document.createElement("div");
+    box.className = "hint";
+
+    const where = (setup.waiting || []).join(", ");
+
+    box.append(
+      Object.assign(document.createElement("p"), {
+        textContent:
+          `The shared folder ${setup.folder} carries a polyseat-setup.sh, ` +
+          `which would run in ${where}: on the host as the owner of the ` +
+          `Steam library, in a seat as its player. Any seat can put a folder ` +
+          `in the pool, so read it before allowing it. A newer version of ` +
+          `the folder asks again.`,
+      }),
+    );
+
+    if (setup.problem) {
+      box.append(
+        Object.assign(document.createElement("p"), {
+          className: "flag",
+          textContent: "It cannot be allowed: " + setup.problem,
+        }),
+      );
+
+      return box;
+    }
+
+    const text = Object.assign(document.createElement("pre"), { textContent: setup.script });
+    text.style.whiteSpace = "pre-wrap";
+
+    const details = document.createElement("details");
+    details.append(
+      Object.assign(document.createElement("summary"), {
+        textContent:
+          "Show the script" + (setup.truncated ? " (only its beginning fits here)" : ""),
+      }),
+      text,
+      Object.assign(document.createElement("small"), {
+        textContent: "sha256 " + setup.sha256,
+      }),
+    );
+
+    const allow = document.createElement("button");
+    allow.className = "quiet tiny";
+    allow.textContent = "Allow it to run";
+    allow.onclick = () => {
+      if (
+        !confirm(
+          `Allow the setup script of ${setup.folder} to run in ${where}?\n\n` +
+            `It runs with everything the person it runs as can do.`,
+        )
+      ) {
+        return;
+      }
+
+      run(() =>
+        api("POST", `/api/library/setups/${encodeURIComponent(setup.folder)}`, {
+          sha256: setup.sha256,
+        }),
+      );
+    };
+
+    box.append(details, allow);
+
+    return box;
+  });
 }
 
 // The libraries outside the seats: which ones the pool watches, and which ones

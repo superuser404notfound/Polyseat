@@ -1,12 +1,16 @@
 package seat
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // stockSunshineApps is the file Sunshine ships, taken verbatim from a seat
@@ -772,5 +776,265 @@ func TestTheWorkspaceSwitchComesFirst(t *testing.T) {
 			t.Errorf("%s does something before it switches workspace: %q",
 				a.Name, a.PrepCmd[0].Do)
 		}
+	}
+}
+
+// inSeat is what a scan's argv runs once sudo has become the player: the part
+// from timeout onward, which is what these tests run on this machine as
+// whoever runs them. The prefix is checked rather than skipped blindly, so a
+// change to it is noticed here and not only in a seat.
+func inSeat(t *testing.T, argv []string) []string {
+	t.Helper()
+
+	want := []string{"sudo", "-u", Player, "env", "HOME=/home/" + Player}
+	if len(argv) < len(want) || strings.Join(argv[:len(want)], " ") != strings.Join(want, " ") {
+		t.Fatalf("a scan does not start by becoming the player: %q", argv)
+	}
+
+	return argv[len(want):]
+}
+
+// A scan runs as the player with the player's HOME, and Python reads that
+// HOME for code to run before the scan's first line. -I is what keeps it out,
+// and this asks the real interpreter with a real usercustomize.py in place.
+func TestPythonScanLeavesTheUsersSiteAlone(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed")
+	}
+
+	home := t.TempDir()
+	env := []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}
+
+	where := exec.Command(python, "-c", "import site; print(site.getusersitepackages())")
+	where.Env = env
+
+	out, err := where.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	site := strings.TrimSpace(string(out))
+	if err := os.MkdirAll(site, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(site, "usercustomize.py"),
+		[]byte("print('the player was here')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without -I the file is read, or this test would prove nothing about the
+	// flag: a Python that ignores the user's site anyway passes either way.
+	plain := exec.Command(python, "-c", "print('scan')")
+	plain.Env = env
+
+	if out, _ := plain.CombinedOutput(); !strings.Contains(string(out), "the player was here") {
+		t.Skipf("this Python does not read the user's site even without -I: %q", out)
+	}
+
+	argv := inSeat(t, pythonScan(10*time.Second, "print('scan')"))
+
+	scan := exec.Command(argv[0], argv[1:]...)
+	scan.Env = env
+
+	got, err := scan.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v: %s", err, got)
+	}
+
+	if strings.TrimSpace(string(got)) != "scan" {
+		t.Errorf("the player's usercustomize.py ran before the scan: %q", got)
+	}
+}
+
+// A scan that never returns has to be ended by the seat, because Incus does not
+// end a command whose caller stopped waiting. A FIFO nobody writes to is the
+// way a player makes a read never return.
+func TestScanIsEndedInsideTheSeat(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), "appmanifest_1.acf")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	argv := inSeat(t, asPlayerFor(time.Second, "sh", "-c", `cat "$1"`, "sh", fifo))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	start := time.Now()
+
+	scan := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	scan.WaitDelay = time.Second
+
+	err := scan.Run()
+
+	if ctx.Err() != nil {
+		t.Fatal("the scan was still waiting on the FIFO when the test gave up")
+	}
+
+	if err == nil {
+		t.Error("a scan that was ended reported success")
+	}
+
+	if took := time.Since(start); took > 10*time.Second {
+		t.Errorf("the scan took %s to be ended", took)
+	}
+}
+
+// The desktop entry scan reads directories the player writes to, so a FIFO in
+// one of them must not hold it up. The symlinks are there because the flatpak
+// exports are symlinks, and those have to go on being read.
+func TestForeignScanSkipsWhatIsNotAFile(t *testing.T) {
+	dir := t.TempDir()
+
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("steam.desktop", "[Desktop Entry]\nExec=steam steam://rungameid/440\n")
+	write("real.desktop", "[Desktop Entry]\nExec=lutris lutris:rungame/quake\n")
+	write(entryPrefix+"abc.desktop", "[Desktop Entry]\nExec=ours\n")
+
+	if err := os.Symlink("real.desktop", filepath.Join(dir, "exported.desktop")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := syscall.Mkfifo(filepath.Join(dir, "trap.desktop"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Symlink("trap.desktop", filepath.Join(dir, "trap-link.desktop")); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// WaitDelay, so that a scan which does wait makes this fail rather than
+	// hang: grep blocked on the FIFO keeps the pipe open after sh is killed.
+	scan := exec.CommandContext(ctx, "sh", "-c", foreignScan([]string{dir}))
+	scan.WaitDelay = time.Second
+
+	out, _ := scan.Output()
+
+	if ctx.Err() != nil {
+		t.Fatal("the scan waited on a FIFO")
+	}
+
+	got := string(out)
+
+	for _, want := range []string{"steam://rungameid/440", "lutris:rungame/quake"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%s is missing from %q", want, got)
+		}
+	}
+
+	if strings.Count(got, "lutris:rungame/quake") != 2 {
+		t.Errorf("the entry behind a symlink was not read: %q", got)
+	}
+
+	if strings.Contains(got, "Exec=ours") {
+		t.Errorf("an entry of ours was taken for somebody else's: %q", got)
+	}
+}
+
+// A seat decides how much it prints. Past the limit the answer is refused, and
+// the writes still succeed, because a failed write would stop the Incus client
+// reading and leave the command in the seat blocked on a full pipe.
+func TestCappedBuffer(t *testing.T) {
+	b := &cappedBuffer{limit: 8}
+
+	if n, err := b.Write([]byte("12345")); n != 5 || err != nil {
+		t.Fatalf("write under the limit: %d, %v", n, err)
+	}
+
+	if b.over() {
+		t.Fatal("under the limit was reported over it")
+	}
+
+	if n, err := b.Write([]byte("67890")); n != 5 || err != nil {
+		t.Fatalf("a write past the limit failed: %d, %v", n, err)
+	}
+
+	if !b.over() {
+		t.Error("going past the limit was not noticed")
+	}
+
+	if got := b.String(); got != "12345678" {
+		t.Errorf("kept %q", got)
+	}
+}
+
+// Reading the app list has three outcomes that must not be confused. No file
+// is an empty list; a file is the list; anything else is a reason to stop,
+// because writing on after a read that merely failed replaces somebody's own
+// entries with nothing. The script runs here against a real directory, and its
+// exit is read by the same function the daemon uses.
+func TestReadingTheAppList(t *testing.T) {
+	dir := t.TempDir()
+
+	read := func(path string) ([]byte, error) {
+		var out, complaint strings.Builder
+
+		cmd := exec.Command("sh", "-c", appsRead, "sh", path)
+		cmd.Stdout, cmd.Stderr = &out, &complaint
+
+		code := 0
+
+		if err := cmd.Run(); err != nil {
+			exit, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatal(err)
+			}
+
+			code = exit.ExitCode()
+		}
+
+		return appsAnswer(out.String(), complaint.String(), code, nil)
+	}
+
+	if got, err := read(filepath.Join(dir, "apps.json")); err != nil || got != nil {
+		t.Errorf("a seat with no list yet: %q, %v", got, err)
+	}
+
+	present := filepath.Join(dir, "present.json")
+	if err := os.WriteFile(present, []byte(stockSunshineApps), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := read(present); err != nil || string(got) != stockSunshineApps {
+		t.Errorf("a list that is there came back as %q, %v", got, err)
+	}
+
+	// Something is there and cannot be read. A directory stands in for every
+	// failure that is not absence, and is one a test can make without root.
+	folder := filepath.Join(dir, "folder.json")
+	if err := os.Mkdir(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := read(folder); err == nil {
+		t.Errorf("a list that could not be read was taken for none at all: %q", got)
+	}
+
+	// A link to nothing is the player's doing and not an empty list either.
+	dangling := filepath.Join(dir, "dangling.json")
+	if err := os.Symlink(filepath.Join(dir, "gone"), dangling); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := read(dangling); err == nil {
+		t.Error("a dangling link was taken for no list at all")
+	}
+
+	if _, err := appsAnswer(strings.Repeat("x", appsLimit+1), "", 0, nil); err == nil {
+		t.Error("a list over the limit was accepted")
+	}
+
+	if _, err := appsAnswer("", "", -1, errors.New("the seat went away")); err == nil {
+		t.Error("an exec that failed was taken for no list at all")
 	}
 }

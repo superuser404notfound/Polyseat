@@ -29,7 +29,12 @@ const hostMember = "host"
 // good way to decide which copy is the real one. The others stay what they were
 // before, libraries the pool takes games from, and the interface says which one
 // receives.
-func (m *Manager) hostMembers() []library.Member {
+//
+// probe says whether to find out if the files may be replaced right now. Only
+// a pass acts on that answer, and asking it is a walk over every process the
+// owner has, twice; the interface reading the pool wants the names and the
+// directories and nothing else.
+func (m *Manager) hostMembers(probe bool) []library.Member {
 	if m.pool == nil {
 		return nil
 	}
@@ -70,9 +75,14 @@ func (m *Manager) hostMembers() []library.Member {
 		// directory on the strength of that answer. hostIdle takes the
 		// directory it is asked about, so the same probe covers it; an empty
 		// path is nobody's and answers yes.
-		Updatable: hostIdle(apps, uid) && hostIdle(folders, uid),
+		Updatable: probe && probeHost(apps, uid) && probeHost(folders, uid),
 	}}
 }
+
+// probeHost is hostIdle, as a variable so that a test can see whether it was
+// asked at all. The question it answers is expensive enough that asking it
+// where nothing acts on the answer is the thing worth catching.
+var probeHost = hostIdle
 
 // hostSharedDir is where the host keeps the launcher agnostic folders, below
 // the home of whoever owns the library the pool gives games to.
@@ -105,7 +115,22 @@ func hostFolders(uid int) string {
 		return ""
 	}
 
-	return sharedIn(who.HomeDir)
+	return foldersFor(uid, who.HomeDir)
+}
+
+// foldersFor is hostFolders once the home is known, apart so that the uid rule
+// can be tested against a home that has the directory.
+//
+// A library owned by root or a system account does not take part in this half.
+// What arrives here is meant for a person's own Lutris, and the setup scripts
+// that come with it are never run as such an account, see minOwnerUID, so the
+// folders would arrive in /root and do nothing.
+func foldersFor(uid int, home string) string {
+	if uid < minOwnerUID {
+		return ""
+	}
+
+	return sharedIn(home)
 }
 
 // ownerOf is the passwd entry for one uid, or nil when the system has none.
@@ -165,10 +190,21 @@ func hostIdle(dir string, uid int) bool {
 		return false
 	}
 
+	// Resolved first, because /proc never names a symlink: maps, cwd and every
+	// fd link carry the real path. A library reached through one, which is the
+	// ordinary case for ~/.steam/steam/steamapps and for a home on a symlinked
+	// /home, would otherwise never match anything, and a Steam playing out of
+	// it would be reported idle and have its files replaced under it. Not
+	// resolvable means not there, which the rest of this treats as unknown.
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+
 	// The trailing separator is what makes this a path test rather than a text
 	// test. Without it a library at /home/x/Steam/steamapps would be reported
 	// busy by anything holding /home/x/Steam/steamapps-backup open.
-	needle := []byte(dir + string(filepath.Separator))
+	needle := []byte(resolved + string(filepath.Separator))
 
 	for _, entry := range entries {
 		if _, err := strconv.Atoi(entry.Name()); err != nil {

@@ -885,6 +885,31 @@ func (c *Client) ReadFile(name, path string) ([]byte, error) {
 	return io.ReadAll(reader)
 }
 
+// FileType says what is at a path inside the instance, without following a
+// symlink that is there: "file", "directory" or "symlink", and "" when there is
+// nothing.
+//
+// Incus answers a GET with an Lstat of the last component, which is what makes
+// this the question to ask before writing somewhere a player could have put a
+// link. Writing follows links, and chowns what it creates to whoever the write
+// was for.
+func (c *Client) FileType(name, path string) (string, error) {
+	reader, resp, err := c.server().GetInstanceFile(name, path)
+	if err != nil {
+		if isNotFound(err) {
+			return "", nil
+		}
+
+		return "", err
+	}
+
+	if reader != nil {
+		_ = reader.Close()
+	}
+
+	return resp.Type, nil
+}
+
 func parentDir(path string) string {
 	i := strings.LastIndex(path, "/")
 	if i <= 0 {

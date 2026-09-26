@@ -244,8 +244,8 @@ func steamTool(appid, name string) bool {
 
 // steamGames lists the games Steam has installed in this seat.
 func (p *Provisioner) steamGames(ctx context.Context) ([]Game, error) {
-	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
-		"HOME=/home/"+Player, "python3", "-c", steamScan)
+	out, code, err := look(ctx, p.Client, p.name(), scanPatience,
+		pythonScan(scanPatience, steamScan)...)
 	if err != nil {
 		return nil, err
 	}
@@ -254,6 +254,15 @@ func (p *Provisioner) steamGames(ctx context.Context) ([]Game, error) {
 		return nil, nil
 	}
 
+	return steamListing(out), nil
+}
+
+// steamListing turns what steamScan printed into games.
+//
+// Apart from the exec so that what it lets through can be tested without a
+// seat, and that is the point of it: the answer is read out of manifests the
+// player owns.
+func steamListing(out string) []Game {
 	var found []struct {
 		AppID string `json:"appid"`
 		Name  string `json:"name"`
@@ -261,12 +270,23 @@ func (p *Provisioner) steamGames(ctx context.Context) ([]Game, error) {
 	}
 
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &found); err != nil {
-		return nil, nil // an unreadable answer is not worth failing a start over
+		return nil // an unreadable answer is not worth failing a start over
 	}
 
 	var games []Game
 
 	for _, f := range found {
+		// Digits and nothing else. The id is pasted into a command Sunshine
+		// runs, into a desktop entry's Exec line and into the requests for
+		// artwork, and it comes out of an appmanifest the player can write.
+		// An id of "440 & something" would otherwise be a command of the
+		// player's choosing in each of those. Steam's own ids are numbers, so
+		// an entry with anything else in it is not a Steam game and is left
+		// out.
+		if !steamAppID(f.AppID) {
+			continue
+		}
+
 		if steamTool(f.AppID, f.Name) {
 			continue
 		}
@@ -280,7 +300,23 @@ func (p *Provisioner) steamGames(ctx context.Context) ([]Game, error) {
 		})
 	}
 
-	return games, nil
+	return games
+}
+
+// steamAppID reports whether s is something Steam could have given a game as
+// its id: one to ten digits, which is what fits the 32 bit number it is.
+func steamAppID(s string) bool {
+	if len(s) == 0 || len(s) > 10 {
+		return false
+	}
+
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+
+	return true
 }
 
 // lutrisAbsent is what lutrisProbe says when the seat has no Lutris. A seat
@@ -367,8 +403,8 @@ func (m *lutrisMemory) remember(stamp string, games []Game) {
 // Deliberately not run as a login shell or with a display: this is a stat and
 // it must never be the thing that starts anything.
 func (p *Provisioner) lutrisState(ctx context.Context) (string, error) {
-	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
-		"HOME=/home/"+Player, "sh", "-c", lutrisProbe)
+	out, code, err := look(ctx, p.Client, p.name(), scanPatience,
+		asPlayerFor(scanPatience, "sh", "-c", lutrisProbe)...)
 	if err != nil {
 		return "", err
 	}
@@ -404,11 +440,11 @@ func (p *Provisioner) lutrisGames(ctx context.Context) ([]Game, error) {
 		return games, nil
 	}
 
-	out, code, err := p.Client.Try(ctx, p.name(), "sudo", "-u", Player, "env",
-		"HOME=/home/"+Player,
-		"DISPLAY=:0",
-		fmt.Sprintf("XDG_RUNTIME_DIR=/run/user/%d", p.uid),
-		"lutris", "--list-games", "--installed", "--json")
+	out, code, err := look(ctx, p.Client, p.name(), scanPatience,
+		asPlayerFor(scanPatience, "env",
+			"DISPLAY=:0",
+			fmt.Sprintf("XDG_RUNTIME_DIR=/run/user/%d", p.uid),
+			"lutris", "--list-games", "--installed", "--json")...)
 	if err != nil {
 		return nil, err
 	}

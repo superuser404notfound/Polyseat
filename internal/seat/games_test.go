@@ -378,3 +378,29 @@ func TestScanIgnoresWhatIsNotAPicture(t *testing.T) {
 		t.Errorf("cover is %q, want nothing", found[0]["cover"])
 	}
 }
+
+// The id comes out of an appmanifest the player can write and goes into a
+// command Sunshine runs and into a desktop entry's Exec line, so only an id
+// Steam could have issued gets through. The whole scan answer is fed in, the
+// way the seat would print it, next to an ordinary game that must survive.
+func TestSteamListingOnlyTakesNumericIDs(t *testing.T) {
+	out := `[
+  {"appid": "440", "name": "Team Fortress 2", "cover": ""},
+  {"appid": "440 & touch /tmp/owned", "name": "Trap", "cover": ""},
+  {"appid": "440;id", "name": "Trap", "cover": ""},
+  {"appid": "440\nExec=evil", "name": "Trap", "cover": ""},
+  {"appid": "", "name": "Trap", "cover": ""},
+  {"appid": "12345678901", "name": "Too long", "cover": ""},
+  {"appid": "٤٤٠", "name": "Other digits", "cover": ""}
+]`
+
+	games := steamListing(out)
+
+	if len(games) != 1 || games[0].Steam != "440" {
+		t.Fatalf("got %+v, want only Team Fortress 2", games)
+	}
+
+	if games[0].Launch != "steam steam://rungameid/440" {
+		t.Errorf("launch is %q", games[0].Launch)
+	}
+}

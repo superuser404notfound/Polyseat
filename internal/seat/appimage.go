@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
 )
@@ -158,8 +159,7 @@ const maxAppImage = 6 << 30
 //
 // The magic is the two bytes AI followed by the type at offset 8 of an ELF
 // header, which is what the format puts there and what every AppImage this was
-// tested against has. Checked because the daemon is about to execute the file to
-// read its name and icon, and because a file that is not an AppImage would
+// tested against has. Checked because a file that is not an AppImage would
 // otherwise sit in ~/Applications as an entry in Moonlight that does nothing.
 const appImageProbe = `
 import sys
@@ -178,13 +178,11 @@ sys.exit(0 if ok else 1)
 // and icon out of each AppImage, and it prints the result. Splitting them would
 // mean three execs into the container per minute instead of one.
 //
-// Reading name and icon means running the file, which is why the magic is
-// checked first: --appimage-extract is handled by the AppImage runtime and never
-// reaches the payload, but only if there is a runtime there at all. An ordinary
-// executable named .AppImage would simply be run, and it is not this scan's job
-// to be the thing that starts it.
+// Reading name and icon does not run the file. The filesystem inside it is read
+// from the outside with unsquashfs, see extract, because running even the
+// runtime of a file that arrived in ~/Downloads is running whatever came in it.
 const appImageScan = `
-import glob, json, os, re, shutil, subprocess, tempfile, time
+import glob, json, os, re, shutil, struct, subprocess, tempfile, time
 
 home = os.environ.get("POLYSEAT_HOME", "/home/player")
 apps = os.path.join(home, "Applications")
@@ -260,24 +258,91 @@ def adopt():
             continue
 
 
+# What extract answers when this seat has no way to read an AppImage without
+# running it. Distinct from "read, and found nothing", because that answer is
+# cached and this one must not be: the tool may be there by the next scan.
+UNREADABLE = "unreadable"
+
+
+def squashfs_offset(path):
+    """Where the filesystem inside a type 2 AppImage begins, or None.
+
+    The format is an ELF runtime with a squashfs appended, so the filesystem
+    starts where the ELF ends, and the end of this ELF is its section header
+    table, which is the last thing in it. That is how the runtime itself finds
+    it, and reading it here is what lets the scan open the image without
+    running anything that came in the file. Checked against the squashfs magic
+    at the answer, so a file that only looks the part yields nothing.
+
+    Type 1 images are ISO 9660 rather than squashfs, are long out of use, and
+    are left without a name or an icon.
+    """
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(64)
+            if len(head) < 52 or head[:4] != b"\x7fELF" or head[8:11] != b"AI\x02":
+                return None
+
+            order = "<" if head[5] == 1 else ">"
+
+            if head[4] == 2 and len(head) >= 64:
+                shoff = struct.unpack(order + "Q", head[40:48])[0]
+                shentsize, shnum = struct.unpack(order + "HH", head[58:62])
+            elif head[4] == 1:
+                shoff = struct.unpack(order + "I", head[32:36])[0]
+                shentsize, shnum = struct.unpack(order + "HH", head[46:50])
+            else:
+                return None
+
+            offset = shoff + shentsize * shnum
+            fh.seek(offset)
+
+            if fh.read(4) != b"hsqs":
+                return None
+
+            return offset
+    except (OSError, struct.error):
+        return None
+
+
 def extract(path, into):
-    """Pull the metadata files out of an AppImage, without running its payload.
+    """Pull the metadata files out of an AppImage, without running anything.
+
+    It used to ask the file to do this, with --appimage-extract. That is handled
+    by the runtime at the front of the file and never reaches the payload, but
+    the runtime is part of the file too, so whatever arrived in ~/Downloads with
+    the right four bytes in its header was executed by this scan within a
+    minute, without anybody having opened it. unsquashfs reads the same
+    filesystem from the outside.
 
     Every place an icon is known to live, because they disagree. Eden keeps a
     512 by 512 SVG as .DirIcon and nothing else; appimagetool keeps a PNG there;
     plenty of others keep the real thing in the theme directory and leave
     .DirIcon as a symlink to it, which extracts as a symlink pointing at
     something that was never unpacked unless the target is asked for too.
+
+    True when something was unpacked, False when the file has nothing to
+    unpack, and UNREADABLE when this seat has no unsquashfs.
     """
-    for pattern in ("*.desktop", ".DirIcon", "*.png", "*.svg",
-                    "usr/share/icons/hicolor/*/apps/*",
-                    "usr/share/pixmaps/*"):
-        try:
-            subprocess.run([path, "--appimage-extract", pattern], cwd=into,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           timeout=120, check=False)
-        except (OSError, subprocess.SubprocessError):
-            return False
+    offset = squashfs_offset(path)
+    if offset is None:
+        return False
+
+    unsquashfs = shutil.which("unsquashfs")
+    if not unsquashfs:
+        return UNREADABLE
+
+    try:
+        subprocess.run([unsquashfs, "-o", str(offset), "-d",
+                        os.path.join(into, "squashfs-root"), "-no-xattrs",
+                        "-n", path,
+                        "*.desktop", ".DirIcon", "*.png", "*.svg",
+                        "usr/share/icons/hicolor/*/apps/*",
+                        "usr/share/pixmaps/*"],
+                       cwd=into, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=120, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
 
     return os.path.isdir(os.path.join(into, "squashfs-root"))
 
@@ -364,13 +429,21 @@ def pick_icon(root, dest):
 
 
 def read_meta(path, key):
-    """Name and icon, from inside the file."""
+    """Name and icon, from inside the file, and whether the answer may be kept.
+
+    Not kept when the seat could not look, so that it looks again once it can
+    rather than remembering "no icon" for a file it never opened.
+    """
     meta = {"name": "", "icon": ""}
     tmp = tempfile.mkdtemp(dir=cache)
 
     try:
-        if not extract(path, tmp):
-            return meta
+        got = extract(path, tmp)
+        if got == UNREADABLE:
+            return meta, False
+
+        if not got:
+            return meta, True
 
         root = os.path.join(tmp, "squashfs-root")
 
@@ -389,7 +462,7 @@ def read_meta(path, key):
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    return meta
+    return meta, True
 
 
 def meta_of(path, key, stat):
@@ -413,9 +486,12 @@ def meta_of(path, key, stat):
     except (OSError, ValueError):
         pass
 
-    got = read_meta(path, key)
+    got, keep = read_meta(path, key)
     got["stamp"] = stamp
     got["version"] = META_VERSION
+
+    if not keep:
+        return got
 
     try:
         with open(record, "w", encoding="utf-8") as fh:
@@ -489,14 +565,20 @@ if __name__ == "__main__":
     main()
 `
 
+// appImagePatience bounds the AppImage scan, longer than the others because
+// its first look at a new file unpacks part of it. That happens once per file
+// and build; after it the answer comes out of the cache in the time the other
+// scans take.
+const appImagePatience = 5 * time.Minute
+
 // scanAppImages asks a seat what it has in ~/Applications.
 //
 // Takes the client rather than hanging off either the manager or the
 // provisioner, because both need the same answer: the provisioner to build the
 // app list, the manager to draw the software panel.
 func scanAppImages(ctx context.Context, client *incusx.Client, seat string) ([]AppImage, error) {
-	out, code, err := client.Try(ctx, seat, "sudo", "-u", Player, "env",
-		"HOME=/home/"+Player, "python3", "-c", appImageScan)
+	out, code, err := look(ctx, client, seat, appImagePatience,
+		pythonScan(appImagePatience, appImageScan)...)
 	if err != nil {
 		return nil, err
 	}
@@ -661,7 +743,7 @@ func (m *Manager) InstallAppImage(name, rawURL string) error {
 		}
 
 		if _, code, err := m.client.Try(ctx, name, m.playerEnv(
-			"python3", "-c", appImageProbe, part)...); err != nil {
+			"python3", "-I", "-c", appImageProbe, part)...); err != nil {
 			return err
 		} else if code != 0 {
 			_, _, _ = m.client.Try(ctx, name, "rm", "-f", part)

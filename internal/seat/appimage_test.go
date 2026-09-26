@@ -1,6 +1,7 @@
 package seat
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -383,9 +385,9 @@ func TestScanAdoptsADownloadAndListsIt(t *testing.T) {
 		t.Errorf("adopted as %q, want the name with the space taken out", got)
 	}
 
-	// The name it will wear in Moonlight. Reading it out of the file means
-	// running the file, which cannot work for a stub, so this is the fallback
-	// and the fallback has to be a name rather than a file name.
+	// The name it will wear in Moonlight. A stub has no filesystem to read it
+	// out of, so this is the fallback, and the fallback has to be a name
+	// rather than a file name.
 	if got := found[0]["name"]; got != "Citron-nightly" {
 		t.Errorf("named %q, want the file name without its extension", got)
 	}
@@ -584,5 +586,185 @@ func TestHumanBytes(t *testing.T) {
 		if got := humanBytes(size); got != want {
 			t.Errorf("humanBytes(%d) = %q, want %q", size, got, want)
 		}
+	}
+}
+
+// trapRuntime is the program at the front of the AppImage these tests build: it
+// leaves a mark when it is run at all, with any arguments, which is what the
+// scan used to do to every AppImage it found.
+const trapRuntime = `package main
+
+import (
+	"os"
+	"path/filepath"
+)
+
+func main() {
+	_ = os.WriteFile(filepath.Join(os.Getenv("POLYSEAT_HOME"), "it-ran"), nil, 0o644)
+}
+`
+
+// buildAppImage makes a type 2 AppImage the way the format has it: an ELF
+// runtime with the AppImage marker in its header and a squashfs appended, with
+// a desktop entry and an icon inside. Built here rather than downloaded, so the
+// runtime can be one that says whether it was run.
+func buildAppImage(t *testing.T) []byte {
+	t.Helper()
+
+	for _, tool := range []string{"mksquashfs", "unsquashfs", "go"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("SKIPPED: no %s, so reading an AppImage without running it is unchecked here", tool)
+		}
+	}
+
+	dir := t.TempDir()
+
+	src := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(src, []byte(trapRuntime), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := filepath.Join(dir, "runtime")
+
+	build := exec.Command("go", "build", "-o", runtime, src)
+	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GO111MODULE=off")
+
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building the runtime: %v\n%s", err, out)
+	}
+
+	elf, err := os.ReadFile(runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The marker where the format puts it, in the padding of the ident.
+	copy(elf[8:11], []byte{'A', 'I', 2})
+
+	// The real runtime is C, and its linker puts the section header table
+	// last, which is how the end of the ELF is found. Go's puts it near the
+	// front. The table is pointed at the end with no entries in it, which
+	// says the same thing about where the ELF ends; the kernel runs a program
+	// without looking at section headers at all, so the runtime still runs
+	// if anything asks it to.
+	binary.LittleEndian.PutUint64(elf[40:48], uint64(len(elf)))
+	binary.LittleEndian.PutUint16(elf[60:62], 0)
+
+	root := filepath.Join(dir, "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "emu.desktop"),
+		[]byte("[Desktop Entry]\nType=Application\nName=Test Emu\nIcon=emu\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	samplePNG(t, filepath.Join(root, "emu.png"), 64)
+
+	image := filepath.Join(dir, "fs.squashfs")
+	if out, err := exec.Command("mksquashfs", root, image, "-noappend", "-quiet").CombinedOutput(); err != nil {
+		t.Fatalf("mksquashfs: %v\n%s", err, out)
+	}
+
+	fs, err := os.ReadFile(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return append(elf, fs...)
+}
+
+// The scan reads a name and an icon out of an AppImage without running any of
+// it. It used to ask the file itself with --appimage-extract, which runs the
+// runtime at the front of the file, and the scan does that to whatever turns up
+// in ~/Downloads with the right header, a minute after it arrives.
+func TestScanReadsAnAppImageWithoutRunningIt(t *testing.T) {
+	body := buildAppImage(t)
+	home := t.TempDir()
+
+	drop(t, filepath.Join(home, "Applications"), "Emu.AppImage", body, time.Hour)
+
+	found := runAppImageScan(t, home)
+
+	if len(found) != 1 {
+		t.Fatalf("the scan found %d AppImages, want 1: %+v", len(found), found)
+	}
+
+	if _, err := os.Stat(filepath.Join(home, "it-ran")); err == nil {
+		t.Error("the scan ran the AppImage")
+	}
+
+	if got := found[0]["name"]; got != "Test Emu" {
+		t.Errorf("named %q, want the name from its desktop entry", got)
+	}
+
+	if icon, _ := found[0]["icon"].(string); icon == "" {
+		t.Error("the icon inside it was not found")
+	}
+}
+
+// The offset is only believed where a squashfs really starts. An ELF with the
+// marker and nothing after it has an end like any other, and handing that to
+// unsquashfs would be asking it to parse whatever the file has there.
+func TestSquashfsOffsetNeedsASquashfs(t *testing.T) {
+	body := buildAppImage(t)
+
+	dir := t.TempDir()
+
+	whole := filepath.Join(dir, "whole.AppImage")
+	if err := os.WriteFile(whole, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := callScan(t, "squashfs_offset", whole); got == "None" {
+		t.Fatal("no offset for a real AppImage, so the next check proves nothing")
+	}
+
+	// The same file cut off where the filesystem begins, and a few bytes of
+	// something else put there instead.
+	offset, err := strconv.Atoi(callScan(t, "squashfs_offset", whole))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cut := filepath.Join(dir, "cut.AppImage")
+	if err := os.WriteFile(cut, append(body[:offset:offset], []byte("not a filesystem")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := callScan(t, "squashfs_offset", cut); got != "None" {
+		t.Errorf("an ELF with no squashfs after it was given the offset %s", got)
+	}
+}
+
+// A seat without unsquashfs cannot look inside, and must not write down that it
+// looked and found nothing: that record is kept until the file changes, so the
+// icon would stay missing after the tool arrived.
+func TestScanWithoutUnsquashfsKeepsNoAnswer(t *testing.T) {
+	body := buildAppImage(t)
+	home := t.TempDir()
+
+	drop(t, filepath.Join(home, "Applications"), "Emu.AppImage", body, time.Hour)
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("SKIPPED: no python3")
+	}
+
+	cmd := exec.Command(python, "-c", appImageScan)
+	cmd.Env = []string{"POLYSEAT_HOME=" + home, "PATH=" + t.TempDir()}
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the scan failed: %v\n%s", err, out)
+	}
+
+	if _, err := os.Stat(filepath.Join(home, "it-ran")); err == nil {
+		t.Error("with nothing to read it with, the scan ran the AppImage instead")
+	}
+
+	record := filepath.Join(home, ".cache/polyseat/appimage", "Emu.AppImage.json")
+	if _, err := os.Stat(record); err == nil {
+		t.Error("an answer was kept for a file the seat could not look inside")
 	}
 }

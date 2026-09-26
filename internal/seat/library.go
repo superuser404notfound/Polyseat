@@ -65,6 +65,10 @@ type LibraryStatus struct {
 	// once already.
 	Outside []string `json:"outside"`
 
+	// Setups are the folders' setup scripts waiting for somebody to allow
+	// them, see foldersetup.go. Always a list, never null.
+	Setups []FolderSetup `json:"setups"`
+
 	library.Inventory
 }
 
@@ -186,6 +190,16 @@ func (m *Manager) adoptHostLibrary() {
 		return
 	}
 
+	// Held from the first question to the last rather than only around the
+	// write. A pass is started by the timer and by three of the interface's
+	// buttons, each on a goroutine of its own, so two of them could both find
+	// no library watched, both pick the same one and both adopt it, while
+	// writing adoptSaid at the same moment. Everything asked below is a stat
+	// or two and one block sharing probe, so holding the lock over it costs
+	// the buttons nothing they would notice.
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+
 	sources := m.pool.Sources()
 	if len(sources) > 0 {
 		return
@@ -215,14 +229,9 @@ func (m *Manager) adoptHostLibrary() {
 		return
 	}
 
-	m.syncMu.Lock()
-
 	_, err := m.pool.AddSource(pick, func(f string, a ...any) {
 		m.log.Info("library: " + fmt.Sprintf(f, a...))
 	})
-
-	m.syncMu.Unlock()
-
 	if err != nil {
 		m.log.Warn("the shared library could not adopt the host's Steam library",
 			"dir", pick, "err", err)
@@ -262,6 +271,16 @@ func (m *Manager) openLibrary() {
 
 	m.pool = pool
 
+	// A record that cannot be read is logged and started over. What that
+	// costs is a question asked again; see openSetups.
+	setups, err := openSetups(filepath.Join(m.cfg.StateDir, setupFile))
+	if err != nil {
+		m.log.Warn("the record of allowed folder setup scripts could not be read, "+
+			"so every one will be asked about again", "err", err)
+	}
+
+	m.setups = setups
+
 	m.log.Info("shared library ready", "dir", m.cfg.LibraryDir)
 }
 
@@ -272,13 +291,19 @@ func (m *Manager) openLibrary() {
 // on the host filesystem: a game installed in one seat reaches the others
 // whether or not anybody is sitting at them. A seat with no container yet is
 // skipped, since there is no mapping to read and nothing to share.
-func (m *Manager) members() []library.Member {
+//
+// probe is whether to ask each member if its files may be replaced now, which
+// is an exec into every running seat and two walks over /proc for the host.
+// A pass needs that answer. The interface does not: it reads the pool on every
+// change the daemon pushes, which during a provisioning run is several times a
+// second, and Inventory never looks at Updatable.
+func (m *Manager) members(probe bool) []library.Member {
 	seats, err := m.store.List()
 	if err != nil {
 		return nil
 	}
 
-	out := m.hostMembers()
+	out := m.hostMembers(probe)
 
 	for _, s := range seats {
 		if !s.Library {
@@ -307,7 +332,7 @@ func (m *Manager) members() []library.Member {
 		out = append(out, library.Member{
 			Name:      s.Name,
 			Owner:     library.Owner{UID: int(hostUID), GID: int(hostGID)},
-			Updatable: m.libraryIdle(s.Name),
+			Updatable: probe && m.libraryIdle(s.Name),
 		})
 	}
 
@@ -486,7 +511,7 @@ func (m *Manager) syncLibrary(ctx context.Context) {
 	// in this pass rather than in the next one.
 	m.adoptHostLibrary()
 
-	members := m.members()
+	members := m.members(true)
 	if len(members) == 0 {
 		return
 	}
@@ -495,6 +520,12 @@ func (m *Manager) syncLibrary(ctx context.Context) {
 	if !ok {
 		return
 	}
+
+	// On every pass and not only on one that delivered something: a run that
+	// was waiting for its seat to be switched on, or for somebody to allow
+	// it, has nothing in this report to say so. It returns at once, and it
+	// asks nothing when nothing waits.
+	m.settleSoon()
 
 	for _, problem := range report.Problems {
 		m.log.Warn("library", "problem", problem)
@@ -525,11 +556,6 @@ func (m *Manager) syncLibrary(ctx context.Context) {
 	}
 
 	m.notify()
-
-	// Last, and outside the lock taken above: a folder that has just arrived
-	// may carry a script to make itself usable where it landed, and running one
-	// takes minutes rather than milliseconds.
-	m.settleFolders(ctx, members, report)
 }
 
 // syncOnce is the part of a pass that holds the lock.
@@ -558,6 +584,11 @@ func (m *Manager) syncOnce(ctx context.Context, members []library.Member) (libra
 		return library.Report{}, false
 	}
 
+	// Under the lock, so that the version written down for a folder with a
+	// setup script is the one just delivered and not one a pass started from
+	// the interface has taken in since.
+	m.noteDeliveries(members, report)
+
 	return report, true
 }
 
@@ -581,17 +612,24 @@ func (m *Manager) Library() LibraryStatus {
 		return LibraryStatus{Available: false, Problem: m.libraryErr}
 	}
 
-	inv, err := m.pool.Inventory(m.members())
+	members := m.members(false)
+
+	inv, err := m.pool.Inventory(members)
 	if err != nil {
 		return LibraryStatus{Available: false, Problem: err.Error()}
 	}
 
 	sources := m.pool.Sources()
 
+	// Out of the list just built rather than by asking again, which is what
+	// this used to do: a second stat of the library and, back when the list
+	// carried the idle probe, a second walk over /proc for a path.
 	var receiving string
 
-	if hosts := m.hostMembers(); len(hosts) > 0 {
-		receiving = hosts[0].Apps
+	for _, member := range members {
+		if member.Name == hostMember {
+			receiving = member.Apps
+		}
 	}
 
 	return LibraryStatus{
@@ -601,6 +639,7 @@ func (m *Manager) Library() LibraryStatus {
 		Sources:    sources,
 		Receiving:  receiving,
 		Outside:    m.outside(),
+		Setups:     m.folderSetupsWaiting(),
 		Inventory:  inv,
 	}
 }
@@ -681,7 +720,16 @@ func (m *Manager) RemoveFromLibrary(appID string) error {
 	m.syncMu.Lock()
 	defer m.syncMu.Unlock()
 
-	return m.pool.Remove(appID)
+	if err := m.pool.Remove(appID); err != nil {
+		return err
+	}
+
+	// A folder that leaves the pool takes its approval with it, see forget.
+	if name, ok := library.FolderName(appID); ok && m.setups != nil {
+		return m.setups.forget(name)
+	}
+
+	return nil
 }
 
 // OfferToSeat clears a seat's refusal so the next pass hands the title over
