@@ -350,9 +350,17 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(auth.CookieName)
 	valid := err == nil && s.auth.Valid(cookie.Value)
 
+	// The user name only to somebody already signed in, which is the only
+	// place the page uses it: the Account dialog fills it in. Handed to anybody
+	// who asked, it was half of the login given away before the first guess.
+	username := ""
+	if valid {
+		username = s.auth.Username()
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authenticated": valid,
-		"username":      s.auth.Username(),
+		"username":      username,
 		"setup":         s.auth.NeedsSetup(),
 
 		// Which of the two interfaces this is, answered before there is a
