@@ -360,8 +360,38 @@ func OpenStore(stateDir string) (*Store, error) {
 	return &Store{dir: dir}, nil
 }
 
-func (s *Store) path(name string) string {
-	return filepath.Join(s.dir, name+".json")
+// ErrBadName is what the store answers for a name that could not have been
+// created, before it touches the filesystem.
+var ErrBadName = fmt.Errorf("that is not the name of a seat")
+
+// checkName refuses a name that is not shaped like a seat's before it becomes
+// part of a path.
+//
+// Here rather than left to the callers, because the callers are not where names
+// come from: the interface hands over whatever is in the URL, and Go's router
+// decodes %2F inside a path segment. ValidateName ran when a seat was created,
+// never when one was looked up, so DELETE /api/seats/..%2Fsecrets%2Fvince went
+// straight through Get to a file outside the seats directory and removed it, as
+// root. Every method that turns a name into a path asks this first, so there
+// is no way to reach one without it.
+//
+// The shape and nothing else. The reserved names in ValidateName are about
+// what a new seat may be called, and a record that exists under one of them
+// still has to be readable and deletable.
+func checkName(name string) error {
+	if !nameRE.MatchString(name) {
+		return ErrBadName
+	}
+
+	return nil
+}
+
+func (s *Store) path(name string) (string, error) {
+	if err := checkName(name); err != nil {
+		return "", err
+	}
+
+	return filepath.Join(s.dir, name+".json"), nil
 }
 
 // List returns all seats, ordered by name so the interface does not reshuffle
@@ -394,7 +424,12 @@ func (s *Store) List() ([]Seat, error) {
 
 // Get returns one seat.
 func (s *Store) Get(name string) (Seat, error) {
-	return s.load(s.path(name))
+	path, err := s.path(name)
+	if err != nil {
+		return Seat{}, err
+	}
+
+	return s.load(path)
 }
 
 func (s *Store) load(path string) (Seat, error) {
@@ -441,18 +476,28 @@ func (s *Store) Put(seat Seat) error {
 		return err
 	}
 
-	tmp := s.path(seat.Name) + ".tmp"
+	path, err := s.path(seat.Name)
+	if err != nil {
+		return err
+	}
+
+	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
 		return err
 	}
 
-	return os.Rename(tmp, s.path(seat.Name))
+	return os.Rename(tmp, path)
 }
 
 // Delete forgets a seat definition. Removing the container is somebody else's
 // job; this only drops the record.
 func (s *Store) Delete(name string) error {
-	err := os.Remove(s.path(name))
+	path, err := s.path(name)
+	if err != nil {
+		return err
+	}
+
+	err = os.Remove(path)
 	if os.IsNotExist(err) {
 		return nil
 	}

@@ -1,6 +1,7 @@
 package seat
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -379,5 +380,73 @@ func TestStoreRefusesARecordFromANewerPolyseat(t *testing.T) {
 	// container the first one still has.
 	if _, err := store.List(); err == nil {
 		t.Error("List skipped the record it could not understand instead of refusing")
+	}
+}
+
+// TestStoreRefusesTraversal is the request the audit found: a name from the URL,
+// with the slashes Go's router decodes out of %2F, reaching files outside the
+// seats directory. Each method is tried against a file that exists where the
+// traversal points, so that a check which lets the name through fails on the
+// file being gone or rewritten rather than on an error message.
+func TestStoreRefusesTraversal(t *testing.T) {
+	dir := t.TempDir()
+
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+
+	if err := store.PutSecrets("vince", Secrets{SunshineUser: "polyseat", SunshinePassword: "kept"}); err != nil {
+		t.Fatalf("PutSecrets: %v", err)
+	}
+
+	victim := filepath.Join(dir, "victim.json")
+	if err := os.WriteFile(victim, []byte(`{"name":"victim"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	secret := filepath.Join(dir, "secrets", "vince.json")
+
+	for _, name := range []string{"../secrets/vince", "../victim", "/etc/passwd", "..", "vince/../vince", ""} {
+		if _, err := store.Get(name); !errors.Is(err, ErrBadName) {
+			t.Errorf("Get(%q) = %v, want ErrBadName", name, err)
+		}
+
+		if err := store.Delete(name); !errors.Is(err, ErrBadName) {
+			t.Errorf("Delete(%q) = %v, want ErrBadName", name, err)
+		}
+
+		if err := store.Put(Seat{Name: name}); !errors.Is(err, ErrBadName) {
+			t.Errorf("Put(%q) = %v, want ErrBadName", name, err)
+		}
+
+		if _, err := store.Secrets(name); !errors.Is(err, ErrBadName) {
+			t.Errorf("Secrets(%q) = %v, want ErrBadName", name, err)
+		}
+
+		if err := store.PutSecrets(name, Secrets{}); !errors.Is(err, ErrBadName) {
+			t.Errorf("PutSecrets(%q) = %v, want ErrBadName", name, err)
+		}
+
+		if err := store.DeleteSecrets(name); !errors.Is(err, ErrBadName) {
+			t.Errorf("DeleteSecrets(%q) = %v, want ErrBadName", name, err)
+		}
+	}
+
+	if _, err := os.Stat(victim); err != nil {
+		t.Errorf("the file outside the store is gone: %v", err)
+	}
+
+	got, err := store.Secrets("vince")
+	if err != nil || got.SunshinePassword != "kept" {
+		t.Errorf("the seat's secrets were touched: %+v, %v (file %s)", got, err, secret)
+	}
+
+	// A name that could have been created still works, including one that
+	// ValidateName reserves: the store is not where that is decided.
+	for _, name := range []string{"vince", "seat0"} {
+		if err := store.Put(Seat{Name: name, Resolution: "1920x1080@60Hz"}); err != nil {
+			t.Errorf("Put(%q): %v", name, err)
+		}
 	}
 }

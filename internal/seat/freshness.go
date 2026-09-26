@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -591,6 +592,13 @@ var ErrStreaming = errors.New("somebody is streaming from this seat")
 // driverFlags, which stepPackages already carries and which was paid for the
 // first time somebody provisioned a seat that existed.
 func (m *Manager) UpdateSoftware(name string) error {
+	// Before operate, which would otherwise make a runtime record and a log for
+	// whatever name the URL carried, the way every other action here refuses a
+	// seat that does not exist before doing anything.
+	if _, err := m.store.Get(name); err != nil {
+		return err
+	}
+
 	return m.operate(name, "updating the seat's software", func(ctx context.Context) error {
 		for _, busy := range m.Streaming() {
 			if busy == name {
@@ -791,7 +799,17 @@ func (m *Manager) updateFreshness(ctx context.Context) {
 // badly with. What it must not do is run against a seat in the middle of being
 // built, and that is what the refusal below is for.
 func (m *Manager) CheckFreshness(name string) (Freshness, error) {
-	rt := m.runtimeOf(name)
+	// Looked up rather than made, for the reason Log gives: the name is straight
+	// from the URL, and runtimeOf creates whatever it is asked for. Every seat
+	// in the store has a record from the moment the daemon starts or the seat
+	// is created, so a name without one is not a seat.
+	m.mu.Lock()
+	rt, known := m.rt[name]
+	m.mu.Unlock()
+
+	if !known {
+		return Freshness{}, fmt.Errorf("there is no seat called %q: %w", name, os.ErrNotExist)
+	}
 
 	m.mu.Lock()
 	busy := rt.busy
