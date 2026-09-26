@@ -191,6 +191,12 @@ jobs:
       - name: The sysrq reading in check-hardening.sh
         run: ./host/test-hardening.sh
 
+      # The two network questions in uninstall.sh, against stubbed incus and
+      # nmcli: whether polyseatbr0 has nothing left on it and may go, and
+      # whether the LAN bridge is there to be mentioned.
+      - name: The network questions in uninstall.sh
+        run: ./host/test-uninstall.sh
+
   # The one decision in this project that can be wrong without anybody noticing.
   #
   # A device that fails to reach a seat is a complaint within the minute. A

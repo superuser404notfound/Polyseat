@@ -201,6 +201,59 @@ stop_seat() {
     [[ "$(state_of "$name")" == "RUNNING" ]] && bad "$name is still running" || ok "$name stopped"
 }
 
+# drop_management_bridge removes the bridge the daemon makes for itself, once
+# nothing is on it.
+#
+# polyseatbr0 exists only because the daemon created it, in internal/seat/
+# network.go, when the host had no bridge a seat could reach it over. Deleting
+# the seats leaves it behind with nothing attached, and a network nobody made
+# on purpose is what somebody finds in `incus network list` months later and
+# has to wonder about. Only when Incus counts no user of it at all, though: the
+# name is Polyseat's, but somebody may have put a container of their own on it
+# since, and that container's network is not this script's to take away. The
+# count is Incus's own and covers profiles as well as instances.
+drop_management_bridge() {
+    local bridge=polyseatbr0 used
+
+    command -v incus >/dev/null 2>&1 || return 0
+
+    used=$(incus network list -f csv -c nu 2>/dev/null |
+        awk -F, -v n="$bridge" '$1 == n { print $2 }')
+
+    if [[ -z $used ]]; then
+        return 0
+    elif [[ $used == 0 ]]; then
+        if incus network delete "$bridge" >/dev/null 2>&1; then
+            ok "$bridge removed, nothing was on it any more"
+        else
+            warn "$bridge could not be removed: sudo incus network delete $bridge"
+        fi
+    else
+        warn "$bridge kept, because $used other things in Incus still use it"
+    fi
+}
+
+# lan_bridge_port prints the wired interface the LAN bridge was built over, and
+# nothing when lan-bridge.sh was never run here.
+#
+# The bridge is not taken down here. It is how this machine reaches the network
+# now, and taking it down from a script that may be running over that network,
+# or from a transient unit nobody is watching, is how a machine ends up off it.
+# polyseat-lan-bridge --undo does that properly and is run from the machine's
+# own keyboard. What this can do is say so, and say it before the package that
+# carries polyseat-lan-bridge is gone.
+lan_bridge_port() {
+    command -v nmcli >/dev/null 2>&1 || return 0
+
+    LC_ALL=C nmcli -t -f NAME con show 2>/dev/null | grep -qxF polyseat-bridge || return 0
+
+    # The same two places --undo asks, in the same order.
+    local port
+    port=$(LC_ALL=C nmcli -g connection.interface-name con show polyseat-uplink 2>/dev/null || true)
+    [[ -n $port ]] || port=$(ls /sys/class/net/br0/brif 2>/dev/null | head -1)
+    printf '%s\n' "${port:-the-wired-interface}"
+}
+
 # Which of the two installs this is, asked of the package manager rather than
 # guessed from a path. Both answers can be true at once on a machine where somebody built from
 # a checkout over a package, and then both have to go: the daemon prefers
@@ -254,6 +307,18 @@ else
 fi
 
 echo "  packages and Incus:   left alone, they are not Polyseat's to remove"
+
+# Named before anything happens, because the command that undoes it goes with
+# the package: once this has run, polyseat-lan-bridge is no longer there to
+# run, and the question can still be answered no.
+lan_port=$(lan_bridge_port)
+
+if [[ -n $lan_port ]]; then
+    echo "  LAN bridge:           br0 over $lan_port is KEPT, it is this machine's network now."
+    echo "                        sudo polyseat-lan-bridge --undo takes it out, run at the"
+    echo "                        machine itself and before this, since it goes with Polyseat"
+fi
+
 echo
 
 # Only the destructive half asks, and only where there is somebody to answer.
@@ -296,6 +361,10 @@ if $seats && ((${#found[@]})); then
 fi
 
 if $seats; then
+    # After the seats and not before, because Incus refuses to delete a
+    # network that an instance is still on, and counts it as a user.
+    drop_management_bridge
+
     step "Removing what the daemon kept"
     rm -rfv "$STATEDIR" "$CONFIGDIR"
 
@@ -377,6 +446,19 @@ if $seats; then
         ok "$LIBRARYDIR went with them"
     else
         ok "$LIBRARYDIR is kept, so the games come back with the next install"
+    fi
+
+    # By hand, because the script that does it properly has just gone with the
+    # package; see lan_bridge_port. These are the steps --undo takes, less the
+    # seats, which are gone.
+    if [[ -n $lan_port ]]; then
+        echo
+        echo "  br0 is still this machine's network. To go back to plain $lan_port,"
+        echo "  at the machine's own keyboard rather than over the network:"
+        echo
+        echo "    sudo nmcli con delete polyseat-uplink polyseat-bridge"
+        echo "    sudo nmcli con add type ethernet ifname $lan_port con-name wired-$lan_port ipv4.method auto ipv6.method auto"
+        echo "    sudo nmcli con up wired-$lan_port"
     fi
 else
     ok "gone. Seats, their containers and $STATEDIR are untouched"
