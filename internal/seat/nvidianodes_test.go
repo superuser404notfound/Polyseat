@@ -2,6 +2,7 @@ package seat
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,7 +30,7 @@ func TestGuardLeavesAMDAlone(t *testing.T) {
 
 	guard := nodeGuard{
 		Vendor: VendorAMD,
-		Nodes:  nvidiaNodes,
+		Nodes:  nvidiaNodesFor(0),
 		Exists: present(),
 		Create: func(context.Context) error { called = true; return nil },
 		Log:    quiet,
@@ -51,8 +52,8 @@ func TestGuardDoesNothingWhenTheCardIsThere(t *testing.T) {
 
 	guard := nodeGuard{
 		Vendor: VendorNVIDIA,
-		Nodes:  nvidiaNodes,
-		Exists: present(nvidiaNodes...),
+		Nodes:  nvidiaNodesFor(0),
+		Exists: present(nvidiaNodesFor(0)...),
 		Create: func(context.Context) error { called = true; return nil },
 		Log:    quiet,
 	}
@@ -75,7 +76,7 @@ func TestGuardCreatesTheMissingCard(t *testing.T) {
 
 	guard := nodeGuard{
 		Vendor: VendorNVIDIA,
-		Nodes:  nvidiaNodes,
+		Nodes:  nvidiaNodesFor(0),
 		Exists: func(path string) bool { return have[path] },
 		Create: func(context.Context) error {
 			runs++
@@ -102,7 +103,7 @@ func TestGuardCreatesTheMissingCard(t *testing.T) {
 func TestGuardRefusesWhenTheCardStaysMissing(t *testing.T) {
 	guard := nodeGuard{
 		Vendor: VendorNVIDIA,
-		Nodes:  nvidiaNodes,
+		Nodes:  nvidiaNodesFor(0),
 		Exists: present("/dev/nvidiactl"),
 		Create: func(context.Context) error { return nil },
 		Log:    quiet,
@@ -126,7 +127,7 @@ func TestGuardNamesBothMissingNodes(t *testing.T) {
 
 	guard := nodeGuard{
 		Vendor: VendorNVIDIA,
-		Nodes:  nvidiaNodes,
+		Nodes:  nvidiaNodesFor(0),
 		Exists: present(),
 		Create: func(context.Context) error { return nil },
 		Log:    func(f string, a ...any) { said = f },
@@ -137,7 +138,7 @@ func TestGuardNamesBothMissingNodes(t *testing.T) {
 		t.Fatal("a host with no nvidia nodes at all was allowed to start a seat")
 	}
 
-	for _, node := range nvidiaNodes {
+	for _, node := range nvidiaNodesFor(0) {
 		if !strings.Contains(err.Error(), node) {
 			t.Fatalf("%s is missing from the message: %v", node, err)
 		}
@@ -175,7 +176,7 @@ func TestModprobeReportsWhatWentWrong(t *testing.T) {
 		args := filepath.Join(dir, "args")
 		modprobeBin = write("ok", "printf '%s' \"$*\" > "+args+"\nexit 0\n")
 
-		if err := nvidiaModprobe(context.Background()); err != nil {
+		if err := nvidiaModprobe(context.Background(), 0); err != nil {
 			t.Fatalf("a command that succeeded was reported as a failure: %v", err)
 		}
 
@@ -199,7 +200,7 @@ func TestModprobeReportsWhatWentWrong(t *testing.T) {
 		t.Run(spelling.what, func(t *testing.T) {
 			modprobeBin = spelling.bin
 
-			err := nvidiaModprobe(context.Background())
+			err := nvidiaModprobe(context.Background(), 0)
 			if err == nil {
 				t.Fatal("a missing nvidia-modprobe was reported as success")
 			}
@@ -213,7 +214,7 @@ func TestModprobeReportsWhatWentWrong(t *testing.T) {
 	t.Run("failed", func(t *testing.T) {
 		modprobeBin = write("angry", "echo 'no permission to create /dev/nvidia0' >&2\nexit 1\n")
 
-		err := nvidiaModprobe(context.Background())
+		err := nvidiaModprobe(context.Background(), 0)
 		if err == nil {
 			t.Fatal("a command that exited 1 was reported as success")
 		}
@@ -224,4 +225,98 @@ func TestModprobeReportsWhatWentWrong(t *testing.T) {
 			t.Fatalf("the command's own output was dropped: %v", err)
 		}
 	})
+}
+
+// fakeProc makes a /proc with the driver's description of one card in it, the
+// real description from the machine this was written on with only the minor
+// number changed. Written at run time rather than kept under testdata, because
+// the directory is named by the PCI address and a colon is not something a Go
+// module may carry in a path.
+func fakeProc(t *testing.T, pci string, minor int) string {
+	t.Helper()
+
+	real, err := os.ReadFile("testdata/nvidia-gpu-information.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	info := strings.Replace(string(real), "Device Minor: \t 0",
+		fmt.Sprintf("Device Minor: \t %d", minor), 1)
+	if minor != 0 && info == string(real) {
+		t.Fatal("the recorded description no longer has the Device Minor line this edits")
+	}
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "driver/nvidia/gpus", pci)
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "information"), []byte(info), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	return root
+}
+
+func TestNvidiaMinorIsWhatTheDriverSays(t *testing.T) {
+	if minor, ok := nvidiaMinor(fakeProc(t, "0000:01:00.0", 0), "0000:01:00.0"); !ok || minor != 0 {
+		t.Errorf("the real description read as %d, %v; want 0, true", minor, ok)
+	}
+
+	if minor, ok := nvidiaMinor(fakeProc(t, "0000:02:00.0", 1), "0000:02:00.0"); !ok || minor != 1 {
+		t.Errorf("a second card read as %d, %v; want 1, true", minor, ok)
+	}
+
+	// A card the driver does not describe, and one with no address at all, are
+	// not guessed at here: the caller decides what to fall back to.
+	root := fakeProc(t, "0000:01:00.0", 0)
+
+	for _, pci := range []string{"0000:09:00.0", ""} {
+		if _, ok := nvidiaMinor(root, pci); ok {
+			t.Errorf("an answer was made up for %q", pci)
+		}
+	}
+}
+
+// The guard as the manager builds it, for a seat pinned to a second card. The
+// node it has to see is that card's, and nvidia-modprobe has to be asked for
+// that card; card 0 is what both used to be, whatever the seat was given.
+func TestTheGuardLooksForTheSeatsOwnCard(t *testing.T) {
+	const pci = "0000:02:00.0"
+
+	restoreProc, restoreBin := procRoot, modprobeBin
+	t.Cleanup(func() { procRoot, modprobeBin = restoreProc, restoreBin })
+
+	procRoot = fakeProc(t, pci, 7)
+
+	if _, err := os.Stat("/dev/nvidia7"); err == nil {
+		t.Skip("this machine has a /dev/nvidia7, so the guard would rightly do nothing")
+	}
+
+	dir := t.TempDir()
+	args := filepath.Join(dir, "args")
+	modprobeBin = filepath.Join(dir, "nvidia-modprobe")
+
+	if err := os.WriteFile(modprobeBin, []byte("#!/bin/sh\nprintf '%s' \"$*\" > "+args+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{gpu: GPU{Vendor: VendorNVIDIA, PCI: pci},
+		rt: map[string]*runtime{}, subs: map[int]chan struct{}{}}
+
+	err := m.awaitGPU(context.Background(), "vince")
+	if err == nil || !strings.Contains(err.Error(), "/dev/nvidia7") {
+		t.Errorf("the guard did not look for the seat's card: %v", err)
+	}
+
+	got, readErr := os.ReadFile(args)
+	if readErr != nil {
+		t.Fatalf("nvidia-modprobe was never run: %v", readErr)
+	}
+
+	if string(got) != "-c 7" {
+		t.Errorf("nvidia-modprobe was asked for %q, want %q", got, "-c 7")
+	}
 }

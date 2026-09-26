@@ -148,7 +148,7 @@ func (m *Manager) runFolderSetup(ctx context.Context, member library.Member, nam
 func (m *Manager) runSetupInSeat(ctx context.Context, seat, name string) (string, error) {
 	script := LibraryMount + "/shared/" + name + "/" + folderSetup
 
-	argv := append(playerPrefix(m.runtimeOf(seat).uid),
+	argv := append(playerPrefix(m.uidOf(seat)),
 		"HOME=/home/"+Player, script)
 
 	out, code, err := m.client.Try(ctx, seat, argv...)

@@ -498,7 +498,15 @@ func (p *Provisioner) waitNetwork(ctx context.Context) error {
 	deadline := time.Now().Add(60 * time.Second)
 
 	for time.Now().Before(deadline) {
-		_, code, err := p.Client.Try(ctx, p.name(), "getent", "hosts", "geo.mirror.pkgbuild.com")
+		// Bounded per attempt for the reason waitSystemd gives: a lookup that
+		// hangs inside a stalled exec never brings the loop back round to the
+		// deadline. Twenty seconds rather than a few, because getent waiting out
+		// a resolver that does not answer yet is the normal case here and takes
+		// the resolver's own timeouts, not milliseconds.
+		attempt, cancel := context.WithTimeout(ctx, 20*time.Second)
+		_, code, err := p.Client.Try(attempt, p.name(), "getent", "hosts", "geo.mirror.pkgbuild.com")
+		cancel()
+
 		if err != nil {
 			return err
 		}
@@ -1168,8 +1176,8 @@ func (p *Provisioner) installTool(ctx context.Context, t tool, release protonAss
 		}
 
 		_, _, err = p.Client.Try(ctx, p.name(), "sh", "-c", fmt.Sprintf(
-			"cat > %s/compatibilitytool.vdf <<'VDF'\n%s\nVDF\n",
-			t.dir(), t.manifest(release.tag)))
+			"printf '%%s\\n' %s > %s/compatibilitytool.vdf",
+			shellQuote(t.manifest(release.tag)), t.dir()))
 
 		return err
 	}
@@ -1266,13 +1274,18 @@ func (p *Provisioner) steamQuiet(ctx context.Context) (bool, error) {
 		}
 	}
 
-	_, code, err := p.Client.Try(ctx, p.name(), "test", "-e", SessionPath)
+	// The same question the manager asks before anything that could end a
+	// stream, and asked the same way. This used to look for the session file
+	// alone, which readSession explains is not there through a stream that
+	// survived a reconnect: the one moment somebody is certainly still playing
+	// is the one it would have closed Steam under them.
+	out, code, err := p.Client.Try(ctx, p.name(), "sh", "-c", streamCheck)
 	if err != nil {
 		return false, err
 	}
 
-	if code == 0 {
-		p.Log("Steam is running and somebody is streaming from this seat, so it was left alone")
+	if !streamIdleReading(out, code) {
+		p.Log("Steam is running and somebody may be streaming from this seat, so it was left alone")
 
 		return false, nil
 	}
@@ -1324,6 +1337,22 @@ func (p *Provisioner) steamQuiet(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
+// streamIdleReading reads streamCheck's answer for the one caller that is
+// about to close Steam, and only a clear idle lets it.
+//
+// A function of its own so that the case the old file test missed can be
+// shown without a seat: sockets that say streaming and no session file to
+// describe them.
+func streamIdleReading(out string, code int) bool {
+	if code != 0 {
+		return false
+	}
+
+	_, state := parseStreamCheck(out)
+
+	return state == streamIdle
+}
+
 // steamShutdownWait is how long Steam is given to leave after being asked.
 //
 // Twice what it took here, because the measurement was of a silent Steam with
@@ -1360,12 +1389,29 @@ func (p *Provisioner) StartSteam(ctx context.Context) {
 }
 
 // ResumeSteam starts Steam again if this run was the one that closed it.
+//
+// Not with the caller's context as it stands. Run defers this, and a run cut
+// short by somebody pressing Cancel ends with that context already done: the
+// exec failed at once and the seat was left with no Steam, which the session
+// only puts back at its next start. See detached.
 func (p *Provisioner) ResumeSteam(ctx context.Context) {
 	if !p.closedSteam {
 		return
 	}
 
+	ctx, cancel := detached(ctx)
+	defer cancel()
+
 	p.StartSteam(ctx)
+}
+
+// detached is a context for tidying up after an operation, which has to run
+// whether or not the operation was cancelled, and must still end.
+//
+// It keeps the values of the one it came from and none of its cancellation,
+// and gives itself quickTimeout instead, because nothing is left to cancel it.
+func detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), quickTimeout)
 }
 
 // nothingUsing runs one of the idle probes inside this seat.
@@ -1478,22 +1524,34 @@ func (t tool) script(url, sum, tag string) string {
 	work := ".polyseat-new-" + t.name
 	archive := t.name + ".tar"
 
+	// url, sum and tag are single quoted rather than put through %q. They come
+	// from a release on GitHub, and %q makes a Go string, which a shell reads as
+	// double quoted: $(...) and backticks inside one are run. The manifest
+	// carries the tag too, so it is printed from a quoted argument instead of
+	// a here document, which a line reading VDF in the tag would have ended.
 	return fmt.Sprintf(`set -e
 mkdir -p %[1]s
 cd %[1]s
 rm -rf %[7]q %[8]q
-curl -fsSL --retry 2 -o %[8]q %[2]q
-echo %[3]q'  '%[8]q | sha512sum -c -
+curl -fsSL --retry 2 -o %[8]q %[2]s
+echo %[3]s'  '%[8]q | sha512sum -c -
 mkdir %[7]q
 tar -x%[9]sf %[8]q -C %[7]q --strip-components=1
 rm -f %[8]q
-printf '%%s\n' %[4]q > %[7]q/polyseat-release
-cat > %[7]q/compatibilitytool.vdf <<'VDF'
-%[6]s
-VDF
+printf '%%s\n' %[4]s > %[7]q/polyseat-release
+printf '%%s\n' %[6]s > %[7]q/compatibilitytool.vdf
 rm -rf %[5]q
 mv %[7]q %[5]q
-`, protonDir, url, sum, tag, t.name, t.manifest(tag), work, archive, t.unpack)
+`, protonDir, shellQuote(url), shellQuote(sum), shellQuote(tag), t.name,
+		shellQuote(t.manifest(tag)), work, archive, t.unpack)
+}
+
+// shellQuote makes one word of s for sh, whatever is in it.
+//
+// Single quotes, because nothing inside them is special to a shell except the
+// single quote itself, which is closed, escaped and reopened.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // compatToolManifest is the file Steam identifies the tool by, written here
@@ -3000,6 +3058,28 @@ func (p *Provisioner) tidyLauncher() error {
 	return nil
 }
 
+// credentialsCommand is the command that sets Sunshine's login, with the
+// password left out of it: it is read from standard input.
+//
+// The password used to be an argument, and an argument of an exec is not a
+// private thing. Incus keeps the command of every exec in the operation's
+// metadata, which anybody with access to its API can list and `incus monitor`
+// prints as it happens, and a failure turned the same argv into an ErrExec
+// whose message went into the seat's log and onto its card. Standard input
+// travels over the exec's own websocket and appears in none of those.
+//
+// What is left is sunshine's own argv, for the few milliseconds it runs:
+// --creds takes the password as an argument and nothing else, and it is
+// visible in the host's process list while it does. Writing Sunshine's
+// credentials file directly would close that too, and was not done because its
+// format is Sunshine's to change and has moved once already, out of
+// sunshine_state.json into a directory of its own.
+func credentialsCommand(user string) []string {
+	return []string{"sh", "-c",
+		`IFS= read -r password && exec sunshine --creds "$1" "$password"`,
+		"polyseat-credentials", user}
+}
+
 func (p *Provisioner) stepCredentials(ctx context.Context) error {
 	if p.Secrets.SunshineUser == "" || p.Secrets.SunshinePassword == "" {
 		return fmt.Errorf("no Sunshine credentials were prepared for this seat")
@@ -3008,9 +3088,10 @@ func (p *Provisioner) stepCredentials(ctx context.Context) error {
 	// Run as the player with HOME set: sunshine writes the credentials next to
 	// its configuration, and as root it would write them into the wrong home
 	// and leave the seat unable to read its own login.
-	_, err := p.run(ctx, "sudo", "-u", Player, "env", "HOME=/home/"+Player,
-		"sunshine", "--creds", p.Secrets.SunshineUser, p.Secrets.SunshinePassword)
-	if err != nil {
+	argv := append([]string{"sudo", "-u", Player, "env", "HOME=/home/" + Player},
+		credentialsCommand(p.Secrets.SunshineUser)...)
+
+	if _, err := p.Client.RunInput(ctx, p.name(), p.Secrets.SunshinePassword+"\n", argv...); err != nil {
 		return err
 	}
 

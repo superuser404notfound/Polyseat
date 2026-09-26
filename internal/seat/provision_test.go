@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -150,5 +153,158 @@ func TestRetryPackagesDoesNotRepeatAConflict(t *testing.T) {
 
 	if calls != 1 {
 		t.Errorf("ran %d times, wanted 1", calls)
+	}
+}
+
+// The password reaches sunshine through standard input now, which is a shell
+// script doing the reading, so this runs that script under a real shell with a
+// sunshine that records what it was handed. A password with a backslash and a
+// space in it, because those are what a careless read mangles, and a stored
+// password is not guaranteed to be one this daemon generated.
+func TestCredentialsCommandHandsSunshineThePasswordFromStdin(t *testing.T) {
+	dir := t.TempDir()
+	record := filepath.Join(dir, "args")
+
+	fake := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + record + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "sunshine"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	const password = `se\cret with space`
+
+	argv := credentialsCommand("polyseat")
+
+	for _, arg := range argv {
+		if strings.Contains(arg, password) {
+			t.Fatalf("the password is in the command line: %q", argv)
+		}
+	}
+
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin"}
+	cmd.Stdin = strings.NewReader(password + "\n")
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the script failed: %v: %s", err, out)
+	}
+
+	got, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("sunshine was never run: %v", err)
+	}
+
+	want := "--creds\npolyseat\n" + password + "\n"
+	if string(got) != want {
+		t.Errorf("sunshine was handed %q, want %q", got, want)
+	}
+}
+
+// The release a tool comes from is somebody else's data, and it went into the
+// install script through %q, which a shell reads as double quotes: $(...) in a
+// URL or a tag ran inside the seat. This runs the real script, pointed at a
+// temporary directory and with curl, sha512sum and tar standing in, and checks
+// that nothing hostile ran and that the tag arrived exactly as it was.
+func TestToolScriptRunsNothingFromTheRelease(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	root := filepath.Join(dir, "tools")
+
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, body := range map[string]string{
+		// Writes whatever follows -o, so the archive exists for the rest.
+		"curl":      "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && : > \"$2\"; shift; done\n",
+		"sha512sum": "#!/bin/sh\ncat > /dev/null\n",
+		"tar":       "#!/bin/sh\nexit 0\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	marker := filepath.Join(dir, "ran")
+	payload := "$(touch " + marker + ")`touch " + marker + "`'\"; touch " + marker + "; '"
+
+	tag := "tag-1\nVDF\n" + payload
+
+	script := cachyOS.script("https://example.invalid/"+payload, strings.Repeat("a", 128)+payload, tag)
+	script = strings.ReplaceAll(script, protonDir, root)
+
+	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the script failed: %v: %s\n%s", err, out, script)
+	}
+
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("something from the release was run as a command:\n%s", script)
+	}
+
+	got, err := os.ReadFile(filepath.Join(root, cachyOS.name, "polyseat-release"))
+	if err != nil {
+		t.Fatalf("the release stamp was not written: %v", err)
+	}
+
+	if string(got) != tag+"\n" {
+		t.Errorf("the release stamp says %q, want %q", got, tag+"\n")
+	}
+
+	manifest, err := os.ReadFile(filepath.Join(root, cachyOS.name, "compatibilitytool.vdf"))
+	if err != nil {
+		t.Fatalf("the manifest was not written: %v", err)
+	}
+
+	if string(manifest) != cachyOS.manifest(tag)+"\n" {
+		t.Errorf("the manifest was cut short or changed:\n%s", manifest)
+	}
+}
+
+// Putting Steam back after a cancelled run is the case detached exists for, so
+// it is tested with a context that is already cancelled: what comes out has to
+// be usable, and still has to end on its own.
+func TestDetachedOutlivesACancelledRunAndStillEnds(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ctx, stop := detached(parent)
+	defer stop()
+
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("the tidying context is already done: %v", err)
+	}
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("the tidying context has no deadline, so a hung exec would hold it for ever")
+	}
+
+	if left := time.Until(deadline); left <= 0 || left > quickTimeout {
+		t.Errorf("the deadline is %s away, want within %s", left, quickTimeout)
+	}
+}
+
+// Closing Steam ends whatever game somebody is streaming, so steamQuiet may do
+// it only on a clear idle. The readings are what streamCheck prints: the first
+// busy one is the case the old test for the session file alone let through, a
+// stream that survived a reconnect and so has sockets but no file.
+func TestSteamIsOnlyClosedOnAClearIdle(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  string
+		code int
+		idle bool
+	}{
+		{"sockets and no session file", "streaming\n", 0, false},
+		{"sockets and a session file", "streaming\n{\"app\":\"Steam Big Picture\"}\n", 0, false},
+		{"an answer nobody understands", "", 0, false},
+		{"a check that failed", "idle\n", 1, false},
+		{"idle", "idle\n", 0, true},
+	} {
+		if got := streamIdleReading(tc.out, tc.code); got != tc.idle {
+			t.Errorf("%s: idle = %v, want %v", tc.name, got, tc.idle)
+		}
 	}
 }

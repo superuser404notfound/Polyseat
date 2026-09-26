@@ -24,15 +24,27 @@ type Secrets struct {
 	SunshinePassword string `json:"sunshine_password"`
 }
 
-func (s *Store) secretsPath(name string) string {
-	return filepath.Join(s.dir, "..", "secrets", name+".json")
+// secretsPath is checked the same way as path in seat.go, and for the same
+// reason: the name comes from a URL, and these are the files an attacker would
+// most like to read or remove.
+func (s *Store) secretsPath(name string) (string, error) {
+	if err := checkName(name); err != nil {
+		return "", err
+	}
+
+	return filepath.Join(s.dir, "..", "secrets", name+".json"), nil
 }
 
 // Secrets returns a seat's credentials, empty if none have been generated yet.
 func (s *Store) Secrets(name string) (Secrets, error) {
 	var out Secrets
 
-	data, err := os.ReadFile(s.secretsPath(name))
+	path, err := s.secretsPath(name)
+	if err != nil {
+		return out, err
+	}
+
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return out, nil
@@ -46,7 +58,10 @@ func (s *Store) Secrets(name string) (Secrets, error) {
 
 // PutSecrets writes a seat's credentials, readable only by root.
 func (s *Store) PutSecrets(name string, secrets Secrets) error {
-	path := s.secretsPath(name)
+	path, err := s.secretsPath(name)
+	if err != nil {
+		return err
+	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -67,7 +82,12 @@ func (s *Store) PutSecrets(name string, secrets Secrets) error {
 
 // DeleteSecrets forgets a seat's credentials.
 func (s *Store) DeleteSecrets(name string) error {
-	err := os.Remove(s.secretsPath(name))
+	path, err := s.secretsPath(name)
+	if err != nil {
+		return err
+	}
+
+	err = os.Remove(path)
 	if os.IsNotExist(err) {
 		return nil
 	}

@@ -1,7 +1,11 @@
 package seat
 
 import (
+	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -579,5 +583,323 @@ func TestAStoppedSeatHasNoResolutionOfItsOwn(t *testing.T) {
 
 	if rt.output != "" {
 		t.Errorf("a stopped seat still claims to be running at %q", rt.output)
+	}
+}
+
+// A seat that is already running when the daemon starts is adopted without a
+// session start, and the session start is the only other place the uid is
+// read. So the record's uid has to be the one used from the first command on,
+// and a record without one keeps the default rather than becoming uid 0.
+func TestAnAdoptedSeatUsesThePlayerUIDItWasBuiltWith(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+
+	m.adopt(Seat{Name: "vince", PlayerUID: 1001})
+	m.adopt(Seat{Name: "joser"})
+
+	if got := m.uidOf("vince"); got != 1001 {
+		t.Errorf("the adopted seat runs as uid %d, want the 1001 its record says", got)
+	}
+
+	if got := m.uidOf("joser"); got != 1000 {
+		t.Errorf("a record without a uid gave %d, want the default 1000", got)
+	}
+
+	if got := m.asPlayer("vince", "true"); !strings.Contains(strings.Join(got, " "), "/run/user/1001") {
+		t.Errorf("commands in the adopted seat are run as %q", got)
+	}
+}
+
+// An operation and a reading of the same seat must not overlap: a sweep that
+// looked at busy, found it empty and then went on execing while Stop brought
+// the container down is how an exec lands in a shutdown. This walks the
+// handshake the two go through, with the real functions, in the order that
+// used to go wrong: the sweep is already reading when the operation arrives.
+func TestAnOperationStopsAndWaitsOutTheSweepInProgress(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+	rt := m.runtimeOf("vince")
+
+	ctx, end, ok := m.beginSweep(context.Background(), rt, true)
+	if !ok {
+		t.Fatal("an idle seat could not be swept")
+	}
+
+	if err := m.claim(rt, "stopping", func() {}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	if ctx.Err() == nil {
+		t.Error("the sweep in progress was not told to stop, so its next exec goes ahead")
+	}
+
+	quiet := make(chan struct{})
+
+	go func() {
+		rt.quiesce()
+		close(quiet)
+	}()
+
+	select {
+	case <-quiet:
+		t.Fatal("the operation went ahead while the sweep was still reading")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	end()
+
+	select {
+	case <-quiet:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the operation was still waiting after the sweep ended")
+	}
+
+	// And the other order: a sweep that arrives once the operation holds the
+	// seat does not read it at all, whether it would have waited or not.
+	for _, wait := range []bool{true, false} {
+		if _, _, ok := m.beginSweep(context.Background(), rt, wait); ok {
+			t.Errorf("a sweep (wait %v) was let into a seat an operation holds", wait)
+		}
+	}
+}
+
+// The timer's sweep leaves a seat to one already being read rather than
+// queueing behind it, because it runs on the goroutine that delivers Incus's
+// events.
+func TestTheTimersSweepDoesNotQueueBehindAnother(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+	rt := m.runtimeOf("vince")
+
+	_, end, ok := m.beginSweep(context.Background(), rt, true)
+	if !ok {
+		t.Fatal("an idle seat could not be swept")
+	}
+	defer end()
+
+	done := make(chan bool, 1)
+
+	go func() {
+		_, _, ok := m.beginSweep(context.Background(), rt, false)
+		done <- ok
+	}()
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Error("two sweeps were reading the same seat at once")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the timer's sweep waited for the one in progress")
+	}
+}
+
+// A Delete that worked takes the seat's runtime record with it, and the end of
+// the operation must not put one back: it used to log "deleting done" and
+// reconcile by name, which made a fresh record, and a seat created again under
+// that name then showed the old one's log. No Incus client here, so a
+// reconcile that still runs fails this test by panicking.
+func TestADeletedSeatStaysForgotten(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}, subs: map[int]chan struct{}{}}
+	old := m.runtimeOf("vince")
+
+	ran := make(chan struct{})
+
+	err := m.operate("vince", "deleting", func(context.Context) error {
+		m.mu.Lock()
+		delete(m.rt, "vince")
+		m.mu.Unlock()
+		close(ran)
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("operate: %v", err)
+	}
+
+	<-ran
+
+	deadline := time.Now().Add(5 * time.Second)
+
+	for {
+		m.mu.Lock()
+		busy := old.busy
+		m.mu.Unlock()
+
+		if busy == "" {
+			break
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("the operation never finished")
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Whatever the end of the operation would still do, give it the moment.
+	time.Sleep(50 * time.Millisecond)
+
+	m.mu.Lock()
+	_, back := m.rt["vince"]
+	m.mu.Unlock()
+
+	if back {
+		t.Errorf("the deleted seat has a runtime record again, with log %q", m.Log("vince"))
+	}
+}
+
+// A build reads the record, works for minutes and then writes down that it
+// finished. It used to write back the whole copy it started with, so this is
+// the save that happens in those minutes, made through Update, and then the
+// end of the build.
+func TestABuildKeepsWhatWasSavedWhileItRan(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{store: store, rt: map[string]*runtime{}, subs: map[int]chan struct{}{}}
+
+	built := Seat{Name: "vince", Label: "Vince", Resolution: "1920x1080@60Hz"}
+	if err := store.Put(built); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Update("vince", func(s *Seat) { s.Label = "Living room" }); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	if err := m.recordBuilt("vince", built, 1001); err != nil {
+		t.Fatalf("recordBuilt: %v", err)
+	}
+
+	got, err := store.Get("vince")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.Label != "Living room" {
+		t.Errorf("the label saved during the build is %q again", got.Label)
+	}
+
+	if got.Provisioned != Generation || got.PlayerUID != 1001 {
+		t.Errorf("the build was recorded as generation %d, uid %d; want %d, 1001",
+			got.Provisioned, got.PlayerUID, Generation)
+	}
+}
+
+// And a save the build could not have applied leaves the seat needing
+// provisioning, rather than being marked current by a build that used the
+// old value.
+func TestABuildWithOutdatedSettingsIsNotCalledCurrent(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{store: store, rt: map[string]*runtime{}, subs: map[int]chan struct{}{}}
+
+	built := Seat{Name: "vince", Resolution: "1920x1080@60Hz", Provisioned: Generation - 1}
+	if err := store.Put(built); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Update("vince", func(s *Seat) { s.Resolution = "3840x2160@60Hz" }); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	if err := m.recordBuilt("vince", built, 1001); err != nil {
+		t.Fatalf("recordBuilt: %v", err)
+	}
+
+	got, err := store.Get("vince")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.Resolution != "3840x2160@60Hz" {
+		t.Errorf("the resolution saved during the build is %q again", got.Resolution)
+	}
+
+	if got.Provisioned == Generation {
+		t.Error("a seat built with the old resolution is marked current")
+	}
+}
+
+// sessionProbe folds four execs into one script, so the script is what has to
+// be right, and it is run here for real under a shell with the seat's tools
+// replaced. systemctl answers in the format it gave on the machine this was
+// written on, blocks in the order asked for, separated by a blank line.
+func TestTheSessionProbeReadsWhatTheFourExecsDid(t *testing.T) {
+	run := func(t *testing.T, stubs map[string]string) sessionReading {
+		t.Helper()
+
+		bin := t.TempDir()
+
+		for name, body := range stubs {
+			if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		cmd := exec.Command("/bin/sh", "-c", sessionProbe(1001))
+		cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
+
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("the probe did not exit cleanly: %v\n%s", err, out)
+		}
+
+		return parseSessionProbe(string(out))
+	}
+
+	units := "cat <<'EOF'\n" +
+		"Id=polyseat-sway.service\nActiveState=active\nExecMainStartTimestampMonotonic=12069483\n\n" +
+		"Id=polyseat-sunshine.service\nActiveState=activating\nExecMainStartTimestampMonotonic=12070195\n" +
+		"EOF\n"
+
+	t.Run("a seat somebody is streaming from", func(t *testing.T) {
+		got := run(t, map[string]string{
+			"systemctl": units,
+			"swaymsg":   `echo '[{"name":"HEADLESS-1","current_mode":{"width":2560,"height":1440,"refresh":60000}}]'` + "\n",
+			"ss":        "case \"$*\" in *-Huan*) echo 'UNCONN 0 0 0.0.0.0:47998 0.0.0.0:*' ;; esac\n",
+		})
+
+		if got.sway != "active" || got.sunshine != "activating" || got.sunshineStarted != "12070195" {
+			t.Errorf("units read as sway %q, sunshine %q started %q", got.sway, got.sunshine, got.sunshineStarted)
+		}
+
+		if got.output != "2560x1440@60Hz" {
+			t.Errorf("output read as %q", got.output)
+		}
+
+		if got.stream != streamBusy {
+			t.Errorf("a seat with its stream sockets open read as %v", got.stream)
+		}
+	})
+
+	// swaymsg failing is what readOutput answered "" for, and the stream check
+	// still has to run after it rather than being taken down with it.
+	t.Run("an idle seat whose compositor does not answer", func(t *testing.T) {
+		got := run(t, map[string]string{
+			"systemctl": units,
+			"swaymsg":   "echo 'unable to connect' >&2\nexit 1\n",
+			"ss":        "exit 0\n",
+		})
+
+		if got.output != "" {
+			t.Errorf("a failed swaymsg gave output %q", got.output)
+		}
+
+		if got.stream != streamIdle {
+			t.Errorf("an idle seat read as %v", got.stream)
+		}
+
+		if got.sway != "active" {
+			t.Errorf("the units were lost along the way: sway %q", got.sway)
+		}
+	})
+
+	// Nothing at all is a seat that did not answer, not an idle one.
+	if got := parseSessionProbe(""); got.stream != streamUnknown || got.sway != "unknown" || got.sunshine != "unknown" {
+		t.Errorf("an empty answer read as %+v", got)
 	}
 }

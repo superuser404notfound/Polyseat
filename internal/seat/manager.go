@@ -54,6 +54,17 @@ type Manager struct {
 	mu sync.Mutex
 	rt map[string]*runtime
 
+	// recordMu serialises every read, change and write of a seat's record on
+	// disk. Its own lock rather than mu, because it is held across file
+	// system calls, and mu is taken by the sweep every ten seconds.
+	//
+	// Without it a record is read, changed and written back whole by whoever
+	// gets there, and the last writer wins. Provisioning read the record,
+	// spent minutes building, and wrote its copy back, so a setting saved in
+	// between vanished and the seat was marked current besides. See
+	// recordBuilt.
+	recordMu sync.Mutex
+
 	observer *supervise.Process
 
 	// pool is the shared game library, nil when the filesystem cannot share
@@ -102,6 +113,12 @@ type runtime struct {
 	busy    string
 	lastErr string
 	cancel  context.CancelFunc
+
+	// sweep is held for the whole of a reconcile, and sweepCancel ends the one
+	// in progress. Together they are what keeps a reading of the seat and an
+	// operation on it from overlapping. See beginSweep.
+	sweep       sync.Mutex
+	sweepCancel context.CancelFunc
 
 	log    *Log
 	broker *supervise.Process
@@ -269,7 +286,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 
 	for _, s := range seats {
-		m.runtimeOf(s.Name)
+		m.adopt(s)
 	}
 
 	m.reconcileAll(ctx)
@@ -460,6 +477,40 @@ func (m *Manager) runtimeOf(name string) *runtime {
 	return rt
 }
 
+// adopt makes the runtime record for a seat the daemon found on disk, with the
+// player uid the record carries.
+//
+// Taken from the record because the default of 1000 is a guess, and a seat
+// that was already running when the daemon started is adopted without a
+// session start, which is the only other place the uid is read. Every command
+// run as the player in such a seat named the runtime directory and bus of a
+// user who might not be the player at all, until somebody restarted it.
+func (m *Manager) adopt(s Seat) {
+	rt := m.runtimeOf(s.Name)
+
+	if s.PlayerUID == 0 {
+		return
+	}
+
+	m.mu.Lock()
+	rt.uid = s.PlayerUID
+	m.mu.Unlock()
+}
+
+// uidOf is the player's uid in a seat, read under the lock.
+//
+// startSession writes it from its own goroutine while the sweep and the
+// interface's requests read it from theirs, and most of those reads were a
+// bare m.runtimeOf(name).uid, which is a data race whatever the size of an int.
+func (m *Manager) uidOf(name string) int64 {
+	rt := m.runtimeOf(name)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return rt.uid
+}
+
 func (m *Manager) setState(name string, state State) {
 	rt := m.runtimeOf(name)
 
@@ -607,7 +658,7 @@ func (m *Manager) reconcileAll(ctx context.Context) {
 	}
 
 	for _, s := range seats {
-		m.reconcile(ctx, s.Name)
+		m.reconcileWith(ctx, s.Name, false)
 	}
 }
 
@@ -616,19 +667,26 @@ func (m *Manager) reconcileAll(ctx context.Context) {
 // It deliberately does not act. Bringing a seat back up after it stopped by
 // itself is a decision, not a repair, and the interface shows it instead.
 func (m *Manager) reconcile(ctx context.Context, name string) {
+	m.reconcileWith(ctx, name, true)
+}
+
+// reconcileWith is reconcile, told whether to wait for a sweep of the same seat
+// that is already in progress or to leave the seat to it.
+//
+// The timer's pass does not wait. The sweep in progress is already reading
+// what this one would, and the timer runs on the goroutine that also delivers
+// Incus's events, which should not stand still behind one slow seat. Everything
+// else waits: an event or the end of an operation has something new to read,
+// and a sweep that started before it might not have seen it.
+func (m *Manager) reconcileWith(ctx context.Context, name string, wait bool) {
 	rt := m.runtimeOf(name)
 
-	m.mu.Lock()
-	busy := rt.busy
-	state := rt.state
-	m.mu.Unlock()
-
-	// Never talk to a container that is being built, started or stopped by an
-	// operation of ours. That operation knows what it is doing and this would
-	// only race with it.
-	if busy != "" || state == StateStopping {
+	ctx, end, ok := m.beginSweep(ctx, rt, wait)
+	if !ok {
 		return
 	}
+
+	defer end()
 
 	status, err := m.client.Status(name)
 	if err != nil {
@@ -660,6 +718,91 @@ func (m *Manager) reconcile(ctx context.Context, name string) {
 	m.refreshSession(ctx, name)
 }
 
+// beginSweep claims a seat for one reconcile, or reports that it may not have
+// it.
+//
+// Never talk to a container that is being built, started or stopped by an
+// operation of ours. That operation knows what it is doing and this would only
+// race with it. That rule used to be a look at busy before the reads, and a
+// look is not a claim: Stop could begin a moment later, while this was still
+// halfway through its execs, and the next of them landed in the middle of the
+// container's shutdown. That is the exact shape of the exec that once wedged
+// the Incus daemon, see the Manager's own comment.
+//
+// So the look happens under the sweep lock, and the lock is held until the
+// reads are done. claim, which every operation goes through, sets busy first
+// and then cancels whatever sweep is running, and the operation's goroutine
+// waits for that sweep to let go before it does anything. A sweep that starts
+// after busy was set sees it and returns; one that started before is stopped
+// and waited out. Either way no read and no operation share a moment.
+//
+// The context returned is the one the reads must use, so that the cancel
+// reaches them. end has to be called when they are finished.
+func (m *Manager) beginSweep(ctx context.Context, rt *runtime, wait bool) (context.Context, func(), bool) {
+	if wait {
+		rt.sweep.Lock()
+	} else if !rt.sweep.TryLock() {
+		return nil, nil, false
+	}
+
+	m.mu.Lock()
+
+	if rt.busy != "" || rt.state == StateStopping {
+		m.mu.Unlock()
+		rt.sweep.Unlock()
+
+		return nil, nil, false
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	rt.sweepCancel = cancel
+	m.mu.Unlock()
+
+	end := func() {
+		m.mu.Lock()
+		rt.sweepCancel = nil
+		m.mu.Unlock()
+
+		cancel()
+		rt.sweep.Unlock()
+	}
+
+	return ctx, end, true
+}
+
+// claim marks a seat as busy with an operation, and stops the sweep that is
+// reading it, if there is one. See beginSweep for why both halves are needed.
+func (m *Manager) claim(rt *runtime, label string, cancel context.CancelFunc) error {
+	m.mu.Lock()
+
+	if rt.busy != "" {
+		m.mu.Unlock()
+
+		return ErrBusy
+	}
+
+	rt.busy = label
+	rt.cancel = cancel
+	rt.lastErr = ""
+	rt.progress = -1
+	sweep := rt.sweepCancel
+	m.mu.Unlock()
+
+	if sweep != nil {
+		sweep()
+	}
+
+	return nil
+}
+
+// quiesce waits until no sweep is reading the seat. Called by an operation after
+// claim, which has already made sure that none will start and that the one in
+// progress has been told to stop, so this is a wait of milliseconds.
+func (rt *runtime) quiesce() {
+	rt.sweep.Lock()
+	rt.sweep.Unlock() //nolint:staticcheck // taken only to wait for the holder
+}
+
 // refreshSession reads what the session inside a running seat is doing.
 func (m *Manager) refreshSession(ctx context.Context, name string) {
 	rt := m.runtimeOf(name)
@@ -684,8 +827,8 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		m.mu.Unlock()
 	}
 
-	sway, _ := m.unitState(ctx, name, "polyseat-sway.service")
-	sunshine, sunshineStarted := m.unitState(ctx, name, "polyseat-sunshine.service")
+	reading := m.probeSession(ctx, name)
+	sway, sunshine, sunshineStarted := reading.sway, reading.sunshine, reading.sunshineStarted
 
 	devices, err := m.attachedDevices(name)
 	if err != nil {
@@ -709,8 +852,8 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 			encoder, codecs = m.readEncoders(ctx, name)
 		}
 
-		output = m.readOutput(ctx, name)
-		session, stream = m.readSession(ctx, name)
+		output = reading.output
+		session, stream = reading.session, reading.stream
 
 	case sunshine == "unknown":
 		// The seat was not asked successfully, so the last thing known about
@@ -725,6 +868,16 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 		// zero value, as it was, every seat spent the whole of its build being
 		// treated as one somebody might be playing in.
 		stream = streamIdle
+	}
+
+	// A sweep an operation stopped part way read nothing worth acting on: every
+	// exec after the cancel came back as "unknown". Written down, that would
+	// put a running seat's card through "starting" for no reason; acted on, it
+	// could rewrite a configuration or end a stream on the strength of reads
+	// that never happened. So it stops here, before anything is decided, and
+	// the operation that now owns the seat says what state it is in.
+	if ctx.Err() != nil {
+		return
 	}
 
 	m.checkOrigins(ctx, name, addresses)
@@ -940,7 +1093,7 @@ func (m *Manager) checkOrigins(ctx context.Context, name string, addresses map[s
 			Seat:     seat,
 			Image:    m.cfg.Image,
 			Log:      func(f string, a ...any) { m.logf(name, f, a...) },
-			uid:      rt.uid,
+			uid:      m.uidOf(name),
 		}
 
 		m.logf(name, "the address changed, rewriting the Sunshine configuration")
@@ -1121,7 +1274,7 @@ func (m *Manager) readEncoders(ctx context.Context, name string) (string, []stri
 	ctx, cancel := quick(ctx)
 	defer cancel()
 
-	return ReadEncoders(ctx, m.client, name, m.runtimeOf(name).uid)
+	return ReadEncoders(ctx, m.client, name, m.uidOf(name))
 }
 
 // sessionEnded puts a seat back the way an idle seat should be, and does the
@@ -1450,32 +1603,143 @@ func (m *Manager) streaming(ctx context.Context, name string) bool {
 	return state != streamIdle
 }
 
-// readOutput reports the size the seat's screen is actually running at.
+// sessionReading is what one look inside a running seat finds.
+type sessionReading struct {
+	sway, sunshine  string
+	sunshineStarted string
+	output          string
+	session         *Session
+	stream          streamState
+}
+
+// The markers between the three parts of sessionProbe's answer. Nothing any of
+// the three commands prints can look like one of these.
+const (
+	markUnits  = "@@polyseat-units@@"
+	markOutput = "@@polyseat-output@@"
+	markStream = "@@polyseat-stream@@"
+)
+
+// sessionProbe is everything the sweep reads from inside a seat, as one script.
+//
+// It used to be four execs every ten seconds for every running seat: the state
+// of the session's two units, one each, the size of the output and the stream.
+// An exec is a round trip through the Incus daemon and a process in the seat,
+// and these happen underneath whatever somebody is playing. So they are one,
+// and each part answers what its own exec answered before:
+//
+//   - the units by key, with Id so that the two blocks cannot be mistaken for
+//     each other, see parseUnitShow;
+//   - the output only when swaymsg succeeded, which is when readOutput used to
+//     report anything;
+//   - the stream as streamCheck, in a subshell so that its own exit ends only
+//     its own part.
+//
+// The script itself always exits zero. Only an exec that did not run at all
+// reads as a seat that did not answer, which is what each of the four did.
+func sessionProbe(uid int64) string {
+	return fmt.Sprintf(`echo '%s'
+systemctl --user show polyseat-sway.service polyseat-sunshine.service \
+    -p Id -p ActiveState -p ExecMainStartTimestampMonotonic 2>/dev/null
+echo '%s'
+if out=$(SWAYSOCK=$(ls -t /run/user/%d/sway-ipc.* 2>/dev/null | head -1) swaymsg -t get_outputs 2>/dev/null); then
+    printf '%%s\n' "$out"
+fi
+echo '%s'
+(
+%s
+)
+exit 0`, markUnits, markOutput, uid, markStream, streamCheck)
+}
+
+// probeSession runs sessionProbe in a seat.
+func (m *Manager) probeSession(ctx context.Context, name string) sessionReading {
+	ctx, cancel := quick(ctx)
+	defer cancel()
+
+	out, _, err := m.client.Try(ctx, name, m.asPlayer(name, "sh", "-c", sessionProbe(m.uidOf(name)))...)
+	if err != nil {
+		return sessionReading{sway: "unknown", sunshine: "unknown", stream: streamUnknown}
+	}
+
+	return parseSessionProbe(out)
+}
+
+// parseSessionProbe takes sessionProbe's answer apart. A part that is missing
+// reads the way its own exec failing used to: a unit state of "unknown", no
+// output, a stream nobody can vouch for.
+func parseSessionProbe(out string) sessionReading {
+	parts := map[string]string{}
+	current := ""
+
+	var section strings.Builder
+
+	flush := func() {
+		if current != "" {
+			parts[current] = section.String()
+		}
+
+		section.Reset()
+	}
+
+	for _, line := range strings.Split(out, "\n") {
+		switch strings.TrimSpace(line) {
+		case markUnits, markOutput, markStream:
+			flush()
+
+			current = strings.TrimSpace(line)
+
+			continue
+		}
+
+		section.WriteString(line)
+		section.WriteString("\n")
+	}
+
+	flush()
+
+	reading := sessionReading{sway: "unknown", sunshine: "unknown", stream: streamUnknown}
+
+	for _, block := range strings.Split(parts[markUnits], "\n\n") {
+		state, started := parseUnitShow(block)
+
+		switch unitID(block) {
+		case "polyseat-sway.service":
+			reading.sway = state
+		case "polyseat-sunshine.service":
+			reading.sunshine, reading.sunshineStarted = state, started
+		}
+	}
+
+	reading.output = parseOutputs(parts[markOutput])
+
+	if stream, ok := parts[markStream]; ok {
+		reading.session, reading.stream = parseStreamCheck(stream)
+	}
+
+	return reading
+}
+
+// unitID is the Id line of one block of `systemctl show`.
+func unitID(block string) string {
+	for _, line := range strings.Split(block, "\n") {
+		if id, found := strings.CutPrefix(strings.TrimSpace(line), "Id="); found {
+			return id
+		}
+	}
+
+	return ""
+}
+
+// parseOutputs reports the size the seat's screen is actually running at, from
+// what `swaymsg -t get_outputs` printed.
 //
 // Which is not what the seat was configured with, and the difference is the
 // point: the output is virtual, so it becomes whatever a connecting client
 // asked for and goes back afterwards. The interface was showing the configured
 // value and calling it the resolution, so a seat streaming at 2560x1600 still
 // claimed 1920x1080.
-func (m *Manager) readOutput(ctx context.Context, name string) string {
-	ctx, cancel := quick(ctx)
-	defer cancel()
-
-	rt := m.runtimeOf(name)
-
-	m.mu.Lock()
-	uid := rt.uid
-	m.mu.Unlock()
-
-	argv := m.asPlayer(name, "sh", "-c", fmt.Sprintf(
-		"SWAYSOCK=$(ls -t /run/user/%d/sway-ipc.* 2>/dev/null | head -1) "+
-			"swaymsg -t get_outputs 2>/dev/null", uid))
-
-	out, code, err := m.client.Try(ctx, name, argv...)
-	if err != nil || code != 0 {
-		return ""
-	}
-
+func parseOutputs(out string) string {
 	var outputs []struct {
 		CurrentMode struct {
 			Width   int `json:"width"`
@@ -1502,7 +1766,7 @@ func (m *Manager) readOutput(ctx context.Context, name string) string {
 // directory and the user bus named explicitly, because there is no login
 // context to inherit them from.
 func (m *Manager) asPlayer(name string, argv ...string) []string {
-	return append(playerPrefix(m.runtimeOf(name).uid), argv...)
+	return append(playerPrefix(m.uidOf(name)), argv...)
 }
 
 // playerPrefix is the same command prefix for a caller that has the uid but no
@@ -1638,25 +1902,23 @@ var ErrBusy = fmt.Errorf("the seat is busy")
 func (m *Manager) operate(name, label string, fn func(ctx context.Context) error) error {
 	rt := m.runtimeOf(name)
 
-	m.mu.Lock()
-
-	if rt.busy != "" {
-		m.mu.Unlock()
-
-		return ErrBusy
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
-	rt.busy = label
-	rt.cancel = cancel
-	rt.lastErr = ""
-	rt.progress = -1
-	m.mu.Unlock()
+
+	if err := m.claim(rt, label, cancel); err != nil {
+		cancel()
+
+		return err
+	}
 
 	m.logf(name, "== %s", label)
 	m.notify()
 
 	go func() {
+		// Here rather than before returning, because the sweep being waited
+		// for can take a moment to notice it was cancelled, and the request
+		// that started this should not wait for that.
+		rt.quiesce()
+
 		err := fn(ctx)
 
 		m.mu.Lock()
@@ -1668,7 +1930,22 @@ func (m *Manager) operate(name, label string, fn func(ctx context.Context) error
 			rt.lastErr = err.Error()
 		}
 
+		// The operation took the seat away with it, which is what a
+		// successful Delete does. Everything below reaches the seat by name,
+		// and runtimeOf would make a fresh record under that name to hold a
+		// "deleting done" and whatever the reconcile found: a seat created
+		// again under the same name then started life with the old one's log
+		// and state.
+		gone := m.rt[name] != rt
+
 		m.mu.Unlock()
+
+		if gone {
+			cancel()
+			m.notify()
+
+			return
+		}
 
 		if err != nil {
 			m.logf(name, "! %s failed: %v", label, err)
@@ -1927,14 +2204,50 @@ func (m *Manager) build(ctx context.Context, name string) error {
 		return err
 	}
 
-	seat.Provisioned = Generation
-	seat.PlayerUID = p.uid
-
-	if err := m.store.Put(seat); err != nil {
+	if err := m.recordBuilt(name, seat, p.uid); err != nil {
 		return err
 	}
 
 	return m.startSession(ctx, name)
+}
+
+// recordBuilt writes down that a build finished, into the record as it is now
+// rather than the copy the build started from.
+//
+// The copy is minutes old by the time the build ends, and writing it back put
+// the record back to what it was then: anything saved in the meantime was
+// gone, with nothing to say so. Only the two fields the build learned are
+// changed here.
+//
+// And the seat is only called current if it was built with the settings it now
+// has. Somebody who changes the address while a build is running has had it
+// marked as needing provisioning by Update; the build that then finishes
+// applied the old address, and marking it current would hide that for good.
+func (m *Manager) recordBuilt(name string, built Seat, uid int64) error {
+	m.recordMu.Lock()
+	defer m.recordMu.Unlock()
+
+	current, err := m.store.Get(name)
+	if err != nil {
+		return err
+	}
+
+	current.PlayerUID = uid
+
+	if needsProvisioning(built, current) {
+		m.logf(name, "! the seat's settings changed while it was being built, so it still needs provisioning")
+	} else {
+		current.Provisioned = Generation
+	}
+
+	return m.store.Put(current)
+}
+
+// needsProvisioning reports whether a change to a seat's record is one only
+// provisioning can apply.
+func needsProvisioning(before, after Seat) bool {
+	return after.Address != before.Address || after.Gateway != before.Gateway ||
+		after.Resolution != before.Resolution
 }
 
 // Start brings a seat up: container, session, broker.
@@ -2230,14 +2543,10 @@ func (m *Manager) Create(seat Seat) error {
 		return err
 	}
 
-	if _, err := m.store.Get(seat.Name); err == nil {
-		return fmt.Errorf("a seat called %q already exists", seat.Name)
-	}
-
 	seat.Created = time.Now()
 	seat.Provisioned = 0
 
-	if err := m.store.Put(seat); err != nil {
+	if err := m.createRecord(seat); err != nil {
 		return err
 	}
 
@@ -2248,8 +2557,20 @@ func (m *Manager) Create(seat Seat) error {
 	return nil
 }
 
-// Update changes a seat definition. The name cannot change, because it is also
-// the container name and the tag Sunshine writes into its device names.
+// createRecord writes a new seat's record, unless one of that name exists.
+// Under recordMu, so that two requests for the same name cannot both find it
+// free.
+func (m *Manager) createRecord(seat Seat) error {
+	m.recordMu.Lock()
+	defer m.recordMu.Unlock()
+
+	if _, err := m.store.Get(seat.Name); err == nil {
+		return fmt.Errorf("a seat called %q already exists", seat.Name)
+	}
+
+	return m.store.Put(seat)
+}
+
 // applyPointerSpeed pushes the pointer speed into a seat that is running.
 //
 // Silent about a seat that is switched off: there is nothing to write into and
@@ -2266,7 +2587,7 @@ func (m *Manager) applyPointerSpeed(ctx context.Context, seat Seat) {
 		Seat:     seat,
 		Image:    m.cfg.Image,
 		Log:      func(f string, a ...any) { m.logf(seat.Name, f, a...) },
-		uid:      m.runtimeOf(seat.Name).uid,
+		uid:      m.uidOf(seat.Name),
 	}
 
 	if err := p.WritePointerConfig(ctx); err != nil {
@@ -2311,7 +2632,7 @@ func (m *Manager) applyGEProton(seat Seat) {
 			Seat:     seat,
 			Image:    m.cfg.Image,
 			Log:      func(f string, a ...any) { m.logf(seat.Name, f, a...) },
-			uid:      m.runtimeOf(seat.Name).uid,
+			uid:      m.uidOf(seat.Name),
 		}
 
 		return p.stepGEProton(ctx)
@@ -2325,27 +2646,11 @@ func (m *Manager) applyGEProton(seat Seat) {
 	}
 }
 
+// Update changes a seat definition. The name cannot change, because it is also
+// the container name and the tag Sunshine writes into its device names.
 func (m *Manager) Update(name string, change func(*Seat)) error {
-	seat, err := m.store.Get(name)
+	before, seat, err := m.changeRecord(name, change)
 	if err != nil {
-		return err
-	}
-
-	before := seat
-	change(&seat)
-	seat.Name = name
-
-	if err := seat.Validate(); err != nil {
-		return err
-	}
-
-	// Anything that only provisioning can apply marks the seat as needing it.
-	if seat.Address != before.Address || seat.Gateway != before.Gateway ||
-		seat.Resolution != before.Resolution {
-		seat.Provisioned = 0
-	}
-
-	if err := m.store.Put(seat); err != nil {
 		return err
 	}
 
@@ -2396,6 +2701,39 @@ func (m *Manager) Update(name string, change func(*Seat)) error {
 	return nil
 }
 
+// changeRecord is the part of Update that touches the record, under recordMu
+// from the read to the write so that nothing written in between is lost. It
+// returns the record before and after, for Update to decide what else to do
+// once the lock is let go: some of that talks to Incus and takes a while.
+func (m *Manager) changeRecord(name string, change func(*Seat)) (Seat, Seat, error) {
+	m.recordMu.Lock()
+	defer m.recordMu.Unlock()
+
+	seat, err := m.store.Get(name)
+	if err != nil {
+		return Seat{}, Seat{}, err
+	}
+
+	before := seat
+	change(&seat)
+	seat.Name = name
+
+	if err := seat.Validate(); err != nil {
+		return Seat{}, Seat{}, err
+	}
+
+	// Anything that only provisioning can apply marks the seat as needing it.
+	if needsProvisioning(before, seat) {
+		seat.Provisioned = 0
+	}
+
+	if err := m.store.Put(seat); err != nil {
+		return Seat{}, Seat{}, err
+	}
+
+	return before, seat, nil
+}
+
 // Delete removes a seat and, unless asked to keep it, its container.
 func (m *Manager) Delete(name string, keepContainer bool) error {
 	if _, err := m.store.Get(name); err != nil {
@@ -2424,7 +2762,14 @@ func (m *Manager) Delete(name string, keepContainer bool) error {
 			}
 		}
 
-		if err := m.store.Delete(name); err != nil {
+		// Under recordMu, so that a save that read the record a moment ago
+		// cannot write it back after it is gone and bring the seat back
+		// without a container.
+		m.recordMu.Lock()
+		err = m.store.Delete(name)
+		m.recordMu.Unlock()
+
+		if err != nil {
 			return err
 		}
 

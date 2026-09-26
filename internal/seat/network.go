@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lxc/incus/v7/shared/api"
@@ -524,6 +525,22 @@ func managementUsable(device map[string]string, lookup func(string) (*api.Networ
 		mgmtDeviceName, nictype), nil
 }
 
+// bridgeMaker is the part of the Incus client managementBridge uses, so that
+// the race it guards against can be staged without an Incus.
+type bridgeMaker interface {
+	Network(name string) (*api.Network, error)
+	CreateBridge(name, description string) error
+}
+
+// bridgeMu makes the look for a bridge and the making of one a single step.
+//
+// Every seat that autostarts is started in its own goroutine, and each start
+// arranges the seat's management interface. On a host with no bridge to offer
+// they all looked, all found nothing and all tried to make polyseatbr0, and
+// every one but the first failed on a bridge that now existed. Those seats
+// came up without a way for the daemon to reach them.
+var bridgeMu sync.Mutex
+
 // managementBridge picks the bridge the management interface should hang off,
 // making one when the host has none to offer.
 //
@@ -531,7 +548,34 @@ func managementUsable(device map[string]string, lookup func(string) (*api.Networ
 // the bridge every seat is already on and moving them would change their
 // addresses for no reason. Then this program's own, which is only ever there
 // because a previous call made it.
-func managementBridge(client *incusx.Client) (string, error) {
+func managementBridge(client bridgeMaker) (string, error) {
+	bridgeMu.Lock()
+	defer bridgeMu.Unlock()
+
+	if name, err := usableBridge(client); err != nil || name != "" {
+		return name, err
+	}
+
+	if err := client.CreateBridge(PolyseatBridge, bridgeDescription); err != nil {
+		// The lock covers this daemon and nothing else: somebody's own incus
+		// command, or a second daemon, can make it between the look and the
+		// create. The bridge being there is what was wanted, so a failure is
+		// only a failure if there is still nothing usable afterwards. Asked
+		// again rather than matched on the error text, which is Incus's to
+		// word.
+		if name, lookErr := usableBridge(client); lookErr == nil && name != "" {
+			return name, nil
+		}
+
+		return "", fmt.Errorf("make the %s bridge: %w", PolyseatBridge, err)
+	}
+
+	return PolyseatBridge, nil
+}
+
+// usableBridge is the first of the candidates that is there and hands out
+// leases, or "" when neither is.
+func usableBridge(client bridgeMaker) (string, error) {
 	for _, candidate := range []string{defaultBridge, PolyseatBridge} {
 		network, err := client.Network(candidate)
 		if err != nil {
@@ -554,11 +598,7 @@ func managementBridge(client *incusx.Client) (string, error) {
 		return candidate, nil
 	}
 
-	if err := client.CreateBridge(PolyseatBridge, bridgeDescription); err != nil {
-		return "", fmt.Errorf("make the %s bridge: %w", PolyseatBridge, err)
-	}
-
-	return PolyseatBridge, nil
+	return "", nil
 }
 
 // ensureManagement gives a seat an interface the daemon can reach it over,

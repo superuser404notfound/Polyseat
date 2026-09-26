@@ -473,7 +473,7 @@ func (m *Manager) refreshApps(ctx context.Context, name string) {
 		Seat:   s,
 		Image:  m.cfg.Image,
 		Log:    func(f string, a ...any) { m.logf(name, f, a...) },
-		uid:    m.runtimeOf(name).uid,
+		uid:    m.uidOf(name),
 		lutris: m.runtimeOf(name).lutris,
 	}
 
