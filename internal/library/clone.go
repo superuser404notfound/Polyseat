@@ -289,10 +289,10 @@ func cloneAt(srcDir *os.File, srcName string, dstDir *os.File, dstName string, o
 	// space forever. Emptied through the handle and then removed by name only
 	// if it is empty, so that if something else has taken the name in the
 	// meantime it is left alone.
-	placed := false
+	keep := false
 
 	defer func() {
-		if !placed {
+		if !keep {
 			emptyDir(staging)
 			unix.Unlinkat(fdOf(dstDir), stagingName, unix.AT_REMOVEDIR)
 		}
@@ -319,33 +319,54 @@ func cloneAt(srcDir *os.File, srcName string, dstDir *os.File, dstName string, o
 		}
 	}
 
-	restore := func() {
+	var (
+		old   *os.File
+		moved map[string]bool
+	)
+
+	// Every failure from here on has to leave the destination as it was, and
+	// that is two steps in this order: what was carried goes back out of the
+	// staging tree, and then the old copy is renamed back. The other order, or
+	// only the second step, restores the old copy without the saves that were
+	// taken out of it, and the staging directory holding them is about to be
+	// removed. That is how a carry that failed half way used to lose the half
+	// it had already moved.
+	//
+	// Should putting them back fail as well, the staging directory is kept
+	// rather than removed, and the error says where it is. Saves somebody has
+	// to fish out by hand are still saves.
+	rollback := func(err error) (Result, error) {
+		if len(moved) > 0 {
+			if _, back := carryPrivate(staging, old, moved, owner); back != nil {
+				keep = true
+
+				return result, fmt.Errorf("%w, and the saves could not be put back, they are in %s: %v",
+					err, filepath.Join(dstDir.Name(), stagingName), back)
+			}
+		}
+
 		if previous != "" {
 			renameAt(dstDir, previous, dstDir, dstName)
 		}
+
+		return result, err
 	}
 
 	// What the destination owned moves into the tree about to replace it. A
 	// move and not a copy: it is a rename inside one directory, so the saves
 	// are never duplicated and never rewritten, however large they have got.
-	var old *os.File
-
 	if previous != "" && len(carry) > 0 {
 		old, err = openDirAt(dstDir, previous)
 		if err != nil {
-			restore()
-
-			return result, err
+			return rollback(err)
 		}
 
 		defer old.Close()
 	}
 
-	moved, err := carryPrivate(old, staging, carry, owner)
+	moved, err = carryPrivate(old, staging, carry, owner)
 	if err != nil {
-		restore()
-
-		return result, err
+		return rollback(err)
 	}
 
 	// The root of the tree needs the same treatment as everything inside it,
@@ -362,32 +383,22 @@ func cloneAt(srcDir *os.File, srcName string, dstDir *os.File, dstName string, o
 	// Last, after the carry, because this is the moment the member can reach
 	// into the tree.
 	if err := staging.Chown(owner.UID, owner.GID); err != nil {
-		return result, err
+		return rollback(err)
 	}
 
 	if err := staging.Chmod(os.FileMode(info.Mode).Perm()); err != nil {
-		return result, err
+		return rollback(err)
 	}
 
 	if err := setMtime(staging, info.Mtim); err != nil {
-		return result, err
+		return rollback(err)
 	}
 
 	if err := renameAt(dstDir, stagingName, dstDir, dstName); err != nil {
-		if old != nil {
-			// Back where they came from first, or restoring the old copy
-			// would restore it without the saves that were just taken out of
-			// it, and the staging directory carrying them is about to be
-			// removed.
-			carryPrivate(staging, old, moved, owner)
-		}
-
-		restore()
-
-		return result, err
+		return rollback(err)
 	}
 
-	placed = true
+	keep = true
 
 	if previous != "" {
 		removeAllAt(dstDir, previous)

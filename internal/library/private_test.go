@@ -211,3 +211,38 @@ func TestCloneWithoutFoldersCopiesEverything(t *testing.T) {
 		t.Errorf("Clone left something out, the save reads %q", got)
 	}
 }
+
+// Two prefixes in one folder, and the second cannot be carried. The first had
+// already been moved into the staging tree by then, which the failed clone
+// deletes on its way out, and with it the saves.
+func TestAFailedCarryPutsBackWhatItMoved(t *testing.T) {
+	dir := reflinkDir(t)
+	pool := filepath.Join(dir, "pool", "Game")
+	seat := filepath.Join(dir, "seat", "Game")
+
+	prefix(t, filepath.Join(pool, "a"), "the pool's a")
+	mkdirs(t, filepath.Join(pool, "b"))
+	write(t, filepath.Join(pool, "b", "drive_c"), "a file where the seat has a directory", 0o644)
+
+	prefix(t, filepath.Join(seat, "a"), "this seat's a")
+	prefix(t, filepath.Join(seat, "b"), "this seat's b")
+
+	if _, err := CloneFolder(pool, seat, Keep); err == nil {
+		t.Error("the clone succeeded although b's saves had nowhere to go")
+	}
+
+	for _, which := range []string{"a", "b"} {
+		save := filepath.Join(seat, which, "drive_c", "users", "steamuser", "Saved Games", "garden.sav")
+
+		data, err := os.ReadFile(save)
+		if err != nil {
+			t.Errorf("%s's save is gone after the failed update: %v", which, err)
+
+			continue
+		}
+
+		if want := "this seat's " + which; string(data) != want {
+			t.Errorf("%s's save reads %q, want %q", which, data, want)
+		}
+	}
+}
