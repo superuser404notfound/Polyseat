@@ -164,6 +164,92 @@ expect "the heading is printed anyway" "step Start these seats" "$out"
 expect "seat1 is named"                "    seat1"              "$out"
 expect "seat2 is named"                "    seat2"              "$out"
 
+# The two guards around building the bridge, lifted the same way and run
+# against an nmcli that is a shell function answering from NM_PROFILES, lines
+# of "uuid id interface".
+NETWORK=$WORK/network.sh
+
+sed -n '/^bridge_taken() {$/,/^}$/p; /^release_uplink() {$/,/^}$/p' \
+    "$HERE/lan-bridge.sh" > "$NETWORK"
+
+for name in bridge_taken release_uplink; do
+    grep -q "^$name() {$" "$NETWORK" || {
+        echo "could not lift $name out of lan-bridge.sh" >&2
+        exit 1
+    }
+done
+
+export NETWORK
+
+net() {
+    local setup=$1 body=$2
+
+    bash -c '
+set -euo pipefail
+
+ok()   { printf "ok %s\n" "$*"; }
+warn() { printf "warn %s\n" "$*"; }
+bad()  { printf "bad %s\n" "$*"; }
+rollback() { printf "rollback %s\n" "$*"; exit 1; }
+
+BRIDGE=br0
+BRIDGE_CON=polyseat-bridge
+NM_PROFILES=""
+MOD_FAILS=no
+
+nmcli() {
+    printf "nmcli %s\n" "$*" >&2
+    case "$*" in
+        "-t -f UUID con show")
+            [[ -n $NM_PROFILES ]] && awk "{ print \$1 }" <<<"$NM_PROFILES"
+            ;;
+        "-g connection.id con show uuid "*)
+            awk -v u="${*: -1}" "\$1 == u { print \$2 }" <<<"$NM_PROFILES"
+            ;;
+        "-g connection.interface-name con show uuid "*)
+            awk -v u="${*: -1}" "\$1 == u { print \$3 }" <<<"$NM_PROFILES"
+            ;;
+        "con mod "*)
+            [[ $MOD_FAILS == no ]]
+            ;;
+    esac
+}
+
+POLYSEAT_NET_SYSFS=$(mktemp -d)
+trap "rm -rf -- \"$POLYSEAT_NET_SYSFS\"" EXIT
+
+'"$setup"'
+source "$NETWORK"
+'"$body"'
+' 2>/dev/null
+}
+
+step "Whether br0 is free"
+
+out=$(net 'NM_PROFILES="u1 Wired-1 enp5s0"' 'echo "taken: [$(bridge_taken)]"')
+expect "free on a machine with no br0 anywhere" "taken: []" "$out"
+
+out=$(net 'NM_PROFILES="u1 Wired-1 enp5s0"; mkdir "$POLYSEAT_NET_SYSFS/br0"' 'echo "taken: [$(bridge_taken)]"')
+expect "an interface called br0 that nothing of ours made" "is not Polyseat's]" "$out"
+
+out=$(net 'NM_PROFILES=$'"'"'u1 Wired-1 enp5s0\nu2 my-bridge br0'"'"'' 'echo "taken: [$(bridge_taken)]"')
+expect "somebody else's profile for br0, with no interface up yet" "\"my-bridge\", which is not Polyseat's]" "$out"
+
+out=$(net 'NM_PROFILES="u2 polyseat-bridge br0"' 'echo "taken: [$(bridge_taken)]"')
+expect "a profile of ours from an earlier run" "from an earlier run is still there]" "$out"
+
+out=$(net 'NM_PROFILES="u2 br0-lookalike br00"' 'echo "taken: [$(bridge_taken)]"')
+expect "a profile for another interface is not br0's" "taken: []" "$out"
+
+step "Switching the old profile off"
+
+out=$(net 'MOD_FAILS=yes; CURRENT="Wired-1"; CURRENT_GENERATED=no' 'release_uplink; echo "carried on"')
+expect "a refused change rolls everything back" "rollback Wired-1 could not be kept" "$out"
+refute "rather than carrying on"                "carried on"                        "$out"
+
+out=$(net 'CURRENT="Wired-1"; CURRENT_GENERATED=no' 'release_uplink; echo "carried on"')
+expect "an accepted one carries on" "carried on" "$out"
+
 step "Summary"
 printf '  %d passed, %d failed\n\n' "$pass" "$fail"
 
