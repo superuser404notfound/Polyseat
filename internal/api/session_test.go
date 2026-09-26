@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/superuser404notfound/Polyseat/internal/auth"
 )
 
 // sessionOf asks the endpoint the page asks before it draws anything.
@@ -141,5 +144,30 @@ func TestTwoStartsCannotShareAName(t *testing.T) {
 		}
 
 		seen[name] = true
+	}
+}
+
+// Answered before anybody has signed in, and so answered to anybody. The user
+// name is half of the login and the page only uses it once somebody is in.
+func TestTheSessionKeepsTheUserNameFromStrangers(t *testing.T) {
+	installed(t)
+
+	store := claimed(t)
+	handler := setupHandler(t, store)
+
+	if name := sessionOf(t, handler)["username"]; name != "" {
+		t.Errorf("the session told somebody without a cookie that the user is %v", name)
+	}
+
+	// And to somebody signed in it still does, because the Account dialog is
+	// filled in from here.
+	r := httptest.NewRequest("GET", "/api/session", nil)
+	r.AddCookie(&http.Cookie{Name: auth.CookieName, Value: store.Issue()})
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if !strings.Contains(w.Body.String(), `"username":"vincent"`) {
+		t.Errorf("a signed in session was not told its own user name: %s", w.Body)
 	}
 }

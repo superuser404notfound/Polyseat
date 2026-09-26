@@ -43,6 +43,11 @@ func post(path, body, from string) *http.Request {
 	r := httptest.NewRequest("POST", path, strings.NewReader(body))
 	r.RemoteAddr = from + ":40000"
 
+	// What the page's api() sends: the header with a body, nothing without.
+	if body != "" {
+		r.Header.Set("Content-Type", "application/json")
+	}
+
 	return r
 }
 
