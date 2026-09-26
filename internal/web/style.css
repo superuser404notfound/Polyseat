@@ -668,6 +668,7 @@ dialog .panel + .panel { border-top: 1px solid var(--line); padding-top: 1.2rem;
 .panel .hint { margin-bottom: 1rem; }
 .panel .warning, .panel .notice { margin: 0.9rem 0 0; }
 .panel .notice button { margin-left: 0.4rem; }
+.restart-choice button + button { margin-left: 0.4rem; }
 .panel pre.log { max-height: 16rem; }
 
 /* Labels here are the dialog's, on a page that is not a dialog. Repeated rather

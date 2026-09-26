@@ -50,7 +50,11 @@ async function api(method, path, body) {
     throw err;
   }
 
-  if (!response.ok) throw new Error(data.error || response.statusText);
+  if (!response.ok) {
+    const err = new Error(data.error || response.statusText);
+    err.status = response.status;
+    throw err;
+  }
 
   return data;
 }
@@ -439,38 +443,77 @@ function restartButton(choice) {
         ? `${streaming[0]} is streaming right now`
         : `${streaming.join(", ")} are streaming right now`;
 
-    return button;
+    // Waiting is the default and not the only answer. It is somebody's own
+    // machine, and a stream that has been left running, or a restart that
+    // cannot wait for a game to end, is theirs to decide about. The daemon has
+    // always taken force for exactly this; the page just never offered it.
+    const anyway = document.createElement("button");
+    anyway.className = "danger";
+    anyway.textContent = "Restart anyway";
+    anyway.title = "Ends every stream in progress";
+    anyway.onclick = () => askRestart(anyway, true);
+
+    const both = document.createElement("span");
+    both.className = "restart-choice";
+    both.append(button, anyway);
+
+    return both;
   }
 
   button.textContent = "Restart now";
-  button.onclick = async () => {
-    button.disabled = true;
-
-    // The overlay goes up only once the daemon has agreed to restart. Asking
-    // can be refused — somebody started streaming between the page being drawn
-    // and the button being pressed, or this machine is in the middle of being
-    // prepared — and covering the page before knowing that would hide the
-    // refusal behind an animation of something that is not happening.
-    let accepted;
-
-    try {
-      accepted = await api("POST", "/api/restart");
-    } catch (err) {
-      button.disabled = false;
-
-      if (err.unauthorized) {
-        showLogin();
-      } else {
-        alert(err.message);
-      }
-
-      return;
-    }
-
-    await awaitRestart(accepted.instance);
-  };
+  button.onclick = () => askRestart(button, false);
 
   return button;
+}
+
+// askRestart asks the daemon to restart and hands the page to awaitRestart
+// once it has agreed.
+//
+// The overlay goes up only once the daemon has agreed to restart. Asking can be
+// refused, because somebody started streaming between the page being drawn and
+// the button being pressed or because this machine is in the middle of being
+// prepared, and covering the page before knowing that would hide the refusal
+// behind an animation of something that is not happening.
+//
+// A refusal because of a stream is a question rather than an error: the answer
+// names who is playing, and saying yes asks again with force. Anything else
+// refused, preparing above all, is not something force may override, and the
+// daemon does not let it.
+async function askRestart(button, force, confirmed = false) {
+  const label = button.textContent;
+
+  if (force && !confirmed && !confirm(
+    "Restart the daemon now? Everybody streaming loses their controller " +
+      "for a moment while the input brokers restart. Their seats, their " +
+      "games and their streams keep running.",
+  )) {
+    return;
+  }
+
+  button.disabled = true;
+
+  let accepted;
+
+  try {
+    accepted = await api("POST", force ? "/api/restart?force=true" : "/api/restart");
+  } catch (err) {
+    button.disabled = false;
+    button.textContent = label;
+
+    if (err.unauthorized) {
+      showLogin();
+    } else if (err.status === 409 && !force && /streaming/.test(err.message)) {
+      if (confirm(`${err.message}.\n\nRestart anyway?`)) {
+        await askRestart(button, true, true);
+      }
+    } else {
+      alert(err.message);
+    }
+
+    return;
+  }
+
+  await awaitRestart(accepted.instance);
 }
 
 // updateBanner is the passive half: it appears when a release does, at the top
@@ -3248,28 +3291,12 @@ function preparePanel(options) {
   const restart = document.createElement("button");
   restart.textContent = "Restart the daemon";
 
-  restart.onclick = async () => {
-    restart.disabled = true;
-    restart.textContent = "Restarting";
-
-    let accepted;
-
-    try {
-      accepted = await api("POST", "/api/restart");
-    } catch (err) {
-      restart.disabled = false;
-      restart.textContent = "Restart the daemon";
-      alert(err.message);
-
-      return;
-    }
-
-    // The same action as the banner's, so the same waiting. This one is
-    // reached after preparing the machine, where the restart is the step that
-    // makes Incus and the observer reachable at all, so leaving somebody
-    // guessing whether it worked is worse here rather than better.
-    await awaitRestart(accepted.instance);
-  };
+  // The same action as the banner's, so the same asking and the same waiting,
+  // including the question when somebody is streaming. This one is reached
+  // after preparing the machine, where the restart is the step that makes
+  // Incus and the observer reachable at all, so leaving somebody guessing
+  // whether it worked is worse here rather than better.
+  restart.onclick = () => askRestart(restart, false);
 
   done.append(doneText, restart);
 
