@@ -7,20 +7,65 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 )
 
-// nvidiaNodes are the character devices that have to exist on the host before a
-// seat's container starts.
+// nvidiaNodesFor are the character devices that have to exist on the host
+// before a seat's container starts, for the card with that minor number.
 //
-// /dev/nvidia0 is the card itself and the one that goes missing. The control
+// /dev/nvidiaN is the card itself and the one that goes missing. The control
 // node is listed with it because a machine where that is absent too has a
 // different problem, and saying which of the two is gone is the difference
 // between a useful message and "no GPU".
+func nvidiaNodesFor(minor int) []string {
+	return []string{"/dev/nvidiactl", fmt.Sprintf("/dev/nvidia%d", minor)}
+}
+
+// procRoot is where the driver describes its cards, a variable so that a test
+// can put a description of its own there.
+var procRoot = "/proc"
+
+// nvidiaMinor is which /dev/nvidiaN the card at a PCI address is, as the driver
+// itself numbered it.
 //
-// Only card 0, because a seat gets the host's card and Polyseat does not hand
-// out one card per seat. When it does, this becomes a per seat question.
-var nvidiaNodes = []string{"/dev/nvidiactl", "/dev/nvidia0"}
+// This used to be 0 without asking, which was true for as long as a seat got
+// whatever card the host had. Since the card is pinned by its PCI address, see
+// gpuDevice, the card a seat is given need not be the first one the driver
+// found: on a machine with two NVIDIA cards and the second one chosen, the
+// guard made sure /dev/nvidia0 existed and started a seat whose own node might
+// not. The driver's answer is the Device Minor line in its description of the
+// card, read from the real file on the machine this was written on.
+//
+// false when the driver has no description for that address, which is the
+// caller's cue to fall back to card 0 and say so.
+func nvidiaMinor(root, pci string) (int, bool) {
+	if pci == "" {
+		return 0, false
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "driver/nvidia/gpus", pci, "information"))
+	if err != nil {
+		return 0, false
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, found := strings.Cut(line, ":")
+		if !found || strings.TrimSpace(key) != "Device Minor" {
+			continue
+		}
+
+		minor, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || minor < 0 {
+			return 0, false
+		}
+
+		return minor, true
+	}
+
+	return 0, false
+}
 
 // modprobeBin is a variable so the test can point it at a program it wrote.
 var modprobeBin = "nvidia-modprobe"
@@ -47,7 +92,7 @@ type nodeGuard struct {
 	// coaxed into existence.
 	Vendor Vendor
 
-	// Nodes is what has to be there, normally nvidiaNodes.
+	// Nodes is what has to be there, normally nvidiaNodesFor the seat's card.
 	Nodes []string
 
 	// Exists is os.Stat in production and a map in the test.
@@ -110,7 +155,7 @@ func (g nodeGuard) missing() []string {
 //
 // This is the tool the driver ships for exactly this job and it is installed
 // setuid, which is why the daemon can call it rather than making the nodes
-// itself. -c 0 is the card, and it makes the control node with it.
+// itself. -c is the card's minor number, and it makes the control node with it.
 //
 // Not -u as well, which reads like "and the unified memory nodes too" and means
 // "operate on the unified memory module instead of the NVIDIA one". Measured
@@ -118,8 +163,8 @@ func (g nodeGuard) missing() []string {
 // nothing, "-c 0" created it. Those nodes need no help anyway, since the driver
 // makes them when the module loads, which on this machine was eight seconds
 // before the daemon even started.
-func nvidiaModprobe(ctx context.Context) error {
-	out, err := exec.CommandContext(ctx, modprobeBin, "-c", "0").CombinedOutput()
+func nvidiaModprobe(ctx context.Context, minor int) error {
+	out, err := exec.CommandContext(ctx, modprobeBin, "-c", strconv.Itoa(minor)).CombinedOutput()
 	if err == nil {
 		return nil
 	}
@@ -144,15 +189,27 @@ func nvidiaModprobe(ctx context.Context) error {
 
 // awaitGPU is the guard as the manager uses it.
 func (m *Manager) awaitGPU(ctx context.Context, name string) error {
+	if m.gpu.Vendor != VendorNVIDIA {
+		return nil
+	}
+
+	minor, known := nvidiaMinor(procRoot, m.gpu.PCI)
+	if !known {
+		// The old answer, which is right on every machine with one card. Said
+		// in the log because on a machine with two it may not be.
+		m.logf(name, "the driver does not say which device node the card at %q is, assuming /dev/nvidia0",
+			m.gpu.PCI)
+	}
+
 	return nodeGuard{
 		Vendor: m.gpu.Vendor,
-		Nodes:  nvidiaNodes,
+		Nodes:  nvidiaNodesFor(minor),
 		Exists: func(path string) bool {
 			_, err := os.Stat(path)
 
 			return err == nil
 		},
-		Create: nvidiaModprobe,
+		Create: func(ctx context.Context) error { return nvidiaModprobe(ctx, minor) },
 		Log:    func(f string, a ...any) { m.logf(name, f, a...) },
 	}.run(ctx)
 }

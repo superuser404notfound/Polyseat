@@ -1,0 +1,11 @@
+Model: 		 NVIDIA GeForce RTX 4080
+IRQ:   		 134
+GPU UUID: 	 GPU-00000000-0000-0000-0000-000000000000
+Video BIOS: 	 95.03.1e.40.83
+Bus Type: 	 PCIe
+DMA Size: 	 47 bits
+DMA Mask: 	 0x7fffffffffff
+Bus Location: 	 0000:01:00.0
+Device Minor: 	 0
+GPU Firmware: 	 615.71.09
+GPU Excluded:	 No
