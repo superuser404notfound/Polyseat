@@ -82,15 +82,33 @@ func selfSigned() (certPEM, keyPEM []byte, err error) {
 		names = append(names, hostname)
 	}
 
+	// A server certificate and nothing more: not a CA, and not allowed to sign
+	// certificates. It used to be both, and that is harmless for as long as
+	// people only click through the warning. It stops being harmless the
+	// moment somebody does the tidier thing and imports it as trusted, which is
+	// what the warning invites: they have then installed a root authority
+	// whose key sits on this machine, and anybody who ever reads key.pem can
+	// issue a certificate for any site on the internet that their browser
+	// accepts without a word.
+	//
+	// Browsers accept a self signed leaf the same way, after the same one
+	// click, and Go's verifier accepts one placed in RootCAs, which the test
+	// checks. KeyEncipherment went with it: it describes RSA key transport and
+	// means nothing for an ECDSA key.
+	//
+	// Certificates already on disk are left alone. EnsureCertificate keeps what
+	// it finds, which is deliberate, and replacing every installation's
+	// certificate to close a door that only opens if somebody imported it
+	// would make every browser ask again, on every machine, at once.
 	template := x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: "Polyseat", Organization: []string{"Polyseat"}},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().AddDate(10, 0, 0),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		IsCA:                  true,
+		IsCA:                  false,
 		DNSNames:              names,
 		IPAddresses:           localAddresses(),
 	}
