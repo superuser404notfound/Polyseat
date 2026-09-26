@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1235,10 +1236,15 @@ func (m *Manager) checkOrigins(ctx context.Context, name string, addresses map[s
 	// a seat that was already running. Read what is actually in the seat rather
 	// than guessing, once.
 	if known == nil {
-		conf, err := m.client.ReadFile(name, SunshineConfigPath)
-		if err != nil {
+		// Read as the player: the file is in the player's home, and the
+		// daemon's file API reads as root and follows a link put in its place.
+		out, code, err := m.client.Try(ctx, name,
+			asPlayerFor(scanPatience, "cat", "--", SunshineConfigPath)...)
+		if err != nil || code != 0 {
 			return
 		}
+
+		conf := []byte(out)
 
 		known = ParseOrigins(conf)
 		running = known
@@ -1723,7 +1729,7 @@ func (m *Manager) readSession(ctx context.Context, name string) (*Session, strea
 
 	// One command for both, so that the answer cannot come from two different
 	// moments.
-	out, code, err := m.client.Try(ctx, name, m.asPlayer(name, "sh", "-c", streamCheck)...)
+	out, code, err := m.client.Try(ctx, name, m.sessionArgv(name, streamCheck)...)
 	if err != nil || code != 0 {
 		return nil, streamUnknown
 	}
@@ -1830,12 +1836,28 @@ echo '%s'
 exit 0`, markUnits, markOutput, uid, markStream, streamCheck)
 }
 
+// sessionPatience is how long a look at the session may take inside the seat.
+//
+// Shorter than quickTimeout, so that the seat ends the command before this side
+// gives up on it. Both scripts end in a cat of the session file in the player's
+// home, and a FIFO in its place blocks that cat for good. This side's deadline
+// alone does not help: Incus does not end a command whose caller stopped
+// waiting, so every sweep would leave one more blocked process in the seat.
+const sessionPatience = 20 * time.Second
+
+// sessionArgv runs a script that reads the session as the player, bounded
+// inside the seat.
+func (m *Manager) sessionArgv(name, script string) []string {
+	return m.asPlayer(name, "timeout", "-k", "5",
+		strconv.Itoa(int(sessionPatience/time.Second)), "sh", "-c", script)
+}
+
 // probeSession runs sessionProbe in a seat.
 func (m *Manager) probeSession(ctx context.Context, name string) sessionReading {
 	ctx, cancel := quick(ctx)
 	defer cancel()
 
-	out, _, err := m.client.Try(ctx, name, m.asPlayer(name, "sh", "-c", sessionProbe(m.uidOf(name)))...)
+	out, _, err := m.client.Try(ctx, name, m.sessionArgv(name, sessionProbe(m.uidOf(name)))...)
 	if err != nil {
 		return sessionReading{sway: "unknown", sunshine: "unknown", stream: streamUnknown}
 	}
