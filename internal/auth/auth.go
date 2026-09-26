@@ -197,7 +197,7 @@ func (s *Store) setPassword(username, password string) error {
 		Username:   username,
 		Algorithm:  "argon2id",
 		Salt:       salt,
-		Hash:       argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen),
+		Hash:       hash([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen),
 		Time:       argonTime,
 		Memory:     argonMemory,
 		Threads:    argonThreads,
@@ -275,12 +275,34 @@ func (s *Store) Check(username, password string) bool {
 
 	// Hash regardless, so a wrong user name does not answer faster than a
 	// wrong password and give away which of the two was right.
-	hash := argon2.IDKey([]byte(password), creds.Salt, creds.Time, creds.Memory, creds.Threads, uint32(len(creds.Hash)))
+	got := hash([]byte(password), creds.Salt, creds.Time, creds.Memory, creds.Threads, uint32(len(creds.Hash)))
 
 	nameOK := subtle.ConstantTimeCompare([]byte(username), []byte(creds.Username)) == 1
-	hashOK := subtle.ConstantTimeCompare(hash, creds.Hash) == 1
+	hashOK := subtle.ConstantTimeCompare(got, creds.Hash) == 1
 
 	return nameOK && hashOK
+}
+
+// hashSlots is how many argon2 hashes may run at once, across every caller.
+//
+// Each one allocates 64 MiB, and nothing else bounds how many run: the limiter
+// counts per address, a login form is reachable without a session, and a burst
+// of parallel requests from a handful of addresses asked this daemon for a
+// gigabyte at a time. Two is enough for a household, where two people typing a
+// password in the same tenth of a second is already unusual; the rest wait
+// their turn rather than being refused, because a refusal would lock the
+// owner out for as long as somebody else keeps knocking.
+var hashSlots = make(chan struct{}, 2)
+
+// idKey is argon2.IDKey, as a variable so a test can count how many run at once.
+var idKey = argon2.IDKey
+
+// hash is argon2id behind hashSlots.
+func hash(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) []byte {
+	hashSlots <- struct{}{}
+	defer func() { <-hashSlots }()
+
+	return idKey(password, salt, iterations, memory, threads, keyLen)
 }
 
 // ------------------------------------------------------------------ sessions
@@ -365,6 +387,15 @@ const failWindow = 15 * time.Minute
 // attempt has to wait, doubling each time up to a cap.
 const freeAttempts = 5
 
+// maxSources is how many addresses the limiter remembers at once.
+//
+// Without a bound the map grew by one entry for every address that ever got a
+// password wrong and shrank only when that same address came back, so anybody
+// able to vary their source address could grow it for as long as they liked.
+// Four thousand is far past what a household produces in fifteen minutes and
+// small enough that sweeping it costs nothing.
+const maxSources = 4096
+
 type attempts struct {
 	count int
 	last  time.Time
@@ -380,7 +411,23 @@ func newLimiter() *limiter {
 	return &limiter{by: map[string]*attempts{}}
 }
 
+// bucket is the key an address is counted under.
+//
+// An IPv6 address is counted by its /64. That is the smallest block a network
+// is handed, and every host on it chooses its own low 64 bits, privacy
+// addresses included, so counting single addresses gave one machine as many
+// fresh budgets as it cared to generate.
+func bucket(source string) string {
+	ip := net.ParseIP(source)
+	if ip == nil || ip.To4() != nil {
+		return source
+	}
+
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
+}
+
 // Allow reports whether a source may try, and if not, how long it has to wait.
+// It records nothing; Attempt is what a caller about to check a password uses.
 //
 // argon2id already caps guessing at a few attempts a second per core, which is
 // most of the protection. This exists so that a run at it also stops being
@@ -391,13 +438,17 @@ func (s *Store) Allow(source string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	a, ok := l.by[source]
+	return l.allow(bucket(source))
+}
+
+func (l *limiter) allow(key string) (bool, time.Duration) {
+	a, ok := l.by[key]
 	if !ok {
 		return true, 0
 	}
 
 	if time.Since(a.last) > failWindow {
-		delete(l.by, source)
+		delete(l.by, key)
 
 		return true, 0
 	}
@@ -409,6 +460,29 @@ func (s *Store) Allow(source string) (bool, time.Duration) {
 	return true, 0
 }
 
+// Attempt is Allow and Failed in one step: it answers whether a source may
+// try, and if it may, counts the try as a failure before the password has been
+// looked at. A correct password then clears it with Succeeded.
+//
+// Counted in advance because counting afterwards counted nothing that was
+// still running. The hash takes a tenth of a second, and every request that
+// arrived inside it found the same clean record, so a burst of parallel
+// guesses all went through before the first of them had been written down.
+func (s *Store) Attempt(source string) (bool, time.Duration) {
+	l := s.limiter
+	key := bucket(source)
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	ok, wait := l.allow(key)
+	if ok {
+		l.failed(key)
+	}
+
+	return ok, wait
+}
+
 // Failed records a failed attempt.
 func (s *Store) Failed(source string) {
 	l := s.limiter
@@ -416,10 +490,18 @@ func (s *Store) Failed(source string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	a, ok := l.by[source]
+	l.failed(bucket(source))
+}
+
+func (l *limiter) failed(key string) {
+	a, ok := l.by[key]
 	if !ok || time.Since(a.last) > failWindow {
+		if !ok {
+			l.makeRoom()
+		}
+
 		a = &attempts{}
-		l.by[source] = a
+		l.by[key] = a
 	}
 
 	a.count++
@@ -431,6 +513,37 @@ func (s *Store) Failed(source string) {
 	}
 }
 
+// makeRoom keeps the map under maxSources before a new source is added.
+//
+// Expired records go first, which on any real network is all it ever has to
+// do. Only a map still full of live records loses the one heard from longest
+// ago. That does let somebody with thousands of addresses push an older record
+// out, and the alternative, refusing sources the map has no room for, would
+// let the same somebody lock out everybody else instead, which is worse.
+func (l *limiter) makeRoom() {
+	if len(l.by) < maxSources {
+		return
+	}
+
+	var oldest string
+
+	for key, a := range l.by {
+		if time.Since(a.last) > failWindow {
+			delete(l.by, key)
+
+			continue
+		}
+
+		if oldest == "" || a.last.Before(l.by[oldest].last) {
+			oldest = key
+		}
+	}
+
+	if len(l.by) >= maxSources && oldest != "" {
+		delete(l.by, oldest)
+	}
+}
+
 // Succeeded clears the record for a source.
 func (s *Store) Succeeded(source string) {
 	l := s.limiter
@@ -438,7 +551,7 @@ func (s *Store) Succeeded(source string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	delete(l.by, source)
+	delete(l.by, bucket(source))
 }
 
 // Source identifies a caller for rate limiting. The address only, never a

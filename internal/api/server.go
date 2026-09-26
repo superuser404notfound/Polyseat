@@ -254,10 +254,11 @@ type loginRequest struct {
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	source := auth.Source(r)
 
-	if ok, wait := s.auth.Allow(source); !ok {
-		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-		fail(w, http.StatusTooManyRequests,
-			fmt.Errorf("too many attempts, wait %d seconds", int(wait.Seconds())+1))
+	// Counted as a failure from here on, before the hash, and cleared below
+	// if the password turns out right. See Attempt for why afterwards was too
+	// late.
+	if ok, wait := s.auth.Attempt(source); !ok {
+		tooMany(w, wait)
 
 		return
 	}
@@ -270,8 +271,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.auth.Check(req.Username, req.Password) {
-		s.auth.Failed(source)
-		s.log.Warn("failed login", "source", source, "username", req.Username)
+		// Without the name that was typed. It was in this line once, and the
+		// field people most often type their password into by mistake is the
+		// one above the password field: a failed login then wrote a password,
+		// in clear, into a journal that more people can read than this file.
+		s.log.Warn("failed login", "source", source)
 
 		// One message for both a wrong name and a wrong password, so it does
 		// not confirm which half was right.
@@ -285,6 +289,13 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	s.setSession(w, s.auth.Issue())
 
 	writeJSON(w, http.StatusOK, map[string]string{"username": req.Username})
+}
+
+// tooMany is the answer to a source the limiter has told to wait.
+func tooMany(w http.ResponseWriter, wait time.Duration) {
+	w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+	fail(w, http.StatusTooManyRequests,
+		fmt.Errorf("too many attempts, wait %d seconds", int(wait.Seconds())+1))
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -443,11 +454,25 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 
 	// Asked for again even though the caller is already logged in, so that a
 	// borrowed browser cannot be turned into a permanent one.
+	//
+	// Through the limiter, which this was not: a borrowed browser is exactly
+	// the one that has a session and not the password, and without it this
+	// was a way to guess at full speed with no user name needed.
+	source := auth.Source(r)
+
+	if ok, wait := s.auth.Attempt(source); !ok {
+		tooMany(w, wait)
+
+		return
+	}
+
 	if !s.auth.Check(s.auth.Username(), req.Current) {
 		fail(w, http.StatusUnauthorized, errors.New("the current password is wrong"))
 
 		return
 	}
+
+	s.auth.Succeeded(source)
 
 	// Typed twice, and compared here rather than only in the browser. A
 	// mistyped password locks somebody out of their own machine, and the file
@@ -1711,20 +1736,23 @@ func confirmPassword(store *auth.Store, needed bool, r *http.Request) error {
 
 	source := auth.Source(r)
 
-	if ok, wait := store.Allow(source); !ok {
-		// Not counted as a failure. This attempt was never tested against the
-		// password, and counting it would let a locked out address extend its
-		// own lockout by continuing to knock, which punishes nobody who matters.
+	// A refusal here is not counted as a failure. This attempt was never
+	// tested against the password, and counting it would let a locked out
+	// address extend its own lockout by continuing to knock, which punishes
+	// nobody who matters.
+	//
+	// An attempt that is let through is counted, and counted now rather than
+	// once the answer is known. The first version of this left the counting to
+	// the handler and the guard was defenceless anywhere else: Allow counts
+	// nothing on its own, so a hundred wrong passwords in a row were never
+	// slowed down, found by the test that tries exactly that. The second
+	// counted after the hash, which let every request that arrived during one
+	// through on the same clean record.
+	if ok, wait := store.Attempt(source); !ok {
 		return fmt.Errorf("too many attempts, wait %d seconds", int(wait.Seconds())+1)
 	}
 
-	// Recorded here rather than left to the caller. The first version of this
-	// left it to the handler and the guard was defenceless anywhere else: Allow
-	// counts nothing on its own, so a hundred wrong passwords in a row were
-	// never slowed down. Found by the test that tries exactly that.
 	wrong := func() error {
-		store.Failed(source)
-
 		return errors.New("wrong password")
 	}
 
