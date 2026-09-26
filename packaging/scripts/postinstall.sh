@@ -54,6 +54,13 @@ polyseat_url() {
 # the files are in place either way, and a failed reload is not a failed install.
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload >/dev/null 2>&1 || true
+
+    # The udev rule as well. On Arch a hook shipped with systemd does this for
+    # every package that puts a file in rules.d; apt and dnf have nothing that
+    # is sure to. A rule that is not reloaded keeps hiding seat devices by the
+    # old one, which since 0.32.0 misses the marks the broker leaves for a
+    # device it had to take back from the desktop.
+    udevadm control --reload >/dev/null 2>&1 || true
 fi
 
 if $upgrade; then

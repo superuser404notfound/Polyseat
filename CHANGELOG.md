@@ -210,9 +210,6 @@ longer hold a daemon restart for ten seconds.
 - The Library view refreshes at most every fifteen seconds on its own.
 - A script that drives the API from a browser page has to send JSON from that
   same page. `curl` and other clients that are not browsers are unaffected.
-- On Debian and Fedora the package does not reload udev, so after upgrading run
-  `sudo udevadm control --reload` to be certain the new hide rule is the one in
-  use.
 
 **Seats have to be built again for this: recipe generation 59.** Writing the
 home as the player, `squashfs-tools`, the bounded scans, the pointer, the Steam

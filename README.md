@@ -181,12 +181,12 @@ differently, the interface names the ones that are behind and offers one button
 to bring them up to date, at a moment you pick rather than in the middle of
 somebody's game.
 
-Three things in the interface reach root, and this is one: installing a release,
-preparing the machine, and removing Polyseat. `"web_update": false` in
-`/etc/polyseat/polyseatd.json` turns off the first two, `"web_uninstall": false`
-turns off the third, and `"update_needs_password": true` makes the first two ask
-for the interface password when they are pressed. Removing asks for it either
-way.
+Four things in the interface reach root, and this is one: installing a release,
+preparing the machine, removing Polyseat, and switching the LAN bridge.
+`"web_update": false` in `/etc/polyseat/polyseatd.json` turns off the first two,
+`"web_uninstall": false` the third and `"web_lan_bridge": false` the fourth, and
+`"update_needs_password": true` makes the first two ask for the interface
+password when they are pressed. Removing and the bridge ask for it either way.
 
 What the update never does is let the browser say what to install: it takes the
 release the daemon found itself, from this project's own downloads, and checks

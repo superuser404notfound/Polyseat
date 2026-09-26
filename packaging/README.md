@@ -97,11 +97,11 @@ Both scripts run `systemctl daemon-reload`, where systemd is the running init,
 because dpkg and rpm have no hook of their own that does it and a package built
 with nfpm does not bring one: without it a fresh install's `enable --now` could
 be refused as an unknown unit, and an upgrade left systemd on the previous unit
-file. **Neither runs `udevadm control --reload`.** pacman does that for the Arch
-package through systemd's own hook; on Debian and Fedora nothing in these two
-scripts does, so after an upgrade that changes `72-polyseat-hide.rules`,
-`sudo udevadm control --reload` is the way to be certain the running udev has
-the new rule rather than waiting for it to notice.
+file. postinstall also runs `udevadm control --reload`, for the same reason:
+pacman does that for the Arch package through systemd's own hook, and on Debian
+and Fedora nothing is sure to, so an upgrade that changes
+`72-polyseat-hide.rules` would otherwise leave the running udev on the old rule
+until it happened to notice.
 
 `nvidia-container-toolkit` is deliberately not a dependency of either. On an
 NVIDIA host it is required and on an AMD host it is a shim for a driver that is
