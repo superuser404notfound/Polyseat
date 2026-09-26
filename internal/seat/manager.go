@@ -107,6 +107,11 @@ type Manager struct {
 	// test. See filer in files.go.
 	files filer
 
+	// asker answers what a seat is behind on in place of Freshness, and is nil
+	// everywhere except in a test, for the same reason libraries is a seam:
+	// the real one runs pacman in a container.
+	asker func(ctx context.Context, name string) Freshness
+
 	subsMu sync.Mutex
 	subs   map[int]chan struct{}
 	nextID int
@@ -384,15 +389,18 @@ func (m *Manager) Run(ctx context.Context) error {
 		case <-sync.C:
 			m.syncLibrary(ctx)
 
+		// Handed off, both of them. A freshness pass is a pacman -Sy in every
+		// running seat, one after another, and run here it held up every
+		// lifecycle event and every sweep for as long as the mirrors took.
 		case <-first.C:
 			m.updateProton(ctx)
-			m.updateFreshness(ctx)
+			m.freshenSoon(ctx)
 
 		case <-proton.C:
 			m.updateProton(ctx)
 
 		case <-fresh.C:
-			m.updateFreshness(ctx)
+			m.freshenSoon(ctx)
 		}
 	}
 }
