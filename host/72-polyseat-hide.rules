@@ -73,6 +73,19 @@
 # So the tag goes as well, and ownership is pinned to root. The seats are
 # unaffected: Incus creates its own node inside the container with its own
 # mode, and the broker only reads /sys.
+# Whatever the broker has already found to be a seat's, by its creator rather
+# than its name. It marks such a device with a directory named after its
+# DEVPATH, and from then on every event for it lands here, so a retrigger no
+# longer opens it to the desktop again. The broker also announces the device as
+# removed and added once, when this file did not hide it at creation: the
+# desktop's libinput and Steam let go of it on the remove, and the add comes
+# back through this line. That is the only way this file reaches a uinput
+# device the name list below does not cover, since who created one cannot be
+# asked from in here. The DEVPATH and not the node name, because node names are
+# reused and inputN and HID instance numbers are not.
+SUBSYSTEM=="input|hidraw", TEST=="/run/polyseat/sealed$devpath", \
+  GOTO="polyseat_hide"
+
 # Structural, at the moment the device is created, for everything a seat makes
 # through uhid. That is every gamepad, and it is the case names cannot reach:
 # a raw HID node has no name attribute for a pattern to match on, so it stayed
@@ -88,7 +101,17 @@
 # given here and the uinput half still cannot.
 #
 # A controller the host itself pairs over Bluetooth is also a uhid device, and
-# the observer has no record of it, so it comes back unknown and is left alone.
+# the observer records it as the host's, so it comes back host and is left alone.
+#
+# The observer and this rule start from the same kernel event, and this rule is
+# usually first. So the helper waits for the observer's entry when one is on its
+# way: a device younger than the observer's probe, with an observer running.
+# That wait is milliseconds, and it is taken for the host's own controllers too,
+# because nothing can tell which device an entry will say until it is there.
+# Without it the observer, which slept fifty milliseconds before it even looked,
+# should have lost most of the time, and the gate below then did nothing for a
+# pad the name list does not cover. That is read off the timing of the two
+# paths, not measured: it needs root and a kprobe to watch.
 #
 # Both directories, and that is a bug fix rather than tidiness. This file named
 # /usr/local only, which is where install.sh puts the helpers from a checkout;
@@ -146,6 +169,9 @@ SUBSYSTEM=="hidraw", ENV{HID_NAME}=="libvirtualhid*",  GOTO="polyseat_hide"
 GOTO="polyseat_end"
 
 LABEL="polyseat_hide"
+# Left in the udev database for the broker, which announces a device again only
+# when this file did not hide it: one hidden here was never opened on the host.
+ENV{POLYSEAT_HIDDEN}="1"
 ENV{ID_INPUT}="", ENV{ID_INPUT_JOYSTICK}="", ENV{ID_INPUT_MOUSE}="", \
   ENV{ID_INPUT_KEYBOARD}="", ENV{ID_INPUT_KEY}="", ENV{ID_INPUT_TOUCHSCREEN}="", \
   ENV{ID_INPUT_TABLET}="", ENV{LIBINPUT_IGNORE_DEVICE}="1"

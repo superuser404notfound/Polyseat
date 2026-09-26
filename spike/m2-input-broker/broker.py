@@ -59,6 +59,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import stat as statmod
 import subprocess
 import sys
@@ -67,7 +68,18 @@ import time
 import device_owner
 import uhid_observer
 
+SYS_ROOT = "/sys"
 SYS_INPUT = "/sys/class/input"
+DEV_ROOT = "/dev"
+
+# Where the broker marks a device the host's udev rule is to hide from now on,
+# as a directory named after its DEVPATH. Kept in step with the TEST line in
+# host/72-polyseat-hide.rules.
+SEALED = "/run/polyseat/sealed"
+
+# The host's udev database, where the rule leaves POLYSEAT_HIDDEN=1 on every
+# device it hid.
+UDEV_DB = "/run/udev/data"
 
 # Capability bits that suffice for classification.
 EV_KEY, EV_REL, EV_ABS = 0x01, 0x02, 0x03
@@ -497,7 +509,9 @@ def hidraw_of(node):
     """
     path = os.path.realpath(f"{SYS_INPUT}/{node}")
 
-    while path and path != "/sys":
+    # Up to /sys and no further. "/" as well, because a path that never passes
+    # through /sys would otherwise walk up forever: dirname("/") is "/".
+    while path and path not in (SYS_ROOT, "/"):
         listing = os.path.join(path, "hidraw")
 
         if os.path.isdir(listing):
@@ -613,6 +627,147 @@ def seal_path(path):
     return True
 
 
+def host_nodes(node):
+    """Every node on the host through which this device can be read.
+
+    The event node, and beside it whatever else the input handlers made of the
+    same device: a joystick node for a gamepad, a legacy mouse node for a
+    pointer. Then the raw HID node, when the device came through uhid.
+
+    The joystick node was missing here, and it is the one that matters most for
+    a controller. udev hands the desktop user a gamepad through the uaccess tag
+    on js as well as on event, and js is exactly how Steam finds a controller,
+    so sealing only the event node left a seat's pad open to the host's Steam
+    whenever the rule had not hidden it at creation.
+
+    Each entry is the node's path under /dev, its DEVPATH, and its device
+    number, which names its entry in the udev database.
+    """
+    found = []
+    real = os.path.realpath(f"{SYS_INPUT}/{node}")
+    parent = os.path.dirname(real)
+
+    try:
+        siblings = sorted(os.listdir(parent))
+    except OSError:
+        siblings = [node]
+
+    # The event node first, then its siblings, so a failure part of the way
+    # through has at least done the node a compositor opens.
+    for entry in [node] + [e for e in siblings if e != node]:
+        if not entry.startswith(("event", "js", "mouse")):
+            continue
+        number = read(f"{parent}/{entry}/dev")
+        if not number:
+            continue
+        found.append({"path": f"{DEV_ROOT}/input/{entry}",
+                      "devpath": f"{parent}/{entry}".removeprefix(SYS_ROOT),
+                      "dev": number})
+
+    raw = hidraw_of(node)
+    if raw:
+        real_raw = os.path.realpath(f"{SYS_ROOT}/class/hidraw/{raw}")
+        number = read(f"{real_raw}/dev")
+        if number:
+            found.append({"path": f"{DEV_ROOT}/{raw}",
+                          "devpath": real_raw.removeprefix(SYS_ROOT),
+                          "dev": number})
+
+    return found
+
+
+def mark(devpath):
+    """Tell the host's udev rule that this device is a seat's, for good.
+
+    The rule cannot find that out for a uinput device by itself: the answer
+    needs pidfd_getfd, which udev's workers are not allowed. So without this a
+    device the name list does not cover is open to the desktop again after
+    every udev retrigger, a package upgrade among them, until the next pass
+    here, and the re-announcement below would bring it straight back.
+
+    Named after the DEVPATH rather than the node, because node names are handed
+    out again and a mark left behind would then hide the host's next gamepad.
+    The inputN and HID instance numbers in a DEVPATH are never reused before a
+    reboot, and /run does not survive one.
+    """
+    try:
+        os.makedirs(f"{SEALED}{devpath}", exist_ok=True)
+    except OSError as exc:
+        print(f"  ! {devpath} could not be marked for the host's udev: {exc}")
+
+
+def unmark_gone():
+    """Drop the marks of devices that no longer exist.
+
+    Only for tidiness, since a stale mark can never match again. Every broker
+    on the host shares the directory and each only removes what the kernel has
+    already removed, so they cannot take one another's marks away.
+    """
+    for dirpath, _dirs, _files in os.walk(SEALED, topdown=False):
+        rel = dirpath[len(SEALED):]
+        if rel and not os.path.exists(f"{SYS_ROOT}{rel}"):
+            shutil.rmtree(dirpath, ignore_errors=True)
+
+
+def hidden_by_rule(number):
+    """Whether the host's udev rule hid this node when it last handled it."""
+    try:
+        with open(f"{UDEV_DB}/c{number}") as fh:
+            return any(line.strip() == "E:POLYSEAT_HIDDEN=1" for line in fh)
+    except OSError:
+        return False
+
+
+def udev_trigger(action, devpath):
+    subprocess.run(["udevadm", "trigger", f"--action={action}",
+                    f"{SYS_ROOT}{devpath}"],
+                   check=False, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+
+
+# DEVPATHs already announced again, so that it happens once per device however
+# the udev database looks afterwards. A rule file older than this broker never
+# writes POLYSEAT_HIDDEN, and without this the host would see the device leave
+# and come back twice a second.
+_reannounced = set()
+
+
+def reannounce(entry):
+    """Make the host desktop let go of a device it has already opened.
+
+    Changing the node's owner, mode and access list stops the next open and
+    does nothing to a descriptor that is already open, and on the host the
+    first open is immediate: libinput in the compositor takes every new input
+    device through logind's TakeDevice, which opens it as root however the
+    node is set, and Steam opens a new pad the moment it appears. Both keep
+    that descriptor. The kernel's way to cut it, EVIOCREVOKE, works only on a
+    descriptor its holder calls it on, and hidraw has nothing like it.
+
+    What does make them let go is the device leaving. Both listen to udev, and
+    on a remove event libinput drops the device and closes it and Steam closes
+    its handle. So the device is announced as removed and then as added again,
+    which udev handles as a new device: the add passes through the rule with
+    the mark from above in place and comes out hidden, so nothing on the host
+    picks it up the second time.
+
+    Both events are synthetic. The kernel device and its node stay where they
+    are, udev never deletes a node on remove, and the seat's copy of it, which
+    Incus placed in the container by path, is not touched. Only a node the rule
+    did not hide at creation is announced again: one it hid was never opened on
+    the host, and taking it away and back would be churn for nothing.
+    """
+    if entry["devpath"] in _reannounced:
+        return False
+    _reannounced.add(entry["devpath"])
+
+    if hidden_by_rule(entry["dev"]):
+        return False
+
+    udev_trigger("remove", entry["devpath"])
+    udev_trigger("add", entry["devpath"])
+    return True
+
+
 def seal(node):
     """Take a device that belongs to a seat away from the host desktop.
 
@@ -627,23 +782,37 @@ def seal(node):
     already has it. A name list is an allowlist of the tools somebody thought
     of, and it failed the first time a seat ran something new.
 
-    **Both nodes, not only the event one.** A gamepad made through uhid also
+    **Every node, not only the event one.** A gamepad made through uhid also
     appears as a raw HID node, and that is the one Steam reads a DualSense
     through. The event device was being pinned to root while its hidraw sibling
     kept an access control entry for the desktop user, put there by Sunshine's
     own udev rules, which are written for a Sunshine running on the machine
     rather than in a container. So the seat's controller was reaching the host's
-    Steam the whole time, through a door nobody had looked at.
+    Steam the whole time, through a door nobody had looked at. The joystick
+    node was the same door again, see host_nodes.
 
     The permissions alone are not the test either. logind grants the desktop
     user an entry through the uaccess tag, and that survives a mode change, so
     a node can read root:root 0600 and still be open to somebody.
-    """
-    changed = seal_path(f"/dev/input/{node}")
 
-    raw = hidraw_of(node)
-    if raw:
-        changed = seal_path(f"/dev/{raw}") or changed
+    Three steps per node and the order matters. The mark first, so that any
+    udev event from here on hides the device, the permissions second, and the
+    re-announcement last, because the add it ends with must find both in place.
+    """
+    nodes = host_nodes(node)
+
+    for entry in nodes:
+        mark(entry["devpath"])
+
+    changed = False
+    for entry in nodes:
+        changed = seal_path(entry["path"]) or changed
+
+    for entry in nodes:
+        if reannounce(entry):
+            print(f"  * {os.path.basename(entry['path']):<10} announced again, "
+                  f"so the host desktop lets go of it")
+            changed = True
 
     return changed
 
@@ -786,21 +955,29 @@ def main():
     if stale:
         print(f"{stale} orphaned attachment(s) removed.\n")
 
+    unmark_gone()
+
     known = {}
     try:
         while True:
             current = attribute(scan(args.match), args.seat, tag, args.other_seat)
             for node, dev in current.items():
-                # Before attaching, and on every pass afterwards: a udev
+                # Before attaching, and on every pass afterwards. The mark
+                # seal() leaves makes a udev retrigger hide the device again,
+                # but only with a rule file that reads it; with an older one a
                 # retrigger puts the permissions back to what the name rules
                 # decided, and for a device no pattern matches that is open.
                 if seal(node):
                     print(f"  * {node:<10} taken off the host desktop ({dev['name']})")
                 if node not in known:
                     attach(backend, args.seat, dev)
+            gone = False
             for node, dev in list(known.items()):
                 if node not in current:
                     detach(backend, args.seat, node, dev)
+                    gone = True
+            if gone:
+                unmark_gone()
             if current != known:
                 save_state(args.seat, current)
             known = current

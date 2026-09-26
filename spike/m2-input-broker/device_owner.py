@@ -41,6 +41,7 @@ import os
 import re
 import stat
 import sys
+import time
 
 # Both are fixed misc devices.
 UINPUT_MAJOR, UINPUT_MINOR = 10, 223
@@ -177,16 +178,78 @@ def sysname_of_node(node):
     return os.path.basename(os.path.dirname(real))
 
 
-# The record the uhid observer keeps: HID device id to container name.
+# The record the uhid observer keeps: HID device id to container name, and null
+# for a device a process on the host made.
 UHID_OWNERS = "/run/polyseat/uhid-owners.json"
 
+# What the observer says about itself: its pid, and the highest HID instance
+# number that already existed when its probe went live. Kept in step with
+# OBSERVER_STATE in uhid_observer.py.
+UHID_OBSERVER = "/run/polyseat/uhid-observer.json"
+
+# How long a udev worker may wait for the observer to write a device down.
+#
+# The observer normally has its answer a few milliseconds after the kernel made
+# the device, and udev asks sooner than that: this helper is a Python process
+# udev starts for the event, and the observer only learns of the creation
+# through bpftrace. A second is some hundred times what the observer needs and
+# far inside udev's own limit for a program, which is minutes. It is only ever
+# spent in full when the observer died between writing down that it was alive
+# and writing down the device.
+UHID_WAIT = 1.0
+UHID_POLL = 0.005
+
 # A HID device directory is called bus:vendor:product.instance, all hexadecimal,
-# and that string is the key the observer files it under.
-HID_ID_RE = re.compile(r"/([0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4})/")
+# and that string is the key the observer files it under. The instance is a
+# counter the kernel never hands out twice, printed with at least four digits,
+# so it can be longer.
+HID_ID_RE = re.compile(r"/([0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}\.([0-9A-Fa-f]{4,}))/")
 
 
-def uhid_owner(devpath):
-    """Which container created this device, according to the uhid observer.
+def _load_json(path):
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _observer_alive(pid):
+    """Whether the observer that wrote its record is still the one running.
+
+    By its command line rather than by the pid alone, because a pid left in a
+    file by an observer that crashed will belong to something else eventually,
+    and waiting on that would delay every uhid device for nothing.
+    """
+    try:
+        with open(f"/proc/{int(pid)}/cmdline", "rb") as fh:
+            return b"uhid_observer" in fh.read()
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _observer_owes(instance):
+    """Whether the observer will write this device down, so it is worth waiting.
+
+    Only a device the observer can have seen created: it is running, and the
+    device is younger than the moment its probe went live. Anything older was
+    there before the observer and will never be written down, which is every
+    device on a coldplug trigger, and waiting for those would stall every one
+    of them for the full second.
+    """
+    meta = _load_json(UHID_OBSERVER)
+    if not meta or not _observer_alive(meta.get("pid")):
+        return False
+    horizon = meta.get("horizon")
+    return isinstance(horizon, int) and instance > horizon
+
+
+def uhid_owner(devpath, action="add", wait=UHID_WAIT, poll=UHID_POLL,
+               clock=time.monotonic, sleep=time.sleep):
+    """Who created this device, according to the uhid observer.
+
+    Returns "container", "host", or None when nothing is known.
 
     This is the half of the structural answer that can be given inside udev.
     Asking a foreign process what it made needs pidfd_open and pidfd_getfd, and
@@ -197,24 +260,53 @@ def uhid_owner(devpath):
     process did it, keyed by the HID device id, which is also a component of
     every path underneath it. So an input node and a raw HID node belonging to
     the same gamepad both resolve to the same answer.
+
+    **It may have to wait, and that is the point of most of this function.**
+    The two race. The kernel creates the device, udev hears of it and starts
+    this helper, and that is a matter of a few milliseconds plus a Python start.
+    The observer learns of the same creation through bpftrace and then has to
+    find the new device in sysfs, and until 2026-09-26 it slept fifty
+    milliseconds before looking at all. So this will mostly have read the file
+    before the entry was in it and answered nothing, and a pad whose name is not
+    on the rule's list - a DualSense, which is called "Wireless Controller" like
+    a real one - went to the host desktop with the uaccess ACL until the
+    broker's next pass. That follows from the timing of the two paths and has
+    not been watched happening; watching it needs root and the kprobe.
+
+    The wait is kept to the case where an answer is actually coming, because
+    every uhid device goes through here, including a controller the host pairs
+    over Bluetooth, and waiting on one of those holds up its udev event. A
+    device the observer already wrote down, host or container, is answered at
+    once. One it can never write down, because it is older than the observer or
+    no observer runs, is answered at once. Only a device younger than the
+    observer's probe and not yet in its record is waited for, and that record
+    arrives within milliseconds, whoever made the device. A remove event never
+    waits: the device is gone and the observer may already have forgotten it.
     """
-    match = HID_ID_RE.search(devpath if devpath.endswith("/") else devpath + "/")
+    probe = devpath if devpath.endswith("/") else devpath + "/"
+    match = HID_ID_RE.search(probe)
     if not match:
         return None
+    hid, instance = match.group(1), int(match.group(2), 16)
 
-    try:
-        with open(UHID_OWNERS) as fh:
-            owners = json.load(fh)
-    except (OSError, ValueError):
-        return None
+    deadline = None
+    while True:
+        owners = _load_json(UHID_OWNERS)
+        if owners is not None and hid in owners:
+            return "container" if owners[hid] else "host"
 
-    if not isinstance(owners, dict):
-        return None
+        if deadline is None:
+            if (wait <= 0 or action == "remove" or "/uhid/" not in probe
+                    or not _observer_owes(instance)):
+                return None
+            deadline = clock() + wait
 
-    return owners.get(match.group(1))
+        if clock() >= deadline:
+            return None
+        sleep(poll)
 
 
-def udev(devpath):
+def udev(devpath, action="add"):
     """Answer, for one device, whether a container created it.
 
     This exists so that the udev rule which keeps a seat's input devices away
@@ -243,10 +335,18 @@ def udev(devpath):
     """
     # uhid first, because it is the one that works here and it covers both
     # halves of a gamepad.
-    owner = uhid_owner(devpath)
+    owner = uhid_owner(devpath, action)
 
     if owner:
-        print("POLYSEAT_OWNER=container")
+        print(f"POLYSEAT_OWNER={owner}")
+        return
+
+    # A uhid device the observer knows nothing about stays unknown. Asking
+    # every process on the machine for its uinput descriptors cannot change
+    # that, since no uinput descriptor made it, and costs a walk of /proc on
+    # every event of every Bluetooth controller.
+    if "/uhid/" in devpath:
+        print("POLYSEAT_OWNER=unknown")
         return
 
     node = os.path.basename(devpath.rstrip("/"))
@@ -273,7 +373,9 @@ def main():
 
     # udev calls this per device and reads one KEY=value line off stdout.
     if len(sys.argv) == 3 and sys.argv[1] == "--udev":
-        udev(sys.argv[2])
+        # udev hands the event's properties to the program as its
+        # environment, ACTION among them.
+        udev(sys.argv[2], os.environ.get("ACTION", "add"))
         return
 
     mapping = owners()
