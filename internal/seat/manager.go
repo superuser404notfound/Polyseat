@@ -2019,14 +2019,18 @@ func (m *Manager) startBroker(name string) {
 		argv = append(argv, "--other-seat", other)
 	}
 
+	// The callbacks before the process is published, not after. Once it is in
+	// rt.broker the next startBroker takes the branch above and starts it, and
+	// supervise reads OnState as it does, so setting them after the unlock was
+	// a write racing that read.
 	proc := supervise.New(argv)
-	rt.broker = proc
-	m.mu.Unlock()
-
 	proc.OnOutput = func(line string) { m.logf(name, "broker: %s", line) }
 	proc.OnState = func(state supervise.State) {
 		m.logf(name, "broker %s", state)
 	}
+
+	rt.broker = proc
+	m.mu.Unlock()
 
 	proc.Start()
 }

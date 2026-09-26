@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/superuser404notfound/Polyseat/internal/config"
 	"github.com/superuser404notfound/Polyseat/internal/incusx"
 )
 
@@ -990,6 +991,70 @@ func TestAPassOnATimerRunsAloneAndOffTheLoop(t *testing.T) {
 		}
 
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A seat has one broker process for as long as it has a runtime record, and
+// startBroker starts that one again rather than making another. That is what
+// lets supervise keep a broker that is still stopping and its replacement from
+// running side by side: Start waits for a Stop in progress on the same Process,
+// and could not wait for one on a different Process. Made a second time, a
+// Stop from the sweep and a start from the next one would be two brokers
+// polling one seat for as long as the first took to go.
+func TestASeatKeepsOneBrokerAcrossStops(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A helper that exits at once, so that supervise has something to start
+	// and restart without a Python and a container behind it.
+	m := &Manager{
+		cfg:   config.Config{Python: "/usr/bin/true", HelperDir: t.TempDir()},
+		store: store,
+		rt:    map[string]*runtime{},
+		subs:  map[int]chan struct{}{},
+	}
+
+	rt := m.runtimeOf("vince")
+
+	defer m.stopBroker("vince")
+
+	// Starts and stops from different goroutines at once, the first start
+	// among them, which is what the sweep, an event and an operation amount
+	// to. Every broker any of them saw is collected.
+	seen := make(chan any, 4*20)
+	done := make(chan struct{})
+
+	for range 4 {
+		go func() {
+			defer func() { done <- struct{}{} }()
+
+			for range 20 {
+				m.startBroker("vince")
+
+				m.mu.Lock()
+				seen <- rt.broker
+				m.mu.Unlock()
+
+				m.stopBroker("vince")
+			}
+		}()
+	}
+
+	for range 4 {
+		<-done
+	}
+
+	close(seen)
+
+	brokers := map[any]bool{}
+	for b := range seen {
+		brokers[b] = true
+	}
+
+	if len(brokers) != 1 {
+		t.Errorf("one seat had %d broker processes", len(brokers))
 	}
 }
 
