@@ -697,3 +697,321 @@ func TestPointerKeepsItsDefaultWhenTheFileSaysNothingUsable(t *testing.T) {
 		}
 	}
 }
+
+// The driver for the rescan. It swaps evdev's device list for a scripted one,
+// so a pad can be made to vanish at exactly the question that used to kill the
+// helper, and reports what the helper followed, what it opened and whether
+// everything it did not keep was closed again.
+const rescanDriver = `
+import errno, importlib.util, json, sys
+
+spec = importlib.util.spec_from_file_location("padpointer", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+e = module.ecodes
+script = json.loads(sys.argv[2])
+known = set(json.loads(sys.argv[3]))
+opened, devices = [], []
+
+def gone():
+    return OSError(errno.ENODEV, "No such device")
+
+class Device:
+    def __init__(self, path):
+        opened.append(path)
+        self.kind = script[path]
+        if self.kind == "unopenable":
+            raise gone()
+        self.path, self.name, self.fd = path, path, len(opened)
+        self.asked, self.closed = 0, False
+        devices.append(self)
+
+    def capabilities(self):
+        self.asked += 1
+        # "vanishes" goes during the first question, which is is_pad();
+        # "vanishes later" answers that and goes during the second, which is
+        # the range of the axes.
+        if self.kind == "vanishes" or (self.kind == "vanishes later" and self.asked > 1):
+            raise gone()
+        if self.kind == "keyboard":
+            return {e.EV_KEY: [e.KEY_A]}
+        return {e.EV_KEY: [e.BTN_SOUTH], e.EV_ABS: [(e.ABS_X, None)]}
+
+    def close(self):
+        self.closed = True
+
+module.evdev.list_devices = lambda: sorted(script)
+module.evdev.InputDevice = Device
+module.log = lambda message: None
+
+followed = [device.path for device, _ in module.pads(known)]
+leaked = [d.path for d in devices if d.path not in followed and not d.closed]
+
+print(json.dumps({"followed": followed, "opened": opened, "leaked": leaked}))
+`
+
+type rescanRun struct {
+	Followed []string `json:"followed"`
+	Opened   []string `json:"opened"`
+	Leaked   []string `json:"leaked"`
+}
+
+func replayRescan(t *testing.T, devices map[string]string, known []string) rescanRun {
+	t.Helper()
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("SKIPPED: no python3, so the helper's behaviour is unverified here")
+	}
+
+	path := filepath.Join(t.TempDir(), "pad-pointer.py")
+	if err := os.WriteFile(path, asset("assets/pad-pointer.py"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	script, _ := json.Marshal(devices)
+	if known == nil {
+		known = []string{}
+	}
+	knownJSON, _ := json.Marshal(known)
+
+	out, err := exec.Command(python, "-c", rescanDriver, path, string(script), string(knownJSON)).Output()
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok && len(exit.Stderr) > 0 {
+			// A traceback here is the bug itself rather than a helper that
+			// could not be loaded, so it fails instead of skipping. Loading is
+			// already proven by every other test in this file.
+			t.Fatalf("the rescan raised: %s", exit.Stderr)
+		}
+
+		t.Fatal(err)
+	}
+
+	var run rescanRun
+	if err := json.Unmarshal(out, &run); err != nil {
+		t.Fatalf("the driver printed %q", out)
+	}
+
+	return run
+}
+
+// The crash this is for. Sunshine takes a client's pad away the moment the
+// stream stops, and the rescan every two seconds can be in the middle of asking
+// that pad about itself. Only the open was guarded, so the capabilities ioctl
+// failing with ENODEV ended the helper for the rest of the session, and the
+// session starts it once.
+func TestPointerSurvivesAPadVanishingDuringTheRescan(t *testing.T) {
+	run := replayRescan(t, map[string]string{
+		"/dev/input/event1": "pad",
+		"/dev/input/event2": "vanishes",
+		"/dev/input/event3": "vanishes later",
+		"/dev/input/event4": "unopenable",
+		"/dev/input/event5": "keyboard",
+		"/dev/input/event6": "pad",
+	}, nil)
+
+	if strings.Join(run.Followed, ",") != "/dev/input/event1,/dev/input/event6" {
+		t.Errorf("followed %v, want the two pads that stayed", run.Followed)
+	}
+
+	if len(run.Leaked) != 0 {
+		t.Errorf("left %v open without following them", run.Leaked)
+	}
+}
+
+// A pad already followed is not opened again every two seconds only to be
+// closed.
+func TestPointerDoesNotReopenPadsItAlreadyFollows(t *testing.T) {
+	run := replayRescan(t, map[string]string{
+		"/dev/input/event1": "pad",
+		"/dev/input/event2": "pad",
+	}, []string{"/dev/input/event1"})
+
+	if strings.Join(run.Opened, ",") != "/dev/input/event2" {
+		t.Errorf("opened %v, want only the pad not yet followed", run.Opened)
+	}
+
+	if strings.Join(run.Followed, ",") != "/dev/input/event2" {
+		t.Errorf("followed %v, want only the new pad", run.Followed)
+	}
+}
+
+// The driver for how long the loop sleeps and how much time one frame of
+// movement may stand for.
+const waitDriver = `
+import importlib.util, json, sys
+
+spec = importlib.util.spec_from_file_location("padpointer", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+print(json.dumps({
+    "interval": module.INTERVAL,
+    "rescan": module.RESCAN,
+    "max_step": module.MAX_STEP,
+    "idle": module.wait_for(False, False, 0.5),
+    "overdue": module.wait_for(False, False, 5.0),
+    "moving": module.wait_for(True, False, 0.5),
+    "holding": module.wait_for(False, True, 0.5),
+}))
+`
+
+// A seat nobody is holding a controller in used to wake ninety times a second
+// for the whole session. It sleeps until the next rescan now, and still turns
+// over every frame while a stick is off centre or a chord is counting, because
+// both of those happen on the clock rather than on an event.
+func TestPointerOnlyTicksWhileSomethingIsOnTheClock(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("SKIPPED: no python3, so the helper's behaviour is unverified here")
+	}
+
+	path := filepath.Join(t.TempDir(), "pad-pointer.py")
+	if err := os.WriteFile(path, asset("assets/pad-pointer.py"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command(python, "-c", waitDriver, path).Output()
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok && len(exit.Stderr) > 0 {
+			t.Skipf("SKIPPED: the helper could not be loaded here: %s", exit.Stderr)
+		}
+
+		t.Fatal(err)
+	}
+
+	var got map[string]float64
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("the driver printed %q", out)
+	}
+
+	if want := got["rescan"] - 0.5; got["idle"] != want {
+		t.Errorf("idle, the loop sleeps %v, want %v until the next rescan", got["idle"], want)
+	}
+
+	if got["overdue"] != 0 {
+		t.Errorf("with a rescan overdue the loop sleeps %v, want 0", got["overdue"])
+	}
+
+	for _, name := range []string{"moving", "holding"} {
+		if got[name] != got["interval"] {
+			t.Errorf("%s, the loop sleeps %v, want one frame of %v", name, got[name], got["interval"])
+		}
+	}
+
+	// The sleep that ends with the stick leaving the centre must not be paid
+	// out as movement, or the first touch throws the pointer across the screen.
+	if got["max_step"] >= got["rescan"]/10 {
+		t.Errorf("one frame may stand for %v seconds, which lets the first touch after an idle sleep jump", got["max_step"])
+	}
+}
+
+// runPointerLoop runs the line the session starts the pointer helper with,
+// against a stand-in helper that follows a plan: each run lasts the given
+// number of seconds on a fake clock and then exits with the given status. It
+// reports how many times the helper was started and how the loop ended.
+func runPointerLoop(t *testing.T, plan string) (runs int, status int) {
+	t.Helper()
+
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("SKIPPED: no sh")
+	}
+
+	out, err := render("assets/sway.config", map[string]string{
+		"Resolution": "1920x1080",
+		"Keyboard":   Keyboard{}.swayInput(),
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	const helper = "/usr/local/bin/polyseat-pad-pointer"
+
+	var line string
+	for _, l := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(l, "exec ") && strings.Contains(l, helper) {
+			line = l
+		}
+	}
+
+	// sway hands everything after exec to sh -c with the quotes left in, so
+	// the inner script is what sh really runs.
+	quoted := regexp.MustCompile(`^exec sh -c '(.*)'$`).FindStringSubmatch(line)
+	if quoted == nil {
+		t.Fatalf("the session starts the helper as %q, not through the restart loop", line)
+	}
+
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("clock", "1000\n")
+	write("plan", plan)
+	write("runs", "")
+	write("date", "#!/bin/sh\ncat \""+dir+"/clock\"\n")
+	write("sleep", "#!/bin/sh\n")
+	write("helper", `#!/bin/sh
+d="`+dir+`"
+echo run >> "$d/runs"
+set -- $(head -n 1 "$d/plan")
+sed -i 1d "$d/plan"
+echo $(( $(cat "$d/clock") + $1 )) > "$d/clock"
+exit $2
+`)
+
+	script := strings.ReplaceAll(quoted[1], helper, filepath.Join(dir, "helper"))
+	cmd := exec.Command(sh, "-c", script)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"))
+
+	err = cmd.Run()
+	if exit, ok := err.(*exec.ExitError); ok {
+		status = exit.ExitCode()
+	} else if err != nil {
+		t.Fatal(err)
+	}
+
+	recorded, _ := os.ReadFile(filepath.Join(dir, "runs"))
+
+	return strings.Count(string(recorded), "run"), status
+}
+
+// The second layer under the rescan fix: a helper that ran for a while and
+// then died is started again, because the session starts it only once and a
+// seat without it has no pointer until it restarts.
+func TestPointerHelperIsStartedAgainAfterDying(t *testing.T) {
+	runs, status := runPointerLoop(t, "600 1\n600 1\n600 0\n")
+
+	if runs != 3 {
+		t.Errorf("the helper ran %d times, want 3: twice dying after a while, then ending cleanly", runs)
+	}
+
+	if status != 0 {
+		t.Errorf("the loop ended with %d after the helper ended cleanly", status)
+	}
+}
+
+// A helper that cannot run at all dies straight away, and restarting that
+// would write the same traceback into the journal every two seconds for the
+// rest of the session.
+func TestPointerHelperThatCannotStartIsLeftAlone(t *testing.T) {
+	for name, plan := range map[string]string{
+		"dies at once":                  "1 1\n600 0\n",
+		"dies at once after a good run": "600 1\n1 1\n600 0\n",
+	} {
+		runs, status := runPointerLoop(t, plan)
+
+		want := strings.Count(plan, "\n") - 1
+		if runs != want {
+			t.Errorf("%s: the helper ran %d times, want %d", name, runs, want)
+		}
+
+		if status == 0 {
+			t.Errorf("%s: the loop gave up with status 0, which reads as a clean end", name)
+		}
+	}
+}

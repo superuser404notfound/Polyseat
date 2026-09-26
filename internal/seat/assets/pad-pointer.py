@@ -115,7 +115,26 @@ CONFIG = os.path.expanduser("~/.config/polyseat/pointer.conf")
 # Scroll steps per second at full deflection.
 SCROLL_SPEED = 12.0
 
+# How often the loop turns over while something depends on the clock: a stick
+# held off centre, which moves the pointer a little every frame, or a chord
+# being held, which fires when its second is up.
+#
+# Only then. The rest of the time nothing changes without an event, and events
+# wake the loop on their own, so it sleeps until the next rescan is due. The
+# first version turned over ninety times a second for the whole session, in
+# every seat, whether anybody was holding a controller or not.
 INTERVAL = 1.0 / 90.0
+
+# How often the gamepads are listed again. See rescan() in main().
+RESCAN = 2.0
+
+# The longest stretch of time one frame of movement may stand for.
+#
+# The loop can sleep for up to RESCAN, and the event that wakes it is usually
+# the stick leaving the centre. Multiplying the whole sleep by the speed would
+# throw the pointer most of the way across the screen on the first touch. Four
+# frames is enough headroom for a loop that ran late and far too little to jump.
+MAX_STEP = 4 * INTERVAL
 
 KEYBOARD = "/usr/local/bin/polyseat-keyboard"
 
@@ -443,21 +462,63 @@ def is_pad(device):
     return ecodes.BTN_SOUTH in keys and ecodes.ABS_X in axes
 
 
-def pads():
+def pads(known=()):
+    """Gamepads not already followed, each with the range of its axes.
+
+    **Every question put to a device is inside the try, not only the open.** A
+    pad can go away between being listed and being asked about, and it does:
+    Sunshine takes a client's pad away the moment the stream stops, which is
+    exactly when the rescan every two seconds is most likely to be looking.
+    The capabilities are an ioctl like the open is, and one of them failing
+    with ENODEV used to end this whole process for the rest of the session,
+    because the session starts it once and nothing starts it again.
+
+    A device that fails is closed and skipped. If it is still there, the next
+    rescan asks again.
+
+    Paths already followed are skipped before they are opened rather than
+    after. Opening an event device is cheap, but doing it for every pad every
+    two seconds only to close it again was work with no answer in it.
+    """
     found = []
 
     for path in evdev.list_devices():
-        try:
-            device = evdev.InputDevice(path)
-        except OSError:
+        if path in known:
             continue
 
-        if is_pad(device):
-            found.append(device)
-        else:
-            device.close()
+        device = None
+
+        try:
+            device = evdev.InputDevice(path)
+
+            if not is_pad(device):
+                device.close()
+                continue
+
+            found.append((device, axis_info(device)))
+        except OSError as exc:
+            if device is not None:
+                log(f"skipped {path}, which went away while it was being asked about: {exc}")
+
+                try:
+                    device.close()
+                except OSError:
+                    pass
 
     return found
+
+
+def wait_for(moving, holding, since_scan):
+    """How long the loop may sleep before it has something to do on its own.
+
+    moving is a stick off centre while the pointer is on, holding is a chord
+    that is counting towards its second. Either needs the loop every frame.
+    Otherwise the only thing on the clock is the next rescan.
+    """
+    if moving or holding:
+        return INTERVAL
+
+    return max(0.0, RESCAN - since_scan)
 
 
 def hat_keys(code, value):
@@ -813,14 +874,10 @@ def main():
         meant the helper worked until the first person stopped playing and was
         dead to everyone afterwards.
         """
-        for device in pads():
-            if device.path in paths:
-                device.close()
-                continue
-
+        for device, info in pads(paths):
             paths.add(device.path)
             by_fd[device.fd] = device
-            ranges[device.fd] = axis_info(device)
+            ranges[device.fd] = info
             log(f"following {device.name}")
 
     rescan()
@@ -855,7 +912,10 @@ def main():
 
     while True:
         watching = [sway.events.fileno()] if sway.events else []
-        readable, _, _ = select(list(by_fd) + watching, [], [], INTERVAL)
+        moving = active and any(axes.values())
+        timeout = wait_for(moving, chord.since is not None,
+                           time.monotonic() - last_scan)
+        readable, _, _ = select(list(by_fd) + watching, [], [], timeout)
 
         if sway.events and sway.events.fileno() in readable:
             # Several events can arrive for one change, so the tree is asked
@@ -892,30 +952,51 @@ def main():
 
             try:
                 events = list(device.read())
+            except (BlockingIOError, InterruptedError):
+                # Nothing to read after all. Not a reason to give up a pad.
+                continue
             except OSError as exc:
+                # Any other failure drops the pad rather than the helper. This
+                # used to raise for everything but ENODEV and EBADF, and a
+                # raise here ends the process for the rest of the session: the
+                # session starts it once and nothing starts it again. A pad
+                # dropped by mistake costs two seconds, because it is still
+                # listed and the next rescan follows it again.
                 if exc.errno in (errno.ENODEV, errno.EBADF):
                     log(f"{device.name} went away")
-                    by_fd.pop(fd, None)
-                    ranges.pop(fd, None)
-                    paths.discard(device.path)
-                    rumble.forget(fd)
+                else:
+                    log(f"{device.name} could not be read and is dropped "
+                        f"until the next rescan: {exc}")
 
-                    # Whoever was holding it is gone, so nothing should stay
-                    # pressed and the next person should not inherit a mode
-                    # that was set by hand. Back to whatever is in front.
-                    #
-                    # Buttons held at the moment a pad vanishes never send
-                    # their release, so what was down has to be forgotten too.
-                    # Otherwise half a chord survives its own controller and
-                    # the next pad completes it with one button.
-                    if not by_fd:
-                        pointer.release_all()
-                        active = not fullscreen
-                        held.clear()
-                        chord.forget()
+                by_fd.pop(fd, None)
+                ranges.pop(fd, None)
+                paths.discard(device.path)
+                rumble.forget(fd)
 
-                    continue
-                raise
+                # A stick that was off centre when its pad vanished never
+                # sends its way back, and the pointer would drift on its own
+                # for the rest of the session, which also keeps the loop
+                # turning over every frame. All of them, because the axes are
+                # shared between pads; a pad that is still there reports its
+                # stick again the moment it moves.
+                for code in axes:
+                    axes[code] = 0.0
+
+                # Whoever was holding it is gone, so nothing should stay
+                # pressed and the next person should not inherit a mode
+                # that was set by hand. Back to whatever is in front.
+                #
+                # Buttons held at the moment a pad vanishes never send
+                # their release, so what was down has to be forgotten too.
+                # Otherwise half a chord survives its own controller and
+                # the next pad completes it with one button.
+                if not by_fd:
+                    pointer.release_all()
+                    active = not fullscreen
+                    held.clear()
+                    chord.forget()
+
+                continue
 
             for event in events:
                 if event.type == ecodes.EV_KEY:
@@ -953,12 +1034,12 @@ def main():
                         axes[event.code] = scale(event.value, absinfo)
 
         now = time.monotonic()
-        elapsed, last = now - last, now
+        elapsed, last = min(now - last, MAX_STEP), now
 
         # The chord is held rather than tapped, so it fires here on the clock
-        # instead of on the press. The loop turns over every INTERVAL whether
-        # anything arrived or not, which is what makes that possible without a
-        # timer of its own.
+        # instead of on the press. While it is held the loop turns over every
+        # INTERVAL whether anything arrived or not, which is what makes that
+        # possible without a timer of its own; wait_for() says so.
         if chord.due(now):
             active = not active
             log(f"pointer mode {'on' if active else 'off'} by hand, "
@@ -969,13 +1050,13 @@ def main():
 
             rumble.buzz(by_fd.get(chord.fd))
 
-        if now - last_scan >= 2.0:
+        if now - last_scan >= RESCAN:
             last_scan = now
             rescan()
 
             # The web interface may have changed this seat's speed. Compared
-            # rather than reread every time round, so that a helper sitting idle
-            # is not opening a file ninety times a second.
+            # rather than reread every time round, so that the file is only
+            # opened when it has changed.
             if config_stamp() != stamp:
                 stamp = config_stamp()
                 setting = configured_speed()
