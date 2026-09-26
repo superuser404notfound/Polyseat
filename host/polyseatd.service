@@ -17,6 +17,24 @@ RestartSec=5
 # until they said nothing, and a hardening block that grants everything reads as
 # protection while providing none. What actually limits the damage here is that
 # the seats are unprivileged containers, which is measured in docs/security.md.
+#
+# The four that look free were checked one by one against the code, and three
+# of them are not:
+#
+#   PrivateTmp      the input broker keeps what it attached in /tmp when there
+#                   is no XDG_RUNTIME_DIR, which a system service does not have,
+#                   so that after a restart it can still send the remove events
+#                   for devices that are gone. A private /tmp is emptied when
+#                   the daemon stops, and every update restarts it.
+#   ProtectClock    implies DeviceAllow=char-rtc, and one DeviceAllow turns the
+#                   device policy into an allow list for the whole cgroup. The
+#                   helpers run in it, and prepare.sh's vainfo would no longer
+#                   open the render node it asks whether the card can encode.
+#   ProtectHostname a UTS namespace of its own, with the name the host had when
+#                   the daemon started. A name NetworkManager sets from DHCP
+#                   after that never reaches the certificate or the interface.
+#   LockPersonality harmless, and on its own exactly the kind of line the
+#                   paragraph above declines to write.
 
 # Stopping the daemon does not stop the seats. Their containers keep running and
 # are picked up again when it comes back, so an update never interrupts a game.
