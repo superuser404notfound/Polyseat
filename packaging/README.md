@@ -89,9 +89,19 @@ The scriptlets are [`scripts/postinstall.sh`](scripts/postinstall.sh) and
 `polyseat.install` says. One file each rather than two, because dpkg and rpm
 have no equivalent of pacman's separate `post_install` and `post_upgrade` hooks:
 both call the same script and it has to work out which happened. They say so in
-two different ways — dpkg passes `configure` and the previous version, rpm
-passes how many copies will exist when the transaction finishes — so both are
+two different ways, dpkg passing `configure` and the previous version and rpm
+how many copies will exist when the transaction finishes, so both are
 read.
+
+Both scripts run `systemctl daemon-reload`, where systemd is the running init,
+because dpkg and rpm have no hook of their own that does it and a package built
+with nfpm does not bring one: without it a fresh install's `enable --now` could
+be refused as an unknown unit, and an upgrade left systemd on the previous unit
+file. **Neither runs `udevadm control --reload`.** pacman does that for the Arch
+package through systemd's own hook; on Debian and Fedora nothing in these two
+scripts does, so after an upgrade that changes `72-polyseat-hide.rules`,
+`sudo udevadm control --reload` is the way to be certain the running udev has
+the new rule rather than waiting for it to notice.
 
 `nvidia-container-toolkit` is deliberately not a dependency of either. On an
 NVIDIA host it is required and on an AMD host it is a shim for a driver that is
@@ -201,6 +211,14 @@ git push
    something other than the tag it names, which is the one mistake this order
    makes easy to make.
 
+   The `.deb` and the `.rpm` are built from the tag as well, not from the commit
+   that triggered the job. That commit comes after the tag and can have
+   anything else from `main` in front of it, so the job reads the version from
+   the PKGBUILD, fetches and checks out `refs/tags/vX.Y.Z`, and refuses to go
+   on unless HEAD is that tag's commit and the tree is clean. The Go version
+   comes from the tag's `go.mod` for the same reason. A missing tag fails the
+   job, which is one more reason the order above is tag first.
+
 5. Prove it, against a virtual machine rather than against this one:
 
    ```
@@ -256,6 +274,30 @@ git push
 `.SRCINFO` is generated and belongs only in the AUR repository. It is not kept
 here, because a copy that can disagree with the PKGBUILD beside it is worse than
 no copy.
+
+## What CI runs is pinned, and moving it is by hand
+
+Both workflows name the GitHub actions they use by commit, with the version as
+a comment beside it (`actions/checkout@11d5960... # v4.4.0`), and the package
+job's Arch container by the digest of the `archlinux:base-devel` image index
+rather than by its tag. The package job holds a token that can write to
+releases, so what runs in it is part of what a release is, and a tag on a
+repository or a registry is a name whoever controls it can point somewhere new.
+
+The cost is that nothing moves by itself. **Bringing an action forward is
+editing the SHA and the comment beside it**, in `ci.yml` and `package.yml`
+alike, to the commit the new version's tag names, looked up rather than
+copied from somebody's example. **Bringing the image forward is editing the
+digest**, which is what
+
+```
+docker buildx imagetools inspect archlinux:base-devel
+```
+
+prints at the top as the index's `Digest`. The image ages in the meantime, which
+matters less than it sounds: the job updates `archlinux-keyring` first, as Arch
+documents for an old image, and then the packages, so the pin fixes where the
+build starts and not how old what it builds with is.
 
 ## Why there is no polyseat-git
 

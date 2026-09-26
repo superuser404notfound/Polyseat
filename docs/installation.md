@@ -521,8 +521,11 @@ segment to be hosts on and not bandwidth to the internet.
 
 ### Optional hardening
 
-`polyseat-check-hardening --fix` pins `kernel.sysrq`. Everything else it finds is
-reported rather than changed, because the remaining measures cost the machine
+`polyseat-check-hardening --fix` pins `kernel.sysrq`: to the running value when
+that is one of the harmless ones, 0, 2, 16 or 18, and to 16 otherwise. Before
+0.32.0 it pinned whatever was running, which on a machine at 1 wrote the
+dangerous value down for good. Everything else it finds is reported rather than
+changed, because the remaining measures cost the machine
 its text consoles. That judgement belongs to the operator, not to an installer.
 
 ## Whether the machine is ready, and where the panel sits
@@ -716,8 +719,18 @@ both the order and the way out are written into the script:
 * stop `polyseatd` first, before touching anything it owns
 * stop each seat, wait a minute, and if Incus has accepted the stop and left the
   container running anyway, kill its cgroup and restart Incus
-* only then delete the containers and the daemon's state
+* only then delete the containers, then `polyseatbr0`, the management bridge the
+  daemon makes on a host that had none it could use, but only when Incus counts
+  nothing still using it, profiles included, since somebody may have put a
+  container of their own on it, and then the daemon's state
 * and only then take the files and the package away
+
+The LAN bridge that `polyseat-lan-bridge` made is not taken down. It is how the
+host reaches the network, and removing it from a script that may be running
+over that network, or in a transient unit nobody watches, is how a machine ends
+up off it. The summary at the top names it and says to run
+`polyseat-lan-bridge --undo` first, while that command still exists, and the end
+of a `--seats` run prints the `nmcli` steps `--undo` would have taken.
 
 The interface offers exactly the same three choices, because it runs exactly the
 same file: the daemon only, the seats with it, and the library with those. What
@@ -753,7 +766,11 @@ Everything in it was learned by doing it by hand three times:
   belonging to a package that was no longer installed.
 * Delete the btrfs subvolumes before removing `/var/lib/incus`. `rm` cannot
   delete a subvolume, and the first attempt left two thirds of the directory
-  there while reporting nothing.
+  there while reporting nothing. They are found by walking the directory for
+  inode 256, which is the root of every subvolume on any layout, and not from
+  `btrfs subvolume list /`, whose paths are relative to the top of the
+  filesystem: on the common layout where `/` is a subvolume called `@` every
+  delete missed, and the step silently did nothing until 0.32.0.
 * Unmount the three tmpfs mounts under it as well. `rm` says "device or resource
   busy" for those and carries on, which reads as success.
 * Remove the leftover `incusbr` bridges. They outlive both the daemon and the
