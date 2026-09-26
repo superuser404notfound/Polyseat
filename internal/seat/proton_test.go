@@ -1,10 +1,14 @@
 package seat
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // protonAssets reads a real release listing. Handwritten test data would only
@@ -418,5 +422,63 @@ func TestASeatKeepsBothToolsWithoutBeingTold(t *testing.T) {
 
 	if !again.NoGEProton {
 		t.Errorf("a seat that refused GE-Proton forgets it when stored: %s", written)
+	}
+}
+
+// A seat in the middle of something is not visited by the Proton pass at all.
+// Provisioning and a software update replace the same directories the pass
+// does, and the timer used to start regardless. The manager here has no Incus
+// client, so asking the seat anything would fail the test on the spot.
+func TestProtonPassLeavesABusySeatAlone(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Put(Seat{Name: "living-room", PlayerUID: 1000}); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{
+		store: store,
+		log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		rt:    map[string]*runtime{},
+	}
+
+	m.runtimeOf("living-room").busy = "provisioning"
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("the pass talked to a busy seat: %v", r)
+		}
+	}()
+
+	m.protonPass(context.Background())
+}
+
+// The main loop hands the pass off and carries on, and a second tick while one
+// is still running starts nothing.
+func TestProtonPassIsHandedOffOnce(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manager{store: store, rt: map[string]*runtime{}}
+	m.protoning = true
+
+	// With a pass already running this has to return without starting one. A
+	// pass started anyway finds no seats, finishes at once and clears the
+	// flag on its way out, which is what is looked for below.
+	m.updateProton(context.Background())
+
+	time.Sleep(200 * time.Millisecond)
+
+	m.mu.Lock()
+	still := m.protoning
+	m.mu.Unlock()
+
+	if !still {
+		t.Error("a second pass was started beside the running one")
 	}
 }

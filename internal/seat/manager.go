@@ -46,6 +46,10 @@ type Manager struct {
 	// asking for one every ten seconds starts at most one. Guarded by mu.
 	freshening bool
 
+	// protoning is the same for the Proton pass, see updateProton. Guarded by
+	// mu.
+	protoning bool
+
 	// gpu is the host's card, read once at startup because it cannot change
 	// while the daemon runs: swapping a card means a reboot. Every seat on one
 	// machine gets the same one.
