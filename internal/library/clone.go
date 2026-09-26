@@ -452,27 +452,47 @@ func carryPrivate(from, to *os.File, carry map[string]bool, owner Owner) (map[st
 			continue
 		}
 
+		// A rename changes the modification time of both directories it
+		// touches, and a folder's version is the newest time inside it. The
+		// drive_c the saves were moved into had just been given its source's
+		// time by the clone, and the move stamped it with the present, so
+		// every copy that carried saves measured newer than what it was
+		// copied from: the pool took it back from the seat, gave it to the
+		// others, took theirs back in turn, and so on after every update to
+		// every folder with a prefix in it. So the times of every directory
+		// on both sides are taken before the move and put back after it.
+		var times stamps
+
+		err = times.keep(source, nil)
+
 		// The parent is normally already there, because it came from the tree
 		// being copied. It is not when the game dropped the directory that
 		// used to hold the prefix, and then the saves still have to land
 		// somewhere rather than being thrown away.
-		target, err := ensureRel(to, parent, owner)
-		if err != nil {
-			source.Close()
+		var target *os.File
 
-			return moved, err
+		if err == nil {
+			target, err = ensureRel(to, parent, owner, from, &times)
 		}
 
-		err = renameAt(source, base, target, base)
+		if err == nil {
+			err = renameAt(source, base, target, base)
+			target.Close()
+
+			if err == nil {
+				moved[name] = true
+			}
+		}
 
 		source.Close()
-		target.Close()
+
+		if back := times.restore(); err == nil {
+			err = back
+		}
 
 		if err != nil {
 			return moved, err
 		}
-
-		moved[name] = true
 	}
 
 	return moved, nil
@@ -480,16 +500,31 @@ func carryPrivate(from, to *os.File, carry map[string]bool, owner Owner) (map[st
 
 // ensureRel opens a relative directory below dir, making what is missing on
 // the way with the given owner.
-func ensureRel(dir *os.File, rel string, owner Owner) (*os.File, error) {
+//
+// Every directory on the way is added to times with the modification time it
+// should have once the caller is done: the one it has now, or for one this
+// made, the time of the directory at the same place under like, which is the
+// tree the missing part is being recreated from.
+func ensureRel(dir *os.File, rel string, owner Owner, like *os.File, times *stamps) (*os.File, error) {
 	cur, err := dupDir(dir)
 	if err != nil {
 		return nil, err
 	}
 
+	if err := times.keep(cur, nil); err != nil {
+		cur.Close()
+
+		return nil, err
+	}
+
+	prefix := ""
+
 	for _, part := range strings.Split(filepath.Clean(rel), "/") {
 		if part == "." {
 			continue
 		}
+
+		prefix = filepath.Join(prefix, part)
 
 		next, created, err := ensureDirAt(cur, part, 0o755)
 		if err == nil && created {
@@ -497,6 +532,15 @@ func ensureRel(dir *os.File, rel string, owner Owner) (*os.File, error) {
 		}
 
 		cur.Close()
+
+		if err == nil {
+			var when *unix.Timespec
+			if created {
+				when = mtimeIn(like, prefix)
+			}
+
+			err = times.keep(next, when)
+		}
 
 		if err != nil {
 			if next != nil {
@@ -510,6 +554,72 @@ func ensureRel(dir *os.File, rel string, owner Owner) (*os.File, error) {
 	}
 
 	return cur, nil
+}
+
+// mtimeIn is the modification time of a directory below dir, or nil when there
+// is none to be had.
+func mtimeIn(dir *os.File, rel string) *unix.Timespec {
+	f, err := openRel(dir, rel)
+	if err != nil {
+		return nil
+	}
+
+	defer f.Close()
+
+	var st unix.Stat_t
+
+	if err := unix.Fstat(fdOf(f), &st); err != nil {
+		return nil
+	}
+
+	return &st.Mtim
+}
+
+// stamps are directories and the modification times to give them back.
+type stamps []stamp
+
+type stamp struct {
+	dir   *os.File
+	mtime unix.Timespec
+}
+
+// keep remembers a directory with the time it has now, or with when if given.
+// It holds a handle of its own, so the caller may close the one it passed.
+func (s *stamps) keep(dir *os.File, when *unix.Timespec) error {
+	var st unix.Stat_t
+
+	if when == nil {
+		if err := unix.Fstat(fdOf(dir), &st); err != nil {
+			return &os.PathError{Op: "stat", Path: dir.Name(), Err: err}
+		}
+
+		when = &st.Mtim
+	}
+
+	held, err := dupDir(dir)
+	if err != nil {
+		return err
+	}
+
+	*s = append(*s, stamp{dir: held, mtime: *when})
+
+	return nil
+}
+
+// restore gives every directory its time back and lets go of the handles,
+// answering with the first thing that failed.
+func (s stamps) restore() error {
+	var first error
+
+	for i := len(s) - 1; i >= 0; i-- {
+		if err := setMtime(s[i].dir, s[i].mtime); err != nil && first == nil {
+			first = err
+		}
+
+		s[i].dir.Close()
+	}
+
+	return first
 }
 
 func cloneTree(src, dst *os.File, rel string, owner Owner, carry map[string]bool, result *Result) error {

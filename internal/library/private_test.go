@@ -246,3 +246,36 @@ func TestAFailedCarryPutsBackWhatItMoved(t *testing.T) {
 		}
 	}
 }
+
+// A game update that drops the directory the prefix lived in. The saves still
+// land in a drive_c made for them, and that drive_c takes the time the old one
+// had rather than the present, or the copy would measure as a version newer
+// than anything in it.
+func TestACarriedPrefixKeepsItsTimeWhenTheGameDroppedIt(t *testing.T) {
+	dir := t.TempDir()
+	pool := filepath.Join(dir, "pool", "Game")
+	seat := filepath.Join(dir, "seat", "Game")
+
+	mkdirs(t, pool)
+	write(t, filepath.Join(pool, "game.exe"), "version two", 0o644)
+
+	prefix(t, seat, "this seat's garden")
+
+	old := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(filepath.Join(seat, "drive_c"), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := CloneFolder(pool, seat, Keep); err != nil {
+		t.Fatalf("CloneFolder: %v", err)
+	}
+
+	info, err := os.Stat(filepath.Join(seat, "drive_c"))
+	if err != nil {
+		t.Fatalf("the saves had nowhere to land: %v", err)
+	}
+
+	if !info.ModTime().Equal(old) {
+		t.Errorf("the recreated drive_c is stamped %v, want the old one's %v", info.ModTime(), old)
+	}
+}
