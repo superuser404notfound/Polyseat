@@ -82,7 +82,37 @@ function apiPath(strings, ...values) {
 let refreshing = false;
 let refreshPending = false;
 
-async function refresh() {
+// The library is fetched far less often than the state, and on purpose.
+//
+// It used to come with every refresh, and a refresh follows every token the
+// daemon pushes. Answering it walks the pool and every seat's Steam manifests
+// under the pool's lock, so during a provision, which pushes a token per log
+// line, the page kept the daemon reading manifests several times a second for
+// a view that had not changed, and queued behind any sync pass holding that
+// lock.
+//
+// The tokens say nothing about what changed, so the page decides: the library
+// comes along when something the page did may have changed it (every button
+// goes through run, which asks for it), when the set of seats or which of them
+// take part has changed, and otherwise at most every libraryEvery. A game
+// installed inside a seat reaches the pool with no token of its own, so the
+// last of those is also what shows it, and a change that lands inside the
+// interval is picked up by a refresh scheduled for the end of it rather than
+// waiting for the next token.
+const libraryEvery = 15000;
+let libraryWanted = true;
+let libraryFetched = 0;
+let libraryLater = null;
+
+// libraryShape is what, in the state, the library view depends on: which
+// seats exist and which of them take part.
+function libraryShape(s) {
+  return s ? JSON.stringify((s.seats || []).map((seat) => [seat.name, seat.library])) : "";
+}
+
+async function refresh(withLibrary = false) {
+  if (withLibrary) libraryWanted = true;
+
   if (refreshing) {
     refreshPending = true;
 
@@ -95,16 +125,28 @@ async function refresh() {
     do {
       refreshPending = false;
 
-      // Fetched together, because a seat card and the library view disagreeing
-      // about which seats exist looks like a bug in whichever one you read
-      // second.
-      const [next, pool] = await Promise.all([
-        api("GET", "/api/state"),
-        api("GET", "/api/library"),
-      ]);
+      const next = await api("GET", "/api/state");
+
+      const due = Date.now() - libraryFetched >= libraryEvery;
+
+      // Fetched after the state and before drawing either, so the seat cards
+      // and the library view still agree about which seats exist: the two
+      // disagreeing looks like a bug in whichever one you read second.
+      if (libraryWanted || due || libraryShape(next) !== libraryShape(state)) {
+        libraryWanted = false;
+        library = await api("GET", "/api/library");
+        libraryFetched = Date.now();
+      } else if (!libraryLater) {
+        libraryLater = setTimeout(
+          () => {
+            libraryLater = null;
+            refresh();
+          },
+          libraryEvery - (Date.now() - libraryFetched),
+        );
+      }
 
       state = next;
-      library = pool;
       render();
     } while (refreshPending);
   } catch (err) {
@@ -1212,7 +1254,7 @@ async function submitImport(event) {
           : ""),
     );
 
-    await refresh();
+    await refresh(true);
   } catch (err) {
     el("import-error").textContent = err.message;
   } finally {
@@ -2631,7 +2673,7 @@ async function loadLog(name, pre) {
 async function run(handler) {
   try {
     await handler();
-    await refresh();
+    await refresh(true);
   } catch (err) {
     if (err.unauthorized) {
       showLogin();
@@ -2652,6 +2694,11 @@ function showLogin(setup) {
     stream.close();
     stream = null;
   }
+
+  // A refresh still scheduled for the library would find no session, and
+  // answer that by drawing this form again over whatever was being typed.
+  clearTimeout(libraryLater);
+  libraryLater = null;
 
   stopSetupPoll();
   closeDialogs();
@@ -2700,7 +2747,7 @@ function showApp() {
   el("tools").hidden = false;
   el("host-open").hidden = false;
 
-  refresh();
+  refresh(true);
   connect();
 }
 
@@ -2989,7 +3036,7 @@ async function saveEditor(event) {
     await saveSeat();
 
     el("editor").close();
-    await refresh();
+    await refresh(true);
   } catch (err) {
     el("editor-error").textContent = err.message;
   }
@@ -4027,10 +4074,10 @@ function connect() {
   source.addEventListener("hello", () => {
     el("link").textContent = "live";
     el("link").className = "pill online";
-    refresh();
+    refresh(true);
   });
 
-  source.addEventListener("change", refresh);
+  source.addEventListener("change", () => refresh());
 
   source.onerror = () => {
     // A dropped stream is also how an expired session shows up here, since an
@@ -4089,7 +4136,7 @@ el("editor-bridge").onclick = async () => {
   }
 
   el("editor").close();
-  await refresh();
+  await refresh(true);
   openHost();
 };
 el("login-form").onsubmit = submitLogin;
