@@ -269,7 +269,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 
 	for _, s := range seats {
-		m.runtimeOf(s.Name)
+		m.adopt(s)
 	}
 
 	m.reconcileAll(ctx)
@@ -458,6 +458,40 @@ func (m *Manager) runtimeOf(name string) *runtime {
 	}
 
 	return rt
+}
+
+// adopt makes the runtime record for a seat the daemon found on disk, with the
+// player uid the record carries.
+//
+// Taken from the record because the default of 1000 is a guess, and a seat
+// that was already running when the daemon started is adopted without a
+// session start, which is the only other place the uid is read. Every command
+// run as the player in such a seat named the runtime directory and bus of a
+// user who might not be the player at all, until somebody restarted it.
+func (m *Manager) adopt(s Seat) {
+	rt := m.runtimeOf(s.Name)
+
+	if s.PlayerUID == 0 {
+		return
+	}
+
+	m.mu.Lock()
+	rt.uid = s.PlayerUID
+	m.mu.Unlock()
+}
+
+// uidOf is the player's uid in a seat, read under the lock.
+//
+// startSession writes it from its own goroutine while the sweep and the
+// interface's requests read it from theirs, and most of those reads were a
+// bare m.runtimeOf(name).uid, which is a data race whatever the size of an int.
+func (m *Manager) uidOf(name string) int64 {
+	rt := m.runtimeOf(name)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return rt.uid
 }
 
 func (m *Manager) setState(name string, state State) {
@@ -940,7 +974,7 @@ func (m *Manager) checkOrigins(ctx context.Context, name string, addresses map[s
 			Seat:     seat,
 			Image:    m.cfg.Image,
 			Log:      func(f string, a ...any) { m.logf(name, f, a...) },
-			uid:      rt.uid,
+			uid:      m.uidOf(name),
 		}
 
 		m.logf(name, "the address changed, rewriting the Sunshine configuration")
@@ -1121,7 +1155,7 @@ func (m *Manager) readEncoders(ctx context.Context, name string) (string, []stri
 	ctx, cancel := quick(ctx)
 	defer cancel()
 
-	return ReadEncoders(ctx, m.client, name, m.runtimeOf(name).uid)
+	return ReadEncoders(ctx, m.client, name, m.uidOf(name))
 }
 
 // sessionEnded puts a seat back the way an idle seat should be, and does the
@@ -1461,11 +1495,7 @@ func (m *Manager) readOutput(ctx context.Context, name string) string {
 	ctx, cancel := quick(ctx)
 	defer cancel()
 
-	rt := m.runtimeOf(name)
-
-	m.mu.Lock()
-	uid := rt.uid
-	m.mu.Unlock()
+	uid := m.uidOf(name)
 
 	argv := m.asPlayer(name, "sh", "-c", fmt.Sprintf(
 		"SWAYSOCK=$(ls -t /run/user/%d/sway-ipc.* 2>/dev/null | head -1) "+
@@ -1502,7 +1532,7 @@ func (m *Manager) readOutput(ctx context.Context, name string) string {
 // directory and the user bus named explicitly, because there is no login
 // context to inherit them from.
 func (m *Manager) asPlayer(name string, argv ...string) []string {
-	return append(playerPrefix(m.runtimeOf(name).uid), argv...)
+	return append(playerPrefix(m.uidOf(name)), argv...)
 }
 
 // playerPrefix is the same command prefix for a caller that has the uid but no
@@ -2266,7 +2296,7 @@ func (m *Manager) applyPointerSpeed(ctx context.Context, seat Seat) {
 		Seat:     seat,
 		Image:    m.cfg.Image,
 		Log:      func(f string, a ...any) { m.logf(seat.Name, f, a...) },
-		uid:      m.runtimeOf(seat.Name).uid,
+		uid:      m.uidOf(seat.Name),
 	}
 
 	if err := p.WritePointerConfig(ctx); err != nil {
@@ -2311,7 +2341,7 @@ func (m *Manager) applyGEProton(seat Seat) {
 			Seat:     seat,
 			Image:    m.cfg.Image,
 			Log:      func(f string, a ...any) { m.logf(seat.Name, f, a...) },
-			uid:      m.runtimeOf(seat.Name).uid,
+			uid:      m.uidOf(seat.Name),
 		}
 
 		return p.stepGEProton(ctx)

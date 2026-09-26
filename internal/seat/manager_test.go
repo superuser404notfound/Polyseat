@@ -581,3 +581,26 @@ func TestAStoppedSeatHasNoResolutionOfItsOwn(t *testing.T) {
 		t.Errorf("a stopped seat still claims to be running at %q", rt.output)
 	}
 }
+
+// A seat that is already running when the daemon starts is adopted without a
+// session start, and the session start is the only other place the uid is
+// read. So the record's uid has to be the one used from the first command on,
+// and a record without one keeps the default rather than becoming uid 0.
+func TestAnAdoptedSeatUsesThePlayerUIDItWasBuiltWith(t *testing.T) {
+	m := &Manager{rt: map[string]*runtime{}}
+
+	m.adopt(Seat{Name: "vince", PlayerUID: 1001})
+	m.adopt(Seat{Name: "joser"})
+
+	if got := m.uidOf("vince"); got != 1001 {
+		t.Errorf("the adopted seat runs as uid %d, want the 1001 its record says", got)
+	}
+
+	if got := m.uidOf("joser"); got != 1000 {
+		t.Errorf("a record without a uid gave %d, want the default 1000", got)
+	}
+
+	if got := m.asPlayer("vince", "true"); !strings.Contains(strings.Join(got, " "), "/run/user/1001") {
+		t.Errorf("commands in the adopted seat are run as %q", got)
+	}
+}
