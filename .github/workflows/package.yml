@@ -43,8 +43,16 @@ jobs:
     # An Arch container rather than an Arch VM, because makepkg needs pacman and
     # nothing here needs a kernel. host/test-package.sh covers what a container
     # cannot: installing the result on a real machine and starting it.
+    #
+    # Pinned by digest, as the actions below are pinned by commit. This job
+    # holds a token that can write to releases, so what runs in it is part of
+    # what a release is, and a tag on a registry or a repository is a name that
+    # somebody else can point somewhere new. The digest is the image index
+    # base-devel named on 2026-09-26. The step below brings the packages up to
+    # date anyway, so the pin fixes the starting point and not the age of what
+    # gets built with; moving it on is editing this line.
     container:
-      image: archlinux:base-devel
+      image: archlinux:base-devel@sha256:8745817f349ed24373341ddb92776209eeec3f0364ea48f7f645ac5800d30a50
 
     steps:
       # base-devel carries makepkg and the compilers and none of these. git is
@@ -53,13 +61,18 @@ jobs:
       # prefers it, and github-cli to upload with. The rest are the PKGBUILD's
       # checkdepends, installed by hand because --nodeps below means makepkg
       # will not do it, and check() runs the real Python helpers.
+      #
+      # The keyring first, which is what Arch documents for an image that has
+      # aged: with the image pinned, the packages signed since it was made may
+      # be signed by keys its keyring does not know yet.
       - name: What base-devel does not carry
         run: |
-          pacman -Syu --noconfirm --needed \
+          pacman -Sy --noconfirm --needed archlinux-keyring
+          pacman -Su --noconfirm --needed \
             go git github-cli namcap \
             python-pillow librsvg python-evdev
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # makepkg refuses to run as root and is right to. It runs a PKGBUILD,
       # which is a shell script from the internet as far as it knows.
@@ -189,13 +202,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          # From go.mod, so there is one place that says which Go this is.
-          go-version-file: go.mod
-          cache: true
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # From the PKGBUILD and not from the tag, for the same reason the Arch job
       # reads it there: that file is what this workflow triggers on, and it is
@@ -212,6 +219,52 @@ jobs:
 
           echo "pkgver=$pkgver" >> "$GITHUB_OUTPUT"
         shell: bash
+
+      # Built from the tag, not from the commit that triggered this.
+      #
+      # The trigger is the "Carry the package to X" commit on main, which comes
+      # after the tag and can have anything else on main in front of it. The
+      # Arch job builds from the tag's tarball and makepkg checks its sum, so
+      # without this step the .deb and .rpm attached to release X were built
+      # from whatever main held that day while the Arch package beside them was
+      # built from X, and all three claimed the same version.
+      #
+      # The version was read above, before moving, because the tag's own
+      # PKGBUILD still names the release before it. Everything after this step,
+      # including which Go to install, comes from the tag.
+      - name: The tree the tag names
+        shell: bash
+        env:
+          PKGVER: ${{ steps.version.outputs.pkgver }}
+        run: |
+          tag="v$PKGVER"
+
+          if ! git fetch --no-tags --depth=1 origin "+refs/tags/$tag:refs/tags/$tag"; then
+            echo "::error::there is no tag $tag to build from. packaging/README.md has the order."
+            exit 1
+          fi
+
+          git checkout --quiet --detach "refs/tags/$tag"
+
+          # Checked rather than trusted, because a build that quietly came from
+          # somewhere else is the exact failure this step exists to end.
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "refs/tags/$tag^{commit}")" ]]; then
+            echo "::error::HEAD is not $tag after checking it out"
+            exit 1
+          fi
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::the tree is not clean after checking out $tag"
+            exit 1
+          fi
+
+          echo "building from $tag at $(git rev-parse HEAD)"
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          # From go.mod, so there is one place that says which Go this is.
+          go-version-file: go.mod
+          cache: true
 
       - name: Build
         run: ./packaging/build-packages.sh "${{ steps.version.outputs.pkgver }}"

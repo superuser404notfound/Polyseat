@@ -32,6 +32,89 @@ done
 
 declare -f pkg_owns_file >/dev/null 2>&1 || pkg_owns_file() { return 1; }
 
+# A prefix for every sysctl directory below, so host/test-hardening.sh can hand
+# it a tree of its own. Empty on a real machine.
+SYSCTL_ROOT=${POLYSEAT_SYSCTL_ROOT:-}
+
+# The only kernel.sysrq values that give a virtual keyboard nothing worth having:
+# 0 is off, 16 is sync, 2 is the console log level. 1 is not a bit but "all of
+# them", and every other bit can kill, reboot, remount or dump.
+SYSRQ_SAFE=16
+
+sysrq_harmless() {
+    local v=$1
+    [[ $v =~ ^[0-9]+$ ]] || return 1
+    ((v != 1 && (v & ~(2 | 16)) == 0))
+}
+
+# sysrq_fix_value is what --fix pins, given the value running now.
+#
+# The value running now only when that one is harmless. Pinning whatever was
+# found made --fix write kernel.sysrq = 1 into /etc on a machine that had it,
+# which is the exposure this script reports, made permanent by the option
+# meant to close it.
+sysrq_fix_value() {
+    if sysrq_harmless "$1"; then
+        printf '%s\n' "$1"
+    else
+        printf '%s\n' "$SYSRQ_SAFE"
+    fi
+}
+
+# sysrq_configured prints the kernel.sysrq value boot will apply, a tab, and
+# the file that sets it, or nothing when no file does.
+#
+# Read the way systemd-sysctl reads it, because "some file in /etc mentions
+# kernel.sysrq" was both too loose and too narrow. Too loose because the match
+# was a grep, which took a commented line as a setting. Too narrow because the
+# files in /usr/lib/sysctl.d count as well: systemd ships kernel.sysrq = 16 in
+# 50-default.conf there, and a package file named after ours would override
+# ours, since all four directories are sorted together by file name and the
+# last setting wins. /etc, then /run, then /usr/local/lib, then /usr/lib decide
+# only between files of the same name. /etc/sysctl.conf comes last, as procps
+# reads it.
+sysrq_configured() {
+    local -A seen=()
+    local dir f base line value='' from=''
+    local names=() files=()
+
+    for dir in /etc/sysctl.d /run/sysctl.d /usr/local/lib/sysctl.d /usr/lib/sysctl.d; do
+        for f in "$SYSCTL_ROOT$dir"/*.conf; do
+            [[ -e $f ]] || continue
+            base=${f##*/}
+            [[ -n ${seen[$base]:-} ]] && continue
+            seen[$base]=$f
+            names+=("$base")
+        done
+    done
+
+    if ((${#names[@]})); then
+        while IFS= read -r base; do
+            files+=("${seen[$base]}")
+        done < <(printf '%s\n' "${names[@]}" | LC_ALL=C sort)
+    fi
+
+    files+=("$SYSCTL_ROOT/etc/sysctl.conf")
+
+    for f in "${files[@]}"; do
+        [[ -r $f ]] || continue
+        while IFS= read -r line || [[ -n $line ]]; do
+            # A leading "-" only means "ignore a failure", so it still sets.
+            if [[ $line =~ ^[[:space:]]*-?kernel[./]sysrq[[:space:]]*=[[:space:]]*([^[:space:]#\;]*) ]]; then
+                value=${BASH_REMATCH[1]}
+                from=$f
+            fi
+        done < "$f"
+    done
+
+    [[ -n $from ]] && printf '%s\t%s\n' "$value" "$from"
+
+    return 0
+}
+
+# Sourced by host/test-hardening.sh for the functions above and nothing else.
+(return 0 2>/dev/null) && return 0
+
 step "udev rule"
 # Four directories, in the order udev reads them, because two installers put the
 # rule in two of them: host/install.sh writes /etc, where a local
@@ -164,15 +247,39 @@ case "$sysrq" in
     1)  bad "kernel.sysrq = 1, everything allowed including reboot and crash" ;;
     *)  warn "kernel.sysrq = $sysrq, check the bitmask" ;;
 esac
-if grep -rqs 'kernel.sysrq' /etc/sysctl.conf /etc/sysctl.d/ 2>/dev/null; then
-    ok "pinned in sysctl.d, cannot drift on an update"
+
+configured=$(sysrq_configured)
+cvalue=${configured%%$'\t'*}
+cfile=${configured#*$'\t'}
+pinned=0
+
+if [[ -z $configured ]]; then
+    warn "not pinned: no sysctl file sets it, so a distribution default may change it"
+elif [[ $cfile == "$SYSCTL_ROOT"/usr/* ]]; then
+    warn "set to $cvalue by $cfile, a distribution's file that an update may change"
+elif sysrq_harmless "$cvalue"; then
+    ok "pinned at $cvalue in $cfile, cannot drift on an update"
+    pinned=1
 else
-    warn "not pinned: a distribution default may change it"
-    if ((FIX)); then
-        printf '# polyseat: virtual keyboards from the seats are attached to the\n# kernel sysrq handler, so pin this rather than letting a distribution\n# default drift. 16 permits sync only.\nkernel.sysrq = %s\n' "$sysrq" \
-            > /etc/sysctl.d/99-polyseat-sysrq.conf
-        sysctl --system >/dev/null 2>&1
-        ok "pinned at $sysrq in /etc/sysctl.d/99-polyseat-sysrq.conf"
+    bad "pinned at $cvalue in $cfile, which lets a seat's keyboard do more than sync"
+fi
+
+if ((FIX)) && { ((!pinned)) || ! sysrq_harmless "$sysrq"; }; then
+    want=$(sysrq_fix_value "$sysrq")
+
+    ours=/etc/sysctl.d/99-polyseat-sysrq.conf
+    printf '# polyseat: virtual keyboards from the seats are attached to the\n# kernel sysrq handler, so pin this rather than letting a distribution\n# default drift. 16 permits sync only.\nkernel.sysrq = %s\n' "$want" \
+        > "$SYSCTL_ROOT$ours"
+    sysctl --system >/dev/null 2>&1
+
+    # Written is not the same as winning. A file that sorts after ours sets the
+    # value last, and saying "pinned" then would be the check crying wolf the
+    # other way round.
+    configured=$(sysrq_configured)
+    if [[ ${configured#*$'\t'} == "$SYSCTL_ROOT$ours" ]]; then
+        ok "pinned at $want in $ours"
+    else
+        bad "wrote $ours, but ${configured#*$'\t'} sorts after it and still sets ${configured%%$'\t'*}"
     fi
 fi
 

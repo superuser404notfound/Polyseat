@@ -26,9 +26,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           # From go.mod, so there is one place that says which Go this is.
           go-version-file: go.mod
@@ -108,7 +108,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Parse the interface
         run: |
@@ -121,7 +121,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # bash -n first, because a parse error makes everything shellcheck says
       # about the same file beside the point. Every script rather than only the
@@ -185,6 +185,18 @@ jobs:
       - name: The seat handling in lan-bridge.sh
         run: ./host/test-lan-bridge.sh
 
+      # How check-hardening.sh reads kernel.sysrq out of the sysctl files, and
+      # what its --fix would pin, against sysctl trees built in a temporary
+      # directory. It once pinned kernel.sysrq = 1 on a machine that had it.
+      - name: The sysrq reading in check-hardening.sh
+        run: ./host/test-hardening.sh
+
+      # The two network questions in uninstall.sh, against stubbed incus and
+      # nmcli: whether polyseatbr0 has nothing left on it and may go, and
+      # whether the LAN bridge is there to be mentioned.
+      - name: The network questions in uninstall.sh
+        run: ./host/test-uninstall.sh
+
   # The one decision in this project that can be wrong without anybody noticing.
   #
   # A device that fails to reach a seat is a complaint within the minute. A
@@ -200,7 +212,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Run from the directory, because broker.py imports its neighbours by
       # name the same way it does when installed into /usr/lib/polyseat.
@@ -217,7 +229,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: The tools that read them
         run: sudo apt-get install -y -qq desktop-file-utils librsvg2-bin

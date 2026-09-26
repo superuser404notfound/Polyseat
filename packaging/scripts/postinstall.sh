@@ -42,6 +42,20 @@ polyseat_url() {
     printf 'https://%s:47800\n' "$addr"
 }
 
+# systemd told about the unit this package just placed or replaced.
+#
+# pacman does this through a hook systemd ships; dpkg and rpm do it only when a
+# package brings its own call, which debhelper and the rpm macros write for a
+# package built with them and nfpm does not. Without it a fresh install's
+# "enable --now" can be refused as a unit that does not exist, and an upgrade
+# leaves systemd running the previous unit file with a warning that it changed
+# on disk. Only where systemd is the running init, which is not the case in a
+# container or a chroot the package is being installed into, and never fatal:
+# the files are in place either way, and a failed reload is not a failed install.
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
 if $upgrade; then
     cat <<MSG
 

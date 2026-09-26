@@ -21,7 +21,7 @@
 package lanbridge
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -238,52 +238,86 @@ func Run(ctx context.Context, path string, undo bool, progress func(string)) err
 		"POLYSEAT_FROM_DAEMON=1",
 	)
 
-	// One pipe for both, so the lines arrive interleaved the way they would on
-	// a terminal. Reading two would put every warning at the end.
-	read, write, err := os.Pipe()
-	if err != nil {
-		return err
-	}
-
-	cmd.Stdout = write
-	cmd.Stderr = write
+	// One writer for both, so the lines arrive interleaved the way they would
+	// on a terminal. Reading two would put every warning at the end. exec
+	// hands the child a single descriptor for the two when they are the same
+	// writer, so this is still one pipe.
+	//
+	// A writer and not a pipe of this package's own, which is what it was, and
+	// the difference is who is waited for. With its own pipe this waited for
+	// the end of file, and that only comes when every process holding the
+	// write end has gone: the script, and anything it started that inherited
+	// its output and outlived it. One of those kept the run "in progress" in
+	// the interface for as long as it lived, with the network change long
+	// finished. Given a writer, exec does the reading, and WaitDelay bounds
+	// how long it keeps reading once the script itself has exited.
+	out := &lines{emit: progress}
+	cmd.Stdout = out
+	cmd.Stderr = out
+	cmd.WaitDelay = outputGrace
 
 	if err := cmd.Start(); err != nil {
-		_ = read.Close()
-		_ = write.Close()
-
 		return err
 	}
 
-	// Closed here as soon as the child has its copy, or the scan below would
-	// never see an end of file and this would hang after the script finished.
-	_ = write.Close()
-
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-
-		scanner := bufio.NewScanner(read)
-
-		for scanner.Scan() {
-			if progress != nil {
-				progress(clean(scanner.Text()))
-			}
-		}
-	}()
-
 	waitErr := cmd.Wait()
+	out.flush()
 
-	<-done
-
-	_ = read.Close()
+	// The script's own exit is what says whether it worked. Output held open
+	// past it by something it started is not a failure of the script.
+	if errors.Is(waitErr, exec.ErrWaitDelay) {
+		waitErr = nil
+	}
 
 	if waitErr != nil {
 		return fmt.Errorf("%s: %w", filepath.Base(path), waitErr)
 	}
 
 	return nil
+}
+
+// outputGrace is how long the output is still read after the script has exited.
+const outputGrace = 5 * time.Second
+
+// lines hands progress one line at a time, without the terminal in it.
+//
+// exec writes to it from one goroutine, because Stdout and Stderr are the same
+// writer, and flush is called only after Wait, so it needs no lock.
+type lines struct {
+	emit func(string)
+	buf  []byte
+}
+
+func (l *lines) Write(b []byte) (int, error) {
+	n := len(b)
+
+	for {
+		i := bytes.IndexByte(b, '\n')
+		if i < 0 {
+			l.buf = append(l.buf, b...)
+
+			return n, nil
+		}
+
+		l.buf = append(l.buf, b[:i]...)
+		l.line()
+		b = b[i+1:]
+	}
+}
+
+// flush passes on a last line that had no newline after it.
+func (l *lines) flush() {
+	if len(l.buf) > 0 {
+		l.line()
+	}
+}
+
+func (l *lines) line() {
+	if l.emit != nil {
+		l.emit(clean(strings.TrimSuffix(string(l.buf), "\r")))
+	}
+
+	l.buf = l.buf[:0]
 }
 
 // clean takes the terminal out of a line.

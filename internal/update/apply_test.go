@@ -1,14 +1,18 @@
 package update
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/superuser404notfound/Polyseat/internal/hostpkg"
 )
@@ -301,5 +305,68 @@ func TestApplyRefusesWithoutAPackage(t *testing.T) {
 		if err := Apply(t.Context(), c.rel, nil); err == nil {
 			t.Errorf("accepted %s", c.why)
 		}
+	}
+}
+
+// A slow line is not a broken one. The body here takes several stall windows
+// to arrive in full, but never goes a whole window without a byte, which is a
+// download the old thirty second total would have cut off on any line below
+// about 3.8 Mbit/s.
+func TestASlowDownloadThatKeepsMovingFinishes(t *testing.T) {
+	old := stallTimeout
+	stallTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { stallTimeout = old })
+
+	const chunks = 10
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for range chunks {
+			_, _ = w.Write([]byte("0123456789"))
+			w.(http.Flusher).Flush()
+			time.Sleep(50 * time.Millisecond)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	sum, n, err := download(t.Context(), server.URL, filepath.Join(t.TempDir(), "pkg"))
+	if err != nil {
+		t.Fatalf("a download that never paused for a whole window was given up: %v", err)
+	}
+
+	want := sha256.Sum256([]byte(strings.Repeat("0123456789", chunks)))
+	if n != chunks*10 || sum != hex.EncodeToString(want[:]) {
+		t.Errorf("got %d bytes with digest %s", n, sum)
+	}
+}
+
+// A body that stops arriving is given up and says so, instead of waiting for
+// the twenty minute ceiling the caller sets.
+func TestAStalledDownloadIsGivenUp(t *testing.T) {
+	old := stallTimeout
+	stallTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { stallTimeout = old })
+
+	release := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("some bytes"))
+		w.(http.Flusher).Flush()
+
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+
+	// The test's own bound, so that a watchdog which never fires fails this
+	// test rather than hanging the run.
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	_, _, err := download(ctx, server.URL, filepath.Join(t.TempDir(), "pkg"))
+	if !errors.Is(err, errStalled) {
+		t.Fatalf("a download that stopped arriving ended with %v, not as a stall", err)
 	}
 }

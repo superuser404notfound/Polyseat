@@ -47,7 +47,9 @@ const (
 
 // client is its own rather than http.DefaultClient, which has no timeout at
 // all. A background poll that hangs forever on a half open connection would
-// leak one goroutine per check and never say why.
+// leak one goroutine per check and never say why. It is for the release
+// answer only: the package download uses downloadClient, because a total
+// deadline that includes the body is a speed floor. See apply.go.
 var client = &http.Client{Timeout: 30 * time.Second}
 
 // Release is a published version that this build does not have.

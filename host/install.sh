@@ -120,7 +120,20 @@ step "Building polyseatd"
 # A source tarball has no .git and leaves this at "unknown". Saying so is better
 # than inventing a number: the daemon has no other way to find out what it is,
 # and an update check that compares against a guess is worse than none.
-version=$(git -C "$REPO" -c safe.directory="$REPO" describe --tags --always --dirty 2>/dev/null || true)
+#
+# Asked as the owner of the checkout when that is somebody else, because
+# --dirty refreshes the index and writes it back, and as root that leaves a
+# root owned index in somebody's own checkout. --no-optional-locks does not
+# stop describe from doing it; that was measured. Otherwise hooks and
+# fsmonitor are off, because both are programs named by the checkout.
+repo_owner=$(stat -c %U -- "$REPO")
+if [[ $EUID -eq 0 && $repo_owner != root && $repo_owner != UNKNOWN ]]; then
+    version=$(runuser -u "$repo_owner" -- git -C "$REPO" describe --tags --always --dirty 2>/dev/null || true)
+else
+    version=$(git -C "$REPO" -c safe.directory="$REPO" \
+        -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+        describe --tags --always --dirty 2>/dev/null || true)
+fi
 [[ -n $version ]] || version=unknown
 
 ( cd "$REPO" && go build \

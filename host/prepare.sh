@@ -535,7 +535,12 @@ fi
 # Said here rather than fixed here. The daemon attaches a bridge of its own when
 # it finds no usable one, at the moment it builds or starts a seat, which is
 # the moment it knows which seat it is talking about.
-mgmt=$(incus query /1.0/profiles/default 2>/dev/null | python -c '
+#
+# python3 and not python, here and for the library below: the prerequisites
+# above install python3 on Debian and Fedora, where `python` is absent or is
+# 2, and a missing interpreter reads as a profile that cannot be read and as
+# a library directory nobody configured, not as an error.
+mgmt=$(incus query /1.0/profiles/default 2>/dev/null | python3 -c '
 import json, sys
 
 try:
@@ -595,7 +600,7 @@ step "Shared game library"
 LIBDIR_DEFAULT=/srv/polyseat/library
 libdir=$LIBDIR_DEFAULT
 if [[ -r /etc/polyseat/polyseatd.json ]]; then
-    configured=$(python -c 'import json,sys;print(json.load(open("/etc/polyseat/polyseatd.json")).get("library_dir",""))' 2>/dev/null || true)
+    configured=$(python3 -c 'import json,sys;print(json.load(open("/etc/polyseat/polyseatd.json")).get("library_dir",""))' 2>/dev/null || true)
     [[ -n $configured ]] && libdir=$configured
 fi
 

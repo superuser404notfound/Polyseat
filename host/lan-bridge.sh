@@ -194,6 +194,49 @@ enslaved() {
 
 is_bridge() { [[ -d /sys/class/net/$1/bridge ]]; }
 
+# bridge_taken says why $BRIDGE cannot be built here, and prints nothing when it
+# can.
+#
+# br0 is the most ordinary bridge name there is. A machine that already has one,
+# made by hand, by libvirt's documentation or by an earlier network setup, would
+# have had a second profile for the same interface added beside it: the two then
+# race for br0 at every boot, and the profile that loses the race is the one
+# whose owner wonders where the network went. Worse, bringing ours up re-sets an
+# existing bridge's MAC address and addressing, and the rollback deletes only
+# Polyseat's own profiles, so a failed run left somebody else's bridge changed.
+# So anything already called br0, or any profile other than ours that names it,
+# ends the run before a seat is stopped or a setting touched.
+#
+# A profile of ours left from an earlier run ends it too. The uplink being
+# that bridge is handled before this is asked, so reaching here with one means
+# a half state that --undo exists to clear.
+bridge_taken() {
+    local net=${POLYSEAT_NET_SYSFS:-/sys/class/net} uuid id ifname
+
+    while IFS= read -r uuid; do
+        [[ -n $uuid ]] || continue
+
+        id=$(nmcli -g connection.id con show uuid "$uuid" 2>/dev/null || true)
+        ifname=$(nmcli -g connection.interface-name con show uuid "$uuid" 2>/dev/null || true)
+
+        [[ $ifname == "$BRIDGE" ]] || continue
+
+        if [[ $id == "$BRIDGE_CON" ]]; then
+            echo "the $BRIDGE_CON profile from an earlier run is still there"
+        else
+            echo "NetworkManager already has a profile for $BRIDGE, \"$id\", which is not Polyseat's"
+        fi
+
+        return 0
+    done < <(nmcli -t -f UUID con show 2>/dev/null)
+
+    if [[ -e $net/$BRIDGE ]]; then
+        echo "an interface called $BRIDGE already exists here and is not Polyseat's"
+    fi
+
+    return 0
+}
+
 # seats_on lists every instance with a NIC of the given kind hanging off the
 # given parent, running or not.
 #
@@ -495,7 +538,13 @@ release_uplink() {
         fi
     fi
 
-    nmcli con mod "$CURRENT" connection.autoconnect no
+    # Rolled back rather than left to set -e. By now the bridge and its port
+    # exist with autoconnect on and the port at priority 100, so a bare exit
+    # here left both in place to take the interface at the next boot, beside a
+    # profile that was never switched off: the race described above, built by
+    # the step meant to prevent it.
+    nmcli con mod "$CURRENT" connection.autoconnect no ||
+        rollback "$CURRENT could not be kept from coming up on its own"
     nmcli con down "$CURRENT" >/dev/null 2>&1 || true
     ok "$CURRENT does not come up on its own any more"
 }
@@ -626,6 +675,17 @@ if [[ -d /sys/class/net/$UPLINK/wireless ]] || [[ -e /sys/class/net/$UPLINK/phy8
     echo "    802.11 does not carry more than one MAC address per station, which"
     echo "    is the same reason macvlan does not work on it either. Seats need a"
     echo "    wired interface."
+    exit 1
+fi
+
+TAKEN=$(bridge_taken)
+
+if [[ -n $TAKEN ]]; then
+    bad "$BRIDGE cannot be built here: $TAKEN"
+    echo "    Nothing has been changed. A second profile for the same interface"
+    echo "    would race the first at every boot. If it is an earlier run of this"
+    echo "    script, sudo $0 --undo clears it; if it is somebody else's bridge,"
+    echo "    it is theirs to take down first."
     exit 1
 fi
 

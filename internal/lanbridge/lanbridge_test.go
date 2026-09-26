@@ -129,6 +129,47 @@ func TestRunReportsAFailure(t *testing.T) {
 	}
 }
 
+// Something the script started that outlives it and still holds its output
+// must not keep the run going. The script here is done in an instant and
+// leaves a sleep behind with its stdout, which is the shape that kept a run
+// "in progress" for as long as the leftover lived.
+func TestALeftoverChildDoesNotHoldTheRun(t *testing.T) {
+	path := script(t, "echo before\nsleep 60 &\necho after\nexit 0\n")
+
+	var got []string
+
+	started := time.Now()
+
+	err := Run(context.Background(), path, false, func(line string) { got = append(got, line) })
+	if err != nil {
+		t.Fatalf("a script that exited 0 was reported as %v", err)
+	}
+
+	if took := time.Since(started); took > outputGrace+5*time.Second {
+		t.Errorf("the run took %s, waiting on the leftover rather than the script", took)
+	}
+
+	if strings.Join(got, "|") != "before|after" {
+		t.Errorf("the lines were %q", got)
+	}
+}
+
+// Both streams arrive, in the order they were written, and the last line counts
+// without a newline after it.
+func TestBothStreamsInterleaveAndTheLastLineCounts(t *testing.T) {
+	path := script(t, "echo one\necho two >&2\necho three\nprintf four >&2\n")
+
+	var got []string
+
+	if err := Run(context.Background(), path, false, func(line string) { got = append(got, line) }); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Join(got, "|") != "one|two|three|four" {
+		t.Errorf("the lines were %q", got)
+	}
+}
+
 // The one that matters. A run that fails has already stopped every seat: the
 // script stops them before it touches the interface, and its rollback puts the
 // network back and leaves them down. Seats left down after a failure is the
