@@ -10,6 +10,24 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.33.0
+
+**NVIDIA seats get the driver's application profiles, and sway gives video
+memory back.** The driver reaches a seat through libnvidia-container, which
+brings its libraries but nothing of `/usr/share/nvidia`, where NVIDIA keeps its
+built in profiles. Every process in a seat ran without them, including the one
+that stops Xwayland and wlroots compositors like sway from holding on to video
+memory they have freed. Measured in a seat: after the output was switched
+through 4K and 1440p back to 1080p, sway held 187 MiB, where it now holds 42.
+Every seat on a card paid that difference after a single client connected in
+4K. The host's `/usr/share/nvidia` is now mounted read only into every NVIDIA
+seat, so the profiles follow the host's driver through updates. A host whose
+distribution keeps them elsewhere starts its seats as before, without them.
+
+**Seats have to be built again for this: recipe generation 60.** The mount is
+an Incus device, and a seat built before only gets it when it is provisioned
+again, which restarts it once.
+
 ## 0.32.3
 
 **Games with a Steam shortcut appeared twice in a seat's launcher.** A seat's
