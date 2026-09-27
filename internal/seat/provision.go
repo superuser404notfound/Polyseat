@@ -32,7 +32,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 59
+const Generation = 60
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -2358,6 +2358,11 @@ func (p *Provisioner) stepGPU(ctx context.Context) error {
 			"type": "unix-char", "source": "/dev/ntsync",
 			"path": "/dev/ntsync", "mode": "0666", "required": "false",
 		},
+	}
+
+	// The vendor's devices on top, the same way as its keys above.
+	for k, v := range p.stack().devices {
+		devices[k] = v
 	}
 
 	changed, err := p.Client.Configure(ctx, p.name(), config, devices)

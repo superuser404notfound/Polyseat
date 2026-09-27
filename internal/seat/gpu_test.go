@@ -213,6 +213,12 @@ func TestAMDStackCarriesNothingOfNVIDIA(t *testing.T) {
 			"was built while an NVIDIA card was in this machine keeps it")
 	}
 
+	// Present and nil, which is what takes the device off. Left out, a seat
+	// built on NVIDIA would keep a mount of a directory this host lacks.
+	if dev, ok := amd.devices[profilesDevice]; !ok || dev != nil {
+		t.Errorf("the AMD stack does not take %s off: %v", profilesDevice, amd.devices)
+	}
+
 	// Vulkan for the games and the 32 bit half of it, since a good many games
 	// are still 32 bit and would otherwise land on llvmpipe.
 	packages := strings.Join(amd.packages, " ")
@@ -468,5 +474,31 @@ func TestGPUDeviceGivesEveryCardWhenTheConfigurationAsks(t *testing.T) {
 
 	if device["type"] != "gpu" || device["mode"] != "0666" {
 		t.Errorf("the device lost what it always had: %v", device)
+	}
+}
+
+// The driver reads its built in profiles from a file named after its version,
+// so the mount has to be the directory: a file device would point at nothing
+// after the next driver update. Read only and optional, so that a host without
+// the directory still starts its seats.
+func TestNVIDIAStackMountsTheApplicationProfiles(t *testing.T) {
+	dev := stackFor(GPU{Vendor: VendorNVIDIA}).devices[profilesDevice]
+
+	want := map[string]string{
+		"type":     "disk",
+		"source":   "/usr/share/nvidia",
+		"path":     "/usr/share/nvidia",
+		"readonly": "true",
+		"required": "false",
+	}
+
+	for k, v := range want {
+		if dev[k] != v {
+			t.Errorf("%s: %s is %q, want %q", profilesDevice, k, dev[k], v)
+		}
+	}
+
+	if len(dev) != len(want) {
+		t.Errorf("%s carries keys nobody asked for: %v", profilesDevice, dev)
 	}
 }

@@ -196,6 +196,11 @@ type stack struct {
 	// config are the Incus instance keys for a seat on this vendor.
 	config map[string]string
 
+	// devices are Incus devices for a seat on this vendor, merged over the
+	// vendor neutral ones. A nil entry takes that device off, for the same
+	// reason nvidia.runtime is written as false on AMD rather than left out.
+	devices map[string]map[string]string
+
 	// packages go into the seat alongside the vendor neutral set.
 	packages []string
 
@@ -230,6 +235,12 @@ func stackFor(gpu GPU) stack {
 				// switched on, and libnvidia-container would fail the seat's
 				// start over a driver that is no longer there.
 				"nvidia.runtime": "false",
+			},
+
+			// Taken off for the same reason. It points at a directory the
+			// NVIDIA driver package owns, which an AMD host does not have.
+			devices: map[string]map[string]string{
+				profilesDevice: nil,
 			},
 
 			// Mesa is already in the vendor neutral set, and since Arch folded
@@ -285,6 +296,9 @@ func stackFor(gpu GPU) stack {
 				"nvidia.runtime":             "true",
 				"nvidia.driver.capabilities": "all",
 			},
+			devices: map[string]map[string]string{
+				profilesDevice: profilesMount(),
+			},
 			packages:    nil,
 			driverFlags: driverFlags,
 			env: []string{
@@ -294,6 +308,56 @@ func stackFor(gpu GPU) stack {
 			encoder: "nvenc",
 			adapter: "",
 		}
+	}
+}
+
+// profilesDevice is the Incus device carrying NVIDIA's application profiles.
+const profilesDevice = "nvidia-profiles"
+
+// profilesDir is where the NVIDIA driver package keeps them, on the host and,
+// once this is mounted, in the seat.
+const profilesDir = "/usr/share/nvidia"
+
+// profilesMount puts the host's application profiles into an NVIDIA seat.
+//
+// libnvidia-container brings the driver's libraries and nothing of
+// /usr/share/nvidia, and the driver reads its built in profiles from there:
+// nvidia-application-profiles-<version>-rc, the last entry of the search order
+// in the driver README. Without that file a seat runs every process with no
+// profile at all. The one that matters here is "No VidMem Reuse"
+// (GLVidHeapReuseRatio 0), which NVIDIA applies to Xwayland and to anything
+// linked against libwlroots, sway included. Without it the GL driver keeps
+// video memory a compositor has freed for later reuse instead of giving it
+// back. Measured in joser on 2026-09-27: sway at 1920x1080 held 47 MiB, and
+// after switching the output through 3840x2160 and 2560x1440 back to 1920x1080
+// it held 187 MiB and stayed there. With this mount, the same seat and the same
+// switches, sway started at 26 MiB and ended at 42 MiB, and a second round left
+// it there. Every seat on a card paid the difference, and a client that
+// connects in 4K was all it took.
+//
+// The driver says whether it found the file when asked to:
+// __GL_APPLICATION_PROFILE_LOG=1 prints one "Parsing file" line per file it
+// reads, and without this mount the only one is the stub libnvidia-container
+// writes into /etc/nvidia/nvidia-application-profiles-rc.d.
+//
+// The directory rather than the file. The file name carries the driver version,
+// so a device naming the file would point at nothing after the next driver
+// update, while the directory is the same path on every version and shows
+// whatever the host has installed now. That is always the version whose
+// libraries the injection brings, so the two cannot drift apart.
+//
+// Read only, because nothing in a seat has any business writing the host's
+// driver files, and required=false because a host whose distribution keeps the
+// directory elsewhere, or not at all, should get a seat without profiles rather
+// than a seat that does not start. No package in a seat installs into the
+// directory: the driver is never a package there, see driverFlags.
+func profilesMount() map[string]string {
+	return map[string]string{
+		"type":     "disk",
+		"source":   profilesDir,
+		"path":     profilesDir,
+		"readonly": "true",
+		"required": "false",
 	}
 }
 
