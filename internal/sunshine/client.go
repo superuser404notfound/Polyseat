@@ -226,6 +226,28 @@ func (c *Client) Pair(ctx context.Context, pin, name string) error {
 	return nil
 }
 
+// Discard drops a pairing request that is still waiting for its PIN.
+//
+// A client that gives up does not tell Sunshine. Its request stays in the list
+// for five minutes (PAIRING_SESSION_TIMEOUT in nvhttp.h), and while it is there
+// every new attempt from the same client is turned away before a PIN is even
+// shown:
+//
+//	The host declined pairing: A pairing session with this uniqueid already exists
+//
+// So somebody who pressed Cancel in Moonlight and then tried again is locked
+// out for five minutes with nothing to tell them why. Discarding the leftover
+// is the way back in. Only a seat that lists its requests can be asked, so a
+// caller has an id only when this route exists.
+//
+// A false status is not an error. Sunshine says false when the request is gone
+// already, expired or finished, and gone is what was asked for.
+func (c *Client) Discard(ctx context.Context, id string) error {
+	var out statusResponse
+
+	return c.call(ctx, http.MethodDelete, "/api/pin", map[string]string{"pairing_id": id}, &out)
+}
+
 // describe names the waiting devices for a message somebody has to act on.
 func describe(pending []Pairing) string {
 	names := make([]string, 0, len(pending))

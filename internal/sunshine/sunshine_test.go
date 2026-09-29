@@ -431,3 +431,43 @@ func TestCloseAppPostsJSONToTheCloseRoute(t *testing.T) {
 		t.Errorf("sent content type %q, Sunshine refuses anything but JSON", kind)
 	}
 }
+
+// Discard is how somebody who cancelled in Moonlight gets back in: the leftover
+// request blocks every new one from the same client for five minutes. The real
+// route is DELETE with the id in a JSON body, and it refuses a request without
+// that content type before reading it.
+func TestDiscardDeletesTheRequestByID(t *testing.T) {
+	var method, contentType string
+	var got map[string]string
+
+	c := seat(t, func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		contentType = r.Header.Get("Content-Type")
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": true})
+	})
+
+	if err := c.Discard(t.Context(), anID); err != nil {
+		t.Fatalf("did not discard: %v", err)
+	}
+
+	if method != http.MethodDelete || contentType != "application/json" {
+		t.Fatalf("sent %s with %q, wanted DELETE with application/json", method, contentType)
+	}
+
+	if got["pairing_id"] != anID {
+		t.Fatalf("sent pairing_id %q, wanted %q", got["pairing_id"], anID)
+	}
+}
+
+// Sunshine answers false when the request has already gone, which is the state
+// discarding it was meant to reach.
+func TestDiscardAcceptsARequestThatIsAlreadyGone(t *testing.T) {
+	c := seat(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": false})
+	})
+
+	if err := c.Discard(t.Context(), anID); err != nil {
+		t.Fatalf("called a request that is gone a failure: %v", err)
+	}
+}

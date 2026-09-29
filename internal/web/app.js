@@ -2310,6 +2310,53 @@ function waitingPanel(seat, pending, form) {
       );
     }
 
+    // A client that cancels does not tell the seat. Its request stays here for
+    // five minutes, and until it goes every new attempt from that client is
+    // refused with "A pairing session with this uniqueid already exists", so
+    // each one can be thrown away by hand.
+    if (devices.length > 0) {
+      const list = document.createElement("ul");
+      list.className = "devices";
+
+      devices.forEach((device) => {
+        const item = document.createElement("li");
+
+        const name = document.createElement("span");
+        name.textContent = describePending(device);
+
+        const discard = document.createElement("button");
+        discard.textContent = "Discard";
+        discard.className = "danger";
+        discard.onclick = (event) => {
+          event.preventDefault();
+          discard.disabled = true;
+
+          run(async () => {
+            try {
+              await api("POST", apiPath`/api/seats/${seat.name}/pending/discard`, {
+                id: device.id,
+              });
+              const fresh = await api("GET", apiPath`/api/seats/${seat.name}/pending`);
+              draw(fresh.pairings);
+            } finally {
+              discard.disabled = false;
+            }
+          });
+        };
+
+        item.append(name, discard);
+        list.append(item);
+      });
+
+      parts.push(
+        list,
+        note(
+          "Cancelled in Moonlight and now it says a pairing session already " +
+            "exists? Discard the old request here, then pair again.",
+        ),
+      );
+    }
+
     const again = document.createElement("button");
     again.textContent = "Check again";
     again.onclick = (event) => {

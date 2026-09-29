@@ -189,6 +189,7 @@ func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker
 	guarded.HandleFunc("GET /api/seats/{name}/sunshine", s.sunshineAccess)
 	guarded.HandleFunc("GET /api/seats/{name}/pending", s.pendingPairings)
 	guarded.HandleFunc("POST /api/seats/{name}/pair", s.pair)
+	guarded.HandleFunc("POST /api/seats/{name}/pending/discard", s.discardPairing)
 	guarded.HandleFunc("POST /api/seats/{name}/unpair", s.unpair)
 	guarded.HandleFunc("GET /api/seats/{name}/software", s.getSoftware)
 	guarded.HandleFunc("GET /api/seats/{name}/software/search", s.searchSoftware)
@@ -1154,6 +1155,32 @@ func (s *Server) pair(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.manager.Pair(r.Context(), r.PathValue("name"), req.Pin, req.Name); err != nil {
+		fail(w, http.StatusBadGateway, err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) discardPairing(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if req.ID == "" {
+		fail(w, http.StatusBadRequest, errors.New("which waiting request, by id"))
+
+		return
+	}
+
+	if err := s.manager.DiscardPairing(r.Context(), r.PathValue("name"), req.ID); err != nil {
 		fail(w, http.StatusBadGateway, err)
 
 		return

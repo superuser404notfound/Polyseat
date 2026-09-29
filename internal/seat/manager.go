@@ -3268,6 +3268,23 @@ func (m *Manager) Pair(ctx context.Context, name, pin, label string) error {
 	return nil
 }
 
+// DiscardPairing drops a request that is waiting for a PIN, so the client that
+// left it behind can start again. See sunshine.Client.Discard.
+func (m *Manager) DiscardPairing(ctx context.Context, name, id string) error {
+	client, err := m.sunshineClient(name)
+	if err != nil {
+		return err
+	}
+
+	if err := client.Discard(ctx, id); err != nil {
+		return err
+	}
+
+	m.logf(name, "discarded a waiting pairing request")
+
+	return nil
+}
+
 // Unpair removes a paired client from a seat.
 func (m *Manager) Unpair(ctx context.Context, name, uuid string) error {
 	client, err := m.sunshineClient(name)
