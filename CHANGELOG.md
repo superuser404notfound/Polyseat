@@ -10,6 +10,17 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.33.1
+
+**Pairing a device again after cancelling it was refused for five minutes.**
+A client that cancels pairing does not tell the seat, and Sunshine keeps the
+request it left behind for five minutes. Until it expired, every new attempt
+from the same client was turned away with "A pairing session with this
+uniqueid already exists", seen with Selenite. The pairing panel now lists each
+device that is waiting for a PIN with a Discard button: discard the old
+request, then pair again. Nothing in the seats changes, a restart of the
+daemon is enough.
+
 ## 0.33.0
 
 **NVIDIA seats get the driver's application profiles, and sway gives video
