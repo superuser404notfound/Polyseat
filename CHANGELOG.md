@@ -10,6 +10,25 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.35.0
+
+**A new seat could not be signed in to Steam.** Steam runs inside gamescope,
+and gamescope only shows the windows Steam tells it to, which Steam does once
+Big Picture is up. A Steam nobody has signed in to has no Big Picture, so its
+sign in window existed and was never on the screen: picking Steam in Moonlight
+gave a black screen, in every seat built since 0.30.0. Seats signed in before
+that never met it. Picking Steam now puts that window on the screen. After
+signing in, pick Steam again if Big Picture does not follow by itself.
+
+**Steam in a seat's launcher does something.** Started from the grid on the
+desktop, Steam opened on the other workspace, where it lives, and the desktop
+stayed as it was. The entry now switches to Steam and opens Big Picture, the
+way picking Steam in Moonlight does.
+
+**Seats have to be built again for this: recipe generation 62.** Both are
+files inside the seat, and a seat built before keeps the old ones until it is
+provisioned again, which restarts it once.
+
 ## 0.34.0
 
 **The launcher in a seat is drawn for the client that is connected, not for
