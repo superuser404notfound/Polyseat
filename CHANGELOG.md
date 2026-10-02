@@ -10,6 +10,23 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.35.1
+
+**Signing in to Steam ended on a black screen.** 0.35.0 put the sign in window
+of a new seat on the screen and stopped there. Steam starts without a window,
+so once the sign in was done there was nothing left to show, and nothing said
+that Steam had to be picked a second time. The seat now waits for the sign in
+to finish and opens Big Picture after it.
+
+**Big Picture was asked for again while it was on the screen.** After a sign
+in, and whenever gamescope has had nothing to show for a moment, its window
+comes back without the name the seat looked for it by. Picking Steam in
+Moonlight then asked Steam for Big Picture every five seconds for a minute and
+a half. The window is now recognised by the process it belongs to as well.
+
+Everything 0.35.0 says applies, including that seats have to be built again:
+recipe generation 63.
+
 ## 0.35.0
 
 **A new seat could not be signed in to Steam.** Steam runs inside gamescope,
