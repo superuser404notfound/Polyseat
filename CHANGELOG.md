@@ -10,6 +10,28 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.34.0
+
+**The launcher in a seat is drawn for the client that is connected, not for
+the one before it.** A seat's grid of applications takes its size when it
+opens, and the session opens one at the seat's own resolution before anybody
+connects. A client connecting changes the resolution and asks for the grid,
+and a grid that was already open was left as it was: a 4K client got the small
+icons meant for 1080p until the grid was closed and opened again, and a phone
+connecting after a television got the doubled ones. The grid is now opened
+again whenever its size no longer fits the screen.
+
+**The doubled grid needs a screen that is wide as well as tall.** The size was
+decided by the height alone, doubled from 1800 pixels up. A client that shows
+two seats side by side on one television asks each for 1920x2160, and seven
+doubled columns do not fit into that: the grid came up with five. It is now
+doubled only from 2880x1800 up, so 4K is as it was, and half a television or a
+phone held upright gets the grid that fits it.
+
+**Seats have to be built again for this: recipe generation 61.** The launcher
+is a script inside the seat, and a seat built before keeps the old one until it
+is provisioned again, which restarts it once.
+
 ## 0.33.1
 
 **Pairing a device again after cancelling it was refused for five minutes.**
