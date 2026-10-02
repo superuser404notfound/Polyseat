@@ -1285,7 +1285,21 @@ into gamescope. So when a request for Big Picture is answered by a window of
 Steam's own instead, `polyseat-steam` names Steam's application id, 769, as the
 base layer itself, through `xprop` on whichever X server turns out to be
 gamescope's. Only where the property is missing: from the first Big Picture on
-it is Steam's to write, with a game in front of its own id while one runs.
+it is Steam's to write, with a game in front of its own id while one runs. The
+script then waits that window out, without its lock, and asks for Big Picture
+again: Steam is silent, so a sign in that simply ended would end on an empty
+workspace.
+
+**gamescope's window does not keep its app_id.** gamescope names its window
+once. When it has nothing to present it attaches an empty buffer, which unmaps
+the window, and one that comes back afterwards has a title and no app_id:
+measured in a seat as `gamescope 'Sign in to Steam'` before and `null 'Steam
+Big Picture Mode'` after, same process. `polyseat-steam` therefore recognises
+the window by gamescope's process as well as by name. The two rules in the
+session's configuration that put gamescope on workspace 2 and make it
+fullscreen still match on the name alone and do not run for such a window; it
+stays where it was, and it is fullscreen because gamescope asks for that
+itself.
 
 **Steam in the seat's own launcher is the same entry with the switch in
 front.** The package's desktop entry runs `steam`, which hands the request to

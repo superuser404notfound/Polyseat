@@ -337,6 +337,35 @@ reveal() {
     return 1
 }
 
+# Somebody is typing a password, and this waits until they are done. 0 once
+# the window is gone, 1 if it is still there when the patience runs out.
+#
+# Without the lock, which is the one place this script lets go of it early. A
+# sign in takes as long as it takes, and holding the lock through it would make
+# picking Desktop wait two minutes for a refresh and then go ahead regardless.
+# What is left to do afterwards is asking a running Steam for a window, which
+# two of these can do at once without harm.
+#
+# Half an hour, after which a window nobody is using is left alone. Overridable
+# for a test; a seat never sets it.
+: "${POLYSEAT_SIGNIN_WAIT:=1800}"
+
+outlast() {
+    exec 9>&-
+
+    patience=0
+
+    while [ "$patience" -lt "$POLYSEAT_SIGNIN_WAIT" ]; do
+        mapped || return 0
+
+        patience=$((patience + 1))
+
+        sleep 1
+    done
+
+    return 1
+}
+
 # Asked for, then looked at, then asked again.
 #
 # Readiness is not a process. `steam steam://open/bigpicture` writes into a pipe
@@ -372,13 +401,28 @@ show_bigpicture() {
 
     while [ "$waited" -lt "$POLYSEAT_BIGPICTURE_WAIT" ]; do
         if mapped; then
-            if [ "$revealed" = 1 ]; then
-                say "Steam's own window is on the screen"
-            else
+            if [ "$revealed" = 0 ]; then
                 say "Big Picture is up"
+
+                return 0
             fi
 
-            return 0
+            # Not Big Picture, and the player still wants it. Left here, the
+            # sign in ends on an empty workspace: Steam is silent, so once that
+            # window closes gamescope has nothing to present and the screen
+            # goes black with nothing on it saying what to do next. Seen in
+            # seat louis the first time this ran. So the window is waited out
+            # and the asking starts over.
+            say "Steam's own window is on the screen; Big Picture is asked for"
+            say "  again once it is gone"
+
+            outlast || return 0
+
+            revealed=0
+            waited=0
+            ask_at=0
+
+            continue
         fi
 
         if [ "$waited" -ge "$ask_at" ]; then
@@ -495,8 +539,30 @@ playing() {
 # gamescope came up and is nested in this session. Used to decide how long to
 # wait, not whether to retry: a false negative here would start a second
 # gamescope, and `ours` cannot have one.
+#
+# By its app_id, and by its process as well, because the app_id does not last.
+# gamescope names its window once, when it first has something to present. When
+# it has nothing for a moment it attaches an empty buffer, which unmaps the
+# window, and a window that comes back after that has a title and no app_id.
+# Measured in seat louis on 2026-10-02, the same gamescope before and after its
+# sign in window closed:
+#
+#     2 gamescope 'Sign in to Steam'
+#     2 None      'Steam Big Picture Mode'     pid 2128, xdg_shell
+#
+# Asked only for the name, this sat out its ninety seconds in front of a Big
+# Picture that was on the screen, asking for it again every five, and then said
+# it had not opened.
 mapped() {
-    swaymsg -t get_tree 2>/dev/null | grep -q '"app_id" *: *"gamescope"'
+    tree=$(swaymsg -t get_tree 2>/dev/null)
+
+    echo "$tree" | grep -q '"app_id" *: *"gamescope"' && return 0
+
+    for pid in $(gamescopes | sed -n 's/^ours //p'); do
+        echo "$tree" | grep -Eq "\"pid\" *: *$pid([^0-9]|\$)" && return 0
+    done
+
+    return 1
 }
 
 # Not while somebody is playing, and this one is a bug that was there from the

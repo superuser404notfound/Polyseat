@@ -63,6 +63,14 @@ type seatState struct {
 	// windows.
 	signedOut bool
 
+	// signsIn is somebody finishing that sign in a moment after the window
+	// reached the screen. The window closes, and from then on Steam answers.
+	signsIn bool
+
+	// namelessWindow is a gamescope window that has been unmapped once and
+	// come back, which leaves it a title and takes its app_id.
+	namelessWindow bool
+
 	// bigPictureHasRun is a gamescope whose base layer Steam has already
 	// written, which it does from the first Big Picture on.
 	bigPictureHasRun bool
@@ -243,11 +251,19 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 	// window from the start would be testing nothing.
 	url := filepath.Join(home, "url")
 
+	// Whether somebody has signed in since the run began.
+	signedIn := filepath.Join(home, "signed-in")
+
+	windowName := `"app_id": "gamescope"`
+	if state.namelessWindow {
+		windowName = `"app_id": null, "pid": ` + gamescope + `, "shell": "xdg_shell"`
+	}
+
 	stub("swaymsg", "#!/bin/sh\n"+
 		"case \"$*\" in\n"+
 		"*get_tree*)\n"+
 		"  if [ -f "+url+" ]; then\n"+
-		"    echo '{\"nodes\": [{\"app_id\": \"gamescope\"}]}'\n"+
+		"    echo '{\"nodes\": [{"+windowName+"}]}'\n"+
 		"  else\n"+
 		"    echo '{\"nodes\": []}'\n"+
 		"  fi\n"+
@@ -319,6 +335,7 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		"  echo \"$1\" >> "+filepath.Join(home, "requests")+"\n"+
 		"  [ \"$(wc -l < "+filepath.Join(home, "requests")+")\" -ge "+strconv.Itoa(answers)+" ] &&\n"+
 		"    echo \"$1\" > "+url+"\n"+
+		"  [ -f "+signedIn+" ] && echo \"$1\" > "+url+"\n"+
 		"  exit 0 ;;\n"+
 		"esac\n"+
 		delay+
@@ -349,6 +366,11 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		}
 	}
 
+	signIn := ""
+	if state.signsIn {
+		signIn = "  (sleep 2; touch " + signedIn + "; rm -f " + url + ") >/dev/null 2>&1 &\n"
+	}
+
 	focusable := "echo 'GAMESCOPE_FOCUSABLE_APPS(CARDINAL) = '"
 	if state.signedOut {
 		focusable = "echo 'GAMESCOPE_FOCUSABLE_APPS(CARDINAL) = 769'"
@@ -359,7 +381,7 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		"[ \"$DISPLAY\" = :1 ] || { echo \"$3:  not found.\"; exit 0; }\n"+
 		"case \"$*\" in\n"+
 		"*-set*) echo \"$DISPLAY $*\" >> "+filepath.Join(home, "revealed")+"\n"+
-		"  echo 769 > "+baselayer+"; touch "+url+"; exit 0 ;;\n"+
+		"  echo 769 > "+baselayer+"; touch "+url+"\n"+signIn+"  exit 0 ;;\n"+
 		"*GAMESCOPE_FOCUSABLE_APPS*) "+focusable+" ;;\n"+
 		"*GAMESCOPECTRL_BASELAYER_APPID*)\n"+
 		"  if [ -f "+baselayer+" ]; then\n"+
@@ -416,7 +438,10 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		// Long enough for a second request to be made and answered, which is
 		// the thing being checked, and short enough that a seat that never
 		// opens one does not hold the suite for a minute and a half.
-		"POLYSEAT_BIGPICTURE_WAIT=12")
+		"POLYSEAT_BIGPICTURE_WAIT=12",
+		// How long a sign in window is waited out. Longer than the two seconds
+		// the stub takes to sign in, and short for the test where nobody does.
+		"POLYSEAT_SIGNIN_WAIT=6")
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -994,5 +1019,40 @@ func TestTheLaunchersSteamEntrySwitchesToSteam(t *testing.T) {
 
 	if runSteamScript(t, seatState{arg: "bigpicture", gamescopeRunning: true}); switched != "" {
 		t.Errorf("Moonlight's entry switched to %q itself; its prep command does that", switched)
+	}
+}
+
+// And the sign in has to end in Big Picture, not on an empty workspace.
+//
+// Steam is silent, so when the sign in window closes gamescope has nothing to
+// present and the screen goes black, with nothing on it saying that Steam has
+// to be picked a second time. That is what the first version of the fix above
+// left behind in seat louis. The script waits the window out and asks again.
+func TestSigningInEndsInBigPicture(t *testing.T) {
+	_, said := runSteamScript(t, seatState{
+		arg: "bigpicture", gamescopeRunning: true, signedOut: true, signsIn: true,
+	})
+
+	if !strings.Contains(said, "Big Picture is up") {
+		t.Errorf("the sign in was not followed by Big Picture: %q", said)
+	}
+}
+
+// gamescope's window loses its app_id when it has been unmapped once, and it
+// is still gamescope's window. Looked for by name alone, a Big Picture that was
+// on the screen was asked for again every five seconds for a minute and a half
+// and then reported as not having opened: measured in seat louis, where sway
+// listed it as app_id null, pid 2128, 'Steam Big Picture Mode'.
+func TestAWindowThatLostItsNameIsStillBigPicture(t *testing.T) {
+	_, said := runSteamScript(t, seatState{
+		arg: "bigpicture", gamescopeRunning: true, bigPictureUp: true, namelessWindow: true,
+	})
+
+	if len(requests) != 0 {
+		t.Errorf("asked for %v although Big Picture was on the screen", requests)
+	}
+
+	if !strings.Contains(said, "already on the screen") {
+		t.Errorf("said %q about a window that was there", said)
 	}
 }
