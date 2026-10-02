@@ -182,7 +182,10 @@ func launcherStubs(t *testing.T) (home, dump, state, script string) {
 		// before the stub had got round to writing them.
 		"nwg-drawer": "#!/bin/sh\ntouch " + state + "\n" +
 			"echo \"$@\" > " + dump + ".argv\nenv > " + dump + "\n",
-		"pgrep": "#!/bin/sh\n[ -e " + state + " ]\n",
+		// With the arguments, as `pgrep -a` gives them, because the script asks
+		// an open launcher what size it was drawn at.
+		"pgrep": "#!/bin/sh\n[ -e " + state + " ] || exit 1\n" +
+			"echo \"1 nwg-drawer $(cat " + dump + ".argv 2>/dev/null)\"\n",
 		"pkill": "#!/bin/sh\nrm -f " + state + "\n",
 	}
 
@@ -338,24 +341,33 @@ func TestLauncherRefreshLeavesAClosedLauncherClosed(t *testing.T) {
 // pass against a drawer with captions nobody can read.
 func TestLauncherDrawsTheGridForTheScreenItIsOn(t *testing.T) {
 	for name, tc := range map[string]struct {
-		height    string
+		size      string
 		icons     string
 		textScale string
 	}{
-		"a 1080p client":     {height: "1080", icons: "-is 96", textScale: ""},
-		"a 1440p client":     {height: "1440", icons: "-is 96", textScale: ""},
-		"a 4K television":    {height: "2160", icons: "-is 192", textScale: "GDK_DPI_SCALE=2"},
-		"sway cannot answer": {height: "", icons: "-is 96", textScale: ""},
+		"a 1080p client":     {size: "1920x1080", icons: "-is 96", textScale: ""},
+		"a 1440p client":     {size: "2560x1440", icons: "-is 96", textScale: ""},
+		"a 4K television":    {size: "3840x2160", icons: "-is 192", textScale: "GDK_DPI_SCALE=2"},
+		"a 16:10 panel":      {size: "2880x1800", icons: "-is 192", textScale: "GDK_DPI_SCALE=2"},
+		"sway cannot answer": {size: "", icons: "-is 96", textScale: ""},
+
+		// As tall as 4K and not as wide. The first version looked at the height
+		// alone and doubled these, and seven doubled columns do not fit in 1920
+		// pixels: a client showing two seats side by side on one television got
+		// five, with the rest of the grid below the screen.
+		"half a 4K television": {size: "1920x2160", icons: "-is 96", textScale: ""},
+		"a phone held upright": {size: "1206x2622", icons: "-is 96", textScale: ""},
+		"an ultrawide at 1440": {size: "3440x1440", icons: "-is 96", textScale: ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			home, dump, _, script := launcherStubs(t)
 
-			// Stands in for sway. An empty height is the compositor answering
+			// Stands in for sway. An empty size is the compositor answering
 			// nothing at all, which is every call made before the session is
 			// up and any call where the socket has gone.
 			answer := "[]"
-			if tc.height != "" {
-				answer = `[{"name":"HEADLESS-1","rect":{"width":1920,"height":` + tc.height + `}}]`
+			if width, height, ok := strings.Cut(tc.size, "x"); ok {
+				answer = `[{"name":"HEADLESS-1","rect":{"width":` + width + `,"height":` + height + `}}]`
 			}
 
 			swaymsg := "#!/bin/sh\ncat <<'JSON'\n" + answer + "\nJSON\n"
@@ -388,6 +400,75 @@ func TestLauncherDrawsTheGridForTheScreenItIsOn(t *testing.T) {
 				t.Error("the text is scaled on a screen that does not need it, so the labels are too large")
 			case tc.textScale != "" && !strings.Contains(environment, tc.textScale):
 				t.Errorf("the drawer was started without %s, so a 4K client gets large icons with captions it cannot read", tc.textScale)
+			}
+		})
+	}
+}
+
+// A launcher that is already open has to follow the screen as well.
+//
+// The session opens one at the seat's configured mode, and a client connecting
+// resizes the output and then calls show, which did nothing because one was
+// running. So the grid a 4K client saw was the 1080p one, until it was closed
+// and opened again and came back at twice the size.
+func TestLauncherRedrawsAnOpenGridWhenTheScreenChanged(t *testing.T) {
+	for name, tc := range map[string]struct {
+		open    string
+		size    string
+		redrawn bool
+	}{
+		"opened at 1080p, client is 4K":    {open: "-is 96 -c 7", size: "3840x2160", redrawn: true},
+		"opened at 4K, client is a phone":  {open: "-is 192 -c 7", size: "1280x720", redrawn: true},
+		"opened at 4K, client is still 4K": {open: "-is 192 -c 7", size: "3840x2160", redrawn: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home, dump, state, script := launcherStubs(t)
+
+			// A launcher that is open, and what it was started with.
+			if err := os.WriteFile(state, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := os.WriteFile(dump+".argv", []byte(tc.open+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			width, height, _ := strings.Cut(tc.size, "x")
+
+			swaymsg := "#!/bin/sh\necho '[{\"rect\":{\"width\":" + width + ",\"height\":" + height + "}}]'\n"
+			if err := os.WriteFile(filepath.Join(home, "bin", "swaymsg"), []byte(swaymsg), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command("/bin/sh", script, "show")
+			cmd.Env = sunshineEnv(home)
+
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("the launcher script failed: %v", err)
+			}
+
+			if !tc.redrawn {
+				// Long enough that a launcher started detached would have written the file.
+				time.Sleep(500 * time.Millisecond)
+
+				if _, err := os.Stat(dump); err == nil {
+					t.Error("show restarted a launcher that already fits the screen, " +
+						"which is a flicker on every connect")
+				}
+
+				return
+			}
+
+			waitFor(t, dump)
+
+			if _, err := os.Stat(state); err != nil {
+				t.Error("show closed the launcher and did not open it again")
+			}
+
+			argv, _ := os.ReadFile(dump + ".argv")
+			if strings.TrimSpace(string(argv)) == tc.open || !strings.Contains(string(argv), "-is ") {
+				t.Errorf("the launcher is still drawn with %q on a screen of %s",
+					strings.TrimSpace(string(argv)), tc.size)
 			}
 		})
 	}

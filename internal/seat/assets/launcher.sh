@@ -93,15 +93,16 @@ export XDG_DATA_DIRS
 
 running() { pgrep -x nwg-drawer >/dev/null 2>&1; }
 
-# How tall the screen is, or nothing when it cannot be asked.
+# How large the screen is, as "width height", or nothing when it cannot be
+# asked.
 #
 # The output is whatever the connected client asked for, so this is a different
-# number on a phone and on a television, and it decides how large the grid is
+# pair on a phone and on a television, and it decides how large the grid is
 # drawn. Read through python rather than parsed out of the JSON by hand: python
 # is in every seat because the input helpers need it, and a launcher that got
 # this wrong by a regular expression would open at the wrong size with nothing
 # saying why.
-screen_height() {
+screen_size() {
     swaymsg -t get_outputs 2>/dev/null | python3 -c '
 import json, sys
 
@@ -113,9 +114,10 @@ except Exception:
 # The first output with a size. One sway knows about but is not driving reports
 # zero, the same as polyseat-pad-pointer has to allow for.
 for output in outputs if isinstance(outputs, list) else []:
-    height = (output.get("rect") or {}).get("height") or 0
-    if height:
-        print(height)
+    rect = output.get("rect") or {}
+    width, height = rect.get("width") or 0, rect.get("height") or 0
+    if width and height:
+        print(width, height)
         break
 ' 2>/dev/null
 }
@@ -138,19 +140,49 @@ for output in outputs if isinstance(outputs, list) else []:
 # 2160 the unscaled grid is unusable across a room, and at 1440 a doubled one
 # would leave two rows on the screen.
 #
+# **The width has to agree, and the first version only asked for the height.**
+# A client that shows two seats side by side on one television asks each for
+# 1920x2160, which is as tall as 4K and half as wide. Doubled, the seven
+# columns the grid is given do not fit and it came up with five, seen on
+# exactly that screen. 2880 is 16:10 at 1800 tall, so everything shaped like a
+# screen stays on the side it was on, and a half or a phone held upright gets
+# the grid that fits it.
+#
 # Anything unreadable answers 1, which is what was measured at 1080p.
 drawer_scale() {
-    height=$(screen_height)
+    # Unquoted on purpose: two words become two parameters.
+    # shellcheck disable=SC2046
+    set -- $(screen_size)
 
-    case "$height" in
+    case "$1$2" in
         '' | *[!0-9]*) echo 1; return ;;
     esac
 
-    if [ "$height" -ge 1800 ]; then echo 2; else echo 1; fi
+    if [ "$1" -ge 2880 ] && [ "${2:-0}" -ge 1800 ]; then echo 2; else echo 1; fi
+}
+
+# Whether the launcher that is open was drawn for the screen as it is now.
+#
+# The drawer takes its size once, when it starts, and the screen changes under
+# it: the session comes up at the seat's configured mode with a launcher open,
+# and polyseat-resize sets the client's mode a moment before show is called.
+# Seen from a 4K client, where the grid stayed at the size meant for 1080p
+# until somebody closed it and opened it again, and then doubled.
+#
+# Asked of the process rather than remembered in a file, because the arguments
+# it was started with are the one record that cannot be out of date.
+drawn_for() {
+    pgrep -a -x nwg-drawer 2>/dev/null | grep -q -- "-is $((96 * $1)) "
 }
 
 show() {
-    running && return 0
+    scale=$(drawer_scale)
+
+    if running; then
+        drawn_for "$scale" && return 0
+
+        hide
+    fi
 
     # The desktop does not inherit the OpenGL half of the framerate cap.
     #
@@ -191,7 +223,6 @@ show() {
     # exec`, which is `sh -c`, and that is a second round of interpretation for
     # every Exec line with nothing gained: the drawer already detaches what it
     # starts, and what it starts should inherit the environment set up above.
-    scale=$(drawer_scale)
 
     # The text, which no flag covers.
     [ "$scale" -gt 1 ] && export GDK_DPI_SCALE="$scale"

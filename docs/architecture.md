@@ -893,7 +893,12 @@ window but not the buttons that close it or bring up the keyboard.
 **The grid follows the size of the screen, and the screen is the client's.** A
 seat's output takes the resolution of whoever connects, so one fixed icon size
 is either right on a phone or right on a television. The launcher asks sway how
-tall the output is and doubles the icons and the text above 1800 pixels.
+large the output is and doubles the icons and the text from 2880x1800 up. Both
+numbers have to be reached: a client showing two seats side by side on one
+television asks each for 1920x2160, as tall as 4K and half as wide, and seven
+doubled columns do not fit into that. And because the session opens a grid
+before anybody connects, `show` asks one that is already open what size it was
+started with and opens it again when that no longer fits the screen.
 GDK_SCALE, which looks like the whole answer, is not: it is set, it is in the
 process environment, and GTK on Wayland ignores it, measured in a seat at
 3840x2160 where the drawer came up drawn exactly as at 1080p. So the size
