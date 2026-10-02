@@ -1274,6 +1274,25 @@ first one in each entry rather than the last, because everything before it is
 time the player spends looking at the other workspace - three to five seconds
 of somebody else's desktop, reported from a television.
 
+**A Steam nobody has signed in to is shown by hand.** gamescope with `-e` does
+not present whatever window is there. It presents the applications named in
+`GAMESCOPECTRL_BASELAYER_APPID` on its root window, and the one that writes
+that property is Big Picture. Before the first sign in there is no Big Picture
+to write it, so the sign in window sat inside gamescope, mapped and focusable
+and never shown, and sway had no gamescope window at all: a black screen from
+Moonlight and nothing from the launcher, in every seat built since Steam moved
+into gamescope. So when a request for Big Picture is answered by a window of
+Steam's own instead, `polyseat-steam` names Steam's application id, 769, as the
+base layer itself, through `xprop` on whichever X server turns out to be
+gamescope's. Only where the property is missing: from the first Big Picture on
+it is Steam's to write, with a game in front of its own id while one runs.
+
+**Steam in the seat's own launcher is the same entry with the switch in
+front.** The package's desktop entry runs `steam`, which hands the request to
+the Steam on workspace 2, so on the desktop nothing happened. The seat's entry
+of the same name runs `polyseat-steam show`: the workspace first, then the
+window.
+
 **Picking Desktop restarts the pair**, which is a stranger answer than it
 looks. Under gamescope Steam believes it sits in a session, so Big Picture
 offers "switch to desktop", and Steam's own client carries the string "Method

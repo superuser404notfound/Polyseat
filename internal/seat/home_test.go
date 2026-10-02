@@ -326,6 +326,30 @@ func TestHiddenLauncherEntriesReplaceALinkRatherThanWritingThroughIt(t *testing.
 	home.untouched(t, path, target)
 }
 
+// Steam started from the grid has to be the script that switches to it, not the
+// package's entry, which hands the request to a Steam on a workspace nobody is
+// looking at.
+func TestTheLaunchersSteamIsTheOneThatShowsIt(t *testing.T) {
+	p, home := homeProvisioner(t)
+
+	if err := p.tidyLauncher(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(home.root, ".local/share/applications/steam.desktop"))
+	if err != nil {
+		t.Fatalf("the seat has no Steam entry of its own: %v", err)
+	}
+
+	if !strings.Contains(string(body), "\nExec=/usr/local/bin/polyseat-steam show\n") {
+		t.Errorf("the entry does not run the script:\n%s", body)
+	}
+
+	if strings.Contains(string(body), "Hidden=true") || strings.Contains(string(body), "NoDisplay=true") {
+		t.Errorf("Steam is hidden from the launcher:\n%s", body)
+	}
+}
+
 // runGiveBack runs giveBackHome the way takeHomeBack does, over a home of the
 // test's own, for a player whose uid is the one given.
 func runGiveBack(t *testing.T, home string, uid int, dirs ...string) (string, error) {

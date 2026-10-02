@@ -56,6 +56,16 @@ type seatState struct {
 	// `steam` with anything on its command line starts a Steam of its own,
 	// outside gamescope.
 	slowSteam bool
+
+	// signedOut is a Steam nobody has signed in to. It answers a request for
+	// Big Picture with nothing, because what it has up is its sign in window,
+	// and gamescope keeps that to itself until it is told to show Steam's own
+	// windows.
+	signedOut bool
+
+	// bigPictureHasRun is a gamescope whose base layer Steam has already
+	// written, which it does from the first Big Picture on.
+	bigPictureHasRun bool
 }
 
 // A Steam that is running is not a Big Picture that is ready: with -silent
@@ -280,6 +290,10 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		answers = 2
 	}
 
+	if state.signedOut {
+		answers = 1000
+	}
+
 	// Anything but the start itself is a command for a Steam that is running.
 	// Given to none, the real bootstrapper starts one to carry it out, and that
 	// one is outside gamescope, so the stub writes the command down instead.
@@ -310,6 +324,52 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		delay+
 		"echo \"$* mangohud=$MANGOHUD\" > "+filepath.Join(home, "started")+"\n"+
 		"touch "+steamMarker+"\n")
+
+	// gamescope's root window, as xprop reads and writes it. A signed out
+	// Steam has a window gamescope could show, and the window reaches sway the
+	// moment the base layer names Steam, which is what was measured in a seat.
+	// The directory of X sockets is the test's own, so that the machine's real
+	// displays are never asked anything.
+	x11 := filepath.Join(home, "x11")
+	if err := os.MkdirAll(x11, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"X0", "X1"} {
+		if err := os.WriteFile(filepath.Join(x11, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	baselayer := filepath.Join(home, "baselayer")
+
+	if state.bigPictureHasRun {
+		if err := os.WriteFile(baselayer, []byte("1234, 769\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	focusable := "echo 'GAMESCOPE_FOCUSABLE_APPS(CARDINAL) = '"
+	if state.signedOut {
+		focusable = "echo 'GAMESCOPE_FOCUSABLE_APPS(CARDINAL) = 769'"
+	}
+
+	stub("xprop", "#!/bin/sh\n"+
+		// The session's own X server is not gamescope's and knows none of this.
+		"[ \"$DISPLAY\" = :1 ] || { echo \"$3:  not found.\"; exit 0; }\n"+
+		"case \"$*\" in\n"+
+		"*-set*) echo \"$DISPLAY $*\" >> "+filepath.Join(home, "revealed")+"\n"+
+		"  echo 769 > "+baselayer+"; touch "+url+"; exit 0 ;;\n"+
+		"*GAMESCOPE_FOCUSABLE_APPS*) "+focusable+" ;;\n"+
+		"*GAMESCOPECTRL_BASELAYER_APPID*)\n"+
+		"  if [ -f "+baselayer+" ]; then\n"+
+		"    echo \"GAMESCOPECTRL_BASELAYER_APPID(CARDINAL) = $(cat "+baselayer+")\"\n"+
+		"  else\n"+
+		"    echo 'GAMESCOPECTRL_BASELAYER_APPID:  not found.'\n"+
+		"  fi ;;\n"+
+		"esac\n")
+
+	stub("polyseat-workspace", "#!/bin/sh\necho \"$*\" >> "+filepath.Join(home, "switched")+"\n")
 
 	// The real wrapper rather than a stub of it, because the thing being
 	// checked is that these two files still agree about how a capped process
@@ -343,6 +403,8 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 	cmd := exec.Command("/bin/sh", argv...)
 	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"),
 		"POLYSEAT_CAPPED="+capped,
+		"POLYSEAT_X11_DIR="+x11,
+		"POLYSEAT_WORKSPACE="+filepath.Join(bin, "polyseat-workspace"),
 		"XDG_RUNTIME_DIR="+run,
 		// Emptied rather than left alone, because the machine running the tests
 		// has one of its own and the script would inherit it.
@@ -405,6 +467,16 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		lockedSteam = strings.Fields(string(b))
 	}
 
+	revealed, switched = "", ""
+
+	if b, err := os.ReadFile(filepath.Join(home, "revealed")); err == nil {
+		revealed = strings.TrimSpace(string(b))
+	}
+
+	if b, err := os.ReadFile(filepath.Join(home, "switched")); err == nil {
+		switched = strings.TrimSpace(string(b))
+	}
+
 	return strings.TrimSpace(string(body)), string(out)
 }
 
@@ -428,6 +500,10 @@ var unaskedSteam []string
 // lockedSteam is every command the last run gave `steam` with the script's lock
 // still open on descriptor 9.
 var lockedSteam []string
+
+// revealed is what the last run wrote to gamescope's root window, with the
+// display it wrote it to, and switched is every workspace it asked for.
+var revealed, switched string
 
 // stalePid is the process the last run offered as a gamescope left behind by a
 // session that is gone. Here for the same reason as gamescopeArgs: one test
@@ -845,5 +921,78 @@ func TestTheSessionStartsSunshineOnlyAfterImportingTheDisplay(t *testing.T) {
 
 	if !found {
 		t.Error("the session never starts Sunshine")
+	}
+}
+
+// A seat nobody has signed in to has to be able to show its sign in window.
+//
+// gamescope with -e presents what Steam names as the base layer, and the one
+// that names it is Big Picture, which a signed out Steam cannot open. So the
+// window sat inside gamescope, focusable and never shown: a black screen from
+// Moonlight and nothing at all from the launcher, in every seat built since
+// Steam moved into gamescope. Found in seat louis on the evening it was built.
+func TestASignedOutSteamShowsItsSignInWindow(t *testing.T) {
+	_, said := runSteamScript(t, seatState{
+		arg: "bigpicture", gamescopeRunning: true, signedOut: true,
+	})
+
+	if !strings.Contains(revealed, "-set GAMESCOPECTRL_BASELAYER_APPID 769") {
+		t.Fatalf("gamescope was never told to show Steam's own window, so nobody "+
+			"can sign in: wrote %q, said %q", revealed, said)
+	}
+
+	// On gamescope's server and not on the session's, which is :0 and would
+	// take the property without complaint and show nothing.
+	if !strings.HasPrefix(revealed, ":1 ") {
+		t.Errorf("the property went to %q, which is not gamescope's X server", revealed)
+	}
+
+	if strings.Contains(said, "Big Picture is up") {
+		t.Errorf("said %q about a sign in window", said)
+	}
+
+	if strings.Contains(said, "did not open") {
+		t.Errorf("gave up although the window came: %q", said)
+	}
+}
+
+// And never over what Steam wrote there itself. From the first Big Picture on
+// the property is Steam's, with a game in front of its own id while one runs,
+// and replacing that takes the game off the screen.
+func TestTheBaseLayerSteamWroteIsLeftAlone(t *testing.T) {
+	runSteamScript(t, seatState{
+		arg: "bigpicture", gamescopeRunning: true, signedOut: true, bigPictureHasRun: true,
+	})
+
+	if revealed != "" {
+		t.Errorf("wrote %q over a base layer Steam had already set", revealed)
+	}
+}
+
+// A healthy seat is not touched either: Big Picture comes and names itself.
+func TestBigPictureThatComesIsNotHelpedAlong(t *testing.T) {
+	runSteamScript(t, seatState{arg: "bigpicture", gamescopeRunning: true})
+
+	if revealed != "" {
+		t.Errorf("wrote %q although Big Picture opened by itself", revealed)
+	}
+}
+
+// Steam started from the grid on the desktop has to end up in front of the
+// player. It lives on the other workspace, so without the switch everything
+// happened and nothing was seen.
+func TestTheLaunchersSteamEntrySwitchesToSteam(t *testing.T) {
+	_, said := runSteamScript(t, seatState{arg: "show", gamescopeRunning: true})
+
+	if switched != "2" {
+		t.Errorf("asked for workspace %q, so Steam opened where nobody is looking", switched)
+	}
+
+	if !strings.Contains(said, "Big Picture is up") {
+		t.Errorf("show did not ask for the window: %q", said)
+	}
+
+	if runSteamScript(t, seatState{arg: "bigpicture", gamescopeRunning: true}); switched != "" {
+		t.Errorf("Moonlight's entry switched to %q itself; its prep command does that", switched)
 	}
 }

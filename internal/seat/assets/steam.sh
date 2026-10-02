@@ -107,6 +107,21 @@ say() { echo "polyseat-steam: $*" >&2; }
 LOG=$HOME/.local/share/polyseat/gamescope.log
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
 
+# The launcher's Steam entry, which is the Moonlight entry with the switch in
+# front of it.
+#
+# Steam lives on the other workspace, so starting it from the grid on the
+# desktop did everything except show it: the request went to the Steam in
+# gamescope, whatever it opened was opened over there, and the player was left
+# looking at a desktop on which nothing had happened. Moonlight's entry has the
+# switch as a prep command; somebody already on the desktop has only this.
+#
+# Before the lock rather than after, because the lock can be a wait and the
+# player should spend it looking at the right workspace.
+if [ "$1" = show ]; then
+    "${POLYSEAT_WORKSPACE:-/usr/local/bin/polyseat-workspace}" 2
+fi
+
 # And one of these at a time, whatever starts them.
 #
 # The entries overlap in ordinary use: picking Desktop starts a refresh that
@@ -143,6 +158,7 @@ fi
 # player just asked for.
 want_window=0
 [ "$1" = bigpicture ] && want_window=1
+[ "$1" = show ] && want_window=1
 
 # The session's socket, resolved here rather than inherited, because the daemon
 # runs this script through incus exec, where there is no session environment to
@@ -209,6 +225,9 @@ fi
 #                               one
 #   polyseat-steam bigpicture   the same, and then Big Picture on the screen.
 #                               What picking Steam in Moonlight runs
+#   polyseat-steam show         the same as bigpicture, after switching to the
+#                               workspace it is on. What the Steam entry in the
+#                               seat's own launcher runs
 #   polyseat-steam refresh      the same as the first, after throwing the
 #                               current Big Picture away
 #
@@ -261,6 +280,63 @@ close_steam() {
     return 1
 }
 
+# A window Steam is showing that gamescope is keeping to itself, put on the
+# screen. 0 when there was one.
+#
+# **A Steam nobody has signed in to cannot open Big Picture, and its sign in
+# window was invisible.** gamescope with -e does not present whatever window
+# happens to be there: it presents the applications Steam names in
+# GAMESCOPECTRL_BASELAYER_APPID on its root window, and the one that writes
+# that property is Big Picture. Before the first sign in there is no Big
+# Picture, so nothing ever writes it, and the window that would let somebody
+# sign in sits inside gamescope, mapped and focusable and never shown. Measured
+# in seat louis on 2026-10-02, a seat built that evening:
+#
+#     GAMESCOPE_FOCUSABLE_WINDOWS = 33554489, 769, 2476    "Sign in to Steam"
+#     GAMESCOPE_FOCUSED_WINDOW    =
+#     GAMESCOPECTRL_BASELAYER_APPID:  not found.
+#
+# and sway had no gamescope window at all. Picking Steam in Moonlight was a
+# black screen, starting it from the launcher did nothing, and joser had been
+# in the same state since the day Steam moved into gamescope. Seats that were
+# signed in before that never met it.
+#
+# 769 is Steam's own application id, which every window of the client carries.
+# Naming it is what Big Picture does for itself, so this hands gamescope
+# nothing it would not get anyway: set by hand in that seat, the window was on
+# the screen within the second.
+#
+# Only where the property is missing. Once Big Picture has run it is Steam's to
+# write, with a game in front of its own id while one is running, and writing
+# over that would take the game off the screen.
+#
+# gamescope's X servers are found rather than assumed. The session's own is :0
+# and gamescope takes the next ones free, which is :1 and :2 in every seat
+# looked at and nothing promises it.
+: "${POLYSEAT_X11_DIR:=/tmp/.X11-unix}"
+
+reveal() {
+    command -v xprop >/dev/null 2>&1 || return 1
+
+    for x in "$POLYSEAT_X11_DIR"/X*; do
+        [ -e "$x" ] || continue
+
+        d=":${x##*/X}"
+
+        # Steam has a window there that gamescope would show if it were let.
+        DISPLAY=$d timeout 2 xprop -root GAMESCOPE_FOCUSABLE_APPS 2>/dev/null |
+            grep -Eq '= (.*, )?769(,|$)' || continue
+
+        DISPLAY=$d timeout 2 xprop -root GAMESCOPECTRL_BASELAYER_APPID 2>/dev/null |
+            grep -q ' = ' && continue
+
+        DISPLAY=$d timeout 2 xprop -root -f GAMESCOPECTRL_BASELAYER_APPID 32c \
+            -set GAMESCOPECTRL_BASELAYER_APPID 769 >/dev/null 2>&1 && return 0
+    done
+
+    return 1
+}
+
 # Asked for, then looked at, then asked again.
 #
 # Readiness is not a process. `steam steam://open/bigpicture` writes into a pipe
@@ -290,12 +366,17 @@ close_steam() {
 
 show_bigpicture() {
     said_it=0
+    revealed=0
     waited=0
     ask_at=0
 
     while [ "$waited" -lt "$POLYSEAT_BIGPICTURE_WAIT" ]; do
         if mapped; then
-            say "Big Picture is up"
+            if [ "$revealed" = 1 ]; then
+                say "Steam's own window is on the screen"
+            else
+                say "Big Picture is up"
+            fi
 
             return 0
         fi
@@ -309,6 +390,16 @@ show_bigpicture() {
             else
                 ask_at=$((waited + 1))
             fi
+        fi
+
+        # Not in the first seconds. A warm Steam builds Big Picture in well
+        # under one, and Big Picture names itself to gamescope; this is for the
+        # Steam that answered the request with a window of its own instead.
+        if [ "$waited" -ge 3 ] && reveal; then
+            say "Steam has a window of its own up instead of Big Picture, most"
+            say "  likely its sign in. gamescope was told to show it"
+
+            revealed=1
         fi
 
         waited=$((waited + 1))

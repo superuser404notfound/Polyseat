@@ -32,7 +32,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 61
+const Generation = 62
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -661,6 +661,12 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 		// that into the PNG a client will actually draw. It is in a seat either
 		// way, since the desktop pulls it in; this is so that it stays there.
 		"librsvg",
+		// How polyseat-steam tells gamescope to show the window of a Steam
+		// nobody has signed in to; the script says why that is needed. In every
+		// seat looked at already, as a dependency of xdg-utils, and named for
+		// the same reason as the line above: without it a new seat has no way
+		// to reach Steam's sign in at all.
+		"xorg-xprop",
 		// The graphical way in, so that installing something is not a command
 		// somebody has to be told. gnome-software costs almost nothing here
 		// because a seat already has the toolkit underneath it, and with
@@ -3249,8 +3255,29 @@ func (p *Provisioner) tidyLauncher(ctx context.Context) error {
 
 	p.Log("hid %d launcher entries a seat has no use for", len(clutter))
 
-	return nil
+	// And Steam's own entry is replaced by one that ends in front of the player.
+	//
+	// The package's entry runs `steam`, which hands the request to the Steam
+	// that is already running. That one is in gamescope on the other workspace,
+	// so whatever it opened was opened there, and on the desktop nothing
+	// happened: reported from a seat built that evening, by somebody who wanted
+	// to sign in. A user entry of the same name takes the package's place, the
+	// way the hidden ones above do.
+	return p.writeHome(ctx, dir+"/steam.desktop", []byte(steamEntry))
 }
+
+// steamEntry is the launcher's Steam: the workspace switch and then the window,
+// which is what Moonlight's entry does in two commands.
+//
+// A script and a word rather than a shell line, because the launcher runs Exec
+// through `env -S` and gives no shell the quotes to work with. The icon is the
+// package's by name, so it follows the theme as it did before, and the scan
+// that draws Moonlight's card for Steam reads Icon= out of whichever entry it
+// finds first.
+const steamEntry = "[Desktop Entry]\nType=Application\nName=Steam\n" +
+	"Exec=" + steamScriptPath + " show\n" +
+	"Icon=steam\nTerminal=false\nCategories=Network;FileTransfer;Game;\n" +
+	"StartupNotify=false\nX-Polyseat=steam\n"
 
 // credentialsCommand is the command that sets Sunshine's login, with the
 // password left out of it: it is read from standard input.
