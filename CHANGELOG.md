@@ -10,6 +10,31 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.36.0
+
+**A client that came back with a different size got the old one.** Leaving
+without quitting keeps the application running in Sunshine, and connecting
+again within the next minute resumed it. A resume runs none of the commands
+that size the seat, so a client that changed its size in between - a split
+screen going from side by side to top and bottom, a phone turned round - was
+streamed the size it had before. The daemon now follows each seat's Sunshine
+log and closes the application the moment a client leaves, unless it is back
+first, so every connection is a launch sized for whoever makes it. Every
+application is detached: Steam and a running game carry on, and picking the
+same entry lands back in them.
+
+**A brief drop no longer changes the seat's size twice.** Sunshine used to put
+the seat's own size back the moment a client left. With the application now
+closed on every drop, that would have put a game through two mode changes for a
+reconnect at the same size, so the daemon puts the size back itself once the
+stream has stayed gone for 45 seconds, as it already did after any stream that
+ended some other way.
+
+**Seats have to be built again for this: recipe generation 64.** The change to
+the size is in the seat's Sunshine configuration. A seat built before still
+gets the right size on every connection, but goes back to its own size and up
+again on a brief drop until it is provisioned again.
+
 ## 0.35.1
 
 **Signing in to Steam ended on a black screen.** 0.35.0 put the sign in window
