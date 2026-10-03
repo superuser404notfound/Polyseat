@@ -32,7 +32,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 63
+const Generation = 64
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -3433,10 +3433,9 @@ func (p *Provisioner) writeSunshineConfig(ctx context.Context, addresses map[str
 	origins := OriginsFor(addresses)
 
 	conf, err := render("assets/sunshine.conf", map[string]string{
-		"Origins":    strings.Join(origins, ","),
-		"Resolution": p.Seat.Resolution,
-		"Encoder":    p.stack().encoder,
-		"Adapter":    p.stack().adapter,
+		"Origins": strings.Join(origins, ","),
+		"Encoder": p.stack().encoder,
+		"Adapter": p.stack().adapter,
 	})
 	if err != nil {
 		return nil, err

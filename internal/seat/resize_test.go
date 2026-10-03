@@ -110,7 +110,8 @@ func TestTheClientGetsTheSizeItAskedFor(t *testing.T) {
 		t.Errorf("the script returned %d, and a non-zero prep command stops the stream", code)
 	}
 
-	// The undo side, which hands the seat's own configured mode back in.
+	// The daemon's side, which hands the seat's own configured mode back in
+	// once a stream has stayed gone. See sessionEnded.
 	if asked, _, _ := runResize(t, nil, "1920x1080@60Hz"); !strings.HasSuffix(asked, "1920x1080@60Hz") {
 		t.Errorf("sway was asked for %q, want the explicit mode as it came", asked)
 	}

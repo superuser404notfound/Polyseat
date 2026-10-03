@@ -5,9 +5,9 @@
 #   polyseat-resize 1920x1080@60Hz     set an explicit mode
 #
 # Sunshine exports SUNSHINE_CLIENT_WIDTH, SUNSHINE_CLIENT_HEIGHT and
-# SUNSHINE_CLIENT_FPS to the commands in global_prep_cmd, so the "do" side
-# needs no arguments and the "undo" side passes the seat's configured mode back
-# in.
+# SUNSHINE_CLIENT_FPS to the commands in global_prep_cmd, so Sunshine runs this
+# with no arguments. The daemon passes the seat's configured mode back in once
+# a stream has stayed gone; Sunshine has no undo for it, see sunshine.conf.
 #
 # Without this the output stays at whatever the session came up with and every
 # client gets that, scaled. A phone streaming 1280x720 from a 1920x1080 seat

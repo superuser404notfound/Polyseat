@@ -1673,6 +1673,20 @@ running game carry on, and picking the same entry in Moonlight lands back in
 them. The seat is asked once more immediately before, because closing the
 application under a client that has just come back would end their stream.
 
+**And it closes it the moment the client leaves, not 45 seconds later.** A
+client that came back sooner than that still resumed, and a resume carries a new
+size that Sunshine reads and then hands only to the display code of other
+platforms. A client that splits its screen showed it: top and bottom at
+3840x1080, out at 11:10:33, back at 11:10:47 asking for side by side, and
+streamed at 3840x1080 again. So the daemon follows each seat's Sunshine log
+(`journalctl --user --follow`, started and stopped with the broker) and closes
+the application when `CLIENT DISCONNECTED` goes by, once the seat's sockets say
+the stream is gone and unless a `CLIENT CONNECTED` came first. The login to
+Sunshine's API is on the host, which is why this is the daemon's and not a
+script in the seat. The resize has no `undo` any more: run on every brief drop
+it would put a game through two mode changes for nothing, so the seat's own
+size goes back with the rest of the reset above, once the 45 seconds are up.
+
 **A guard is only as good as the thing it asks.** The first version of this asked
 the marker file that describes the stream, and got thrown out of a stream anyway.
 Sunshine runs its prep commands once per application launch, not once per

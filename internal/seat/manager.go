@@ -157,6 +157,12 @@ type runtime struct {
 	log    *Log
 	broker *supervise.Process
 
+	// follow reads the seat's Sunshine log for clients leaving, see
+	// sunshinelog.go. Started and stopped with the broker, because it is an
+	// exec into the seat and has to be gone before the seat stops just the
+	// same.
+	follow *follower
+
 	uid int64
 
 	container string
@@ -1471,6 +1477,11 @@ func (m *Manager) readEncoders(ctx context.Context, name string) (string, []stri
 // Measured in vince: disconnected 18:13:52, put back by this at 18:14:47,
 // resumed at 19:09 with no polyseat-resize in the log. So the application is
 // closed first, and the next connection is a launch that sizes the seat.
+//
+// The daemon now closes it the moment Sunshine logs the client leaving, see
+// sunshinelog.go, so here it is the fallback for a departure that was missed.
+// Putting the size back is still this function's alone: sunshine.conf has no
+// undo for the resize any more.
 func (m *Manager) sessionEnded(ctx context.Context, name string) {
 	seat, err := m.store.Get(name)
 	if err != nil {
@@ -2015,6 +2026,7 @@ func (m *Manager) startBroker(name string) {
 
 	if rt.broker != nil {
 		m.mu.Unlock()
+		m.startFollowing(name)
 		rt.broker.Start()
 
 		return
@@ -2054,6 +2066,7 @@ func (m *Manager) startBroker(name string) {
 	rt.broker = proc
 	m.mu.Unlock()
 
+	m.startFollowing(name)
 	proc.Start()
 }
 
@@ -2091,6 +2104,8 @@ func (m *Manager) stopBroker(name string) {
 	}
 
 	m.mu.Unlock()
+
+	m.stopFollowing(name)
 
 	if proc != nil {
 		proc.Stop()
