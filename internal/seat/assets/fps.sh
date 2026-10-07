@@ -1,8 +1,9 @@
 #!/bin/sh
 # Polyseat - cap the framerate in a seat to the one the client asked for.
 #
-#   polyseat-fps          take the framerate from Sunshine's environment
-#   polyseat-fps off      take the cap off again
+#   polyseat-fps                     take the framerate from Sunshine's environment
+#   polyseat-fps 1920x1080@60Hz      cap at the rate of an explicit mode
+#   polyseat-fps 60                  or at a plain rate
 #
 # The seat's output runs at twice the client's rate, see polyseat-resize, so
 # even a game that waits for vblank renders double what anybody is shown, and
@@ -19,9 +20,21 @@
 # native game, a game under Proton, a flatpak launcher and an emulator without
 # any of them being configured.
 #
-# Read at application start, so the cap reaches whatever is started while a
-# client is connected. Games already running when a client arrives keep the
-# framerate they started with.
+# MangoHud watches this file and rereads it while a game is running, so the cap
+# reaches a game that was started for an earlier client as well. Measured on
+# 2026-10-07 with a Vulkan and an OpenGL program left running in a seat while
+# the file was rewritten eight times, cap on, cap off, 30, 60: both followed
+# every time, within the ten seconds each step was given.
+#
+# Which is why the cap is never taken off again. This used to remove it when a
+# client left, on the belief that the file was only read at application start
+# and removing it would cost nothing that was running. It cost the opposite: a
+# game somebody left open lost its limit the moment they disconnected and
+# rendered flat out for nobody, one at 220 % of a core and the OpenGL program
+# above at 7000 frames a second. There is no moment at which a seat wants that.
+# So a client arriving sets the cap to its own rate, and once the stream has
+# stayed gone the daemon sets it to the seat's own, together with the mode. See
+# sessionEnded.
 #
 # Never fails: this runs as a Sunshine prep command, and a prep command that
 # returns non-zero stops the stream from starting at all. A seat rendering more
@@ -51,46 +64,39 @@ write() {
         # into somebody's stream is a surprise rather than a feature.
         echo "no_display=1"
 
-        # An "if" rather than a test and an echo joined by "and": with no cap to
-        # write, the joined form is a false last command, the whole block
-        # reports failure, and taking the cap off reported that it could not
-        # write a file it had just written perfectly well.
-        if [ -n "$1" ]; then
-            echo "fps_limit=$1"
+        echo "fps_limit=$1"
 
-            # How the limiter waits. "late", MangoHud's default, renders the
-            # frame the moment the last one was presented and sleeps out the
-            # rest of the interval, so what goes out is almost a whole interval
-            # old. "early" sleeps first and renders last, which is fresher by up
-            # to that interval, and on a stream that age is added to every other
-            # delay in the chain.
-            #
-            # This was "late" for one release, on the theory that "early" was
-            # what made the in-game Steam overlay stutter: a budget computed
-            # before the work cannot absorb what the overlay costs, so a missed
-            # budget would push the frame to the next interval and turn 60 into
-            # 30. It was a good theory and it was wrong. The overlay stutters
-            # just as badly in a seat where MangoHud is not loaded at all and
-            # there is therefore no cap, no method and no present mode. Measured
-            # on 2026-09-21, after an autostarted Steam turned out to be
-            # inheriting none of them. So the cap is not the cause, and "early"
-            # comes back rather than paying a frame of latency for a fix that
-            # fixes nothing.
-            echo "fps_limit_method=early"
+        # How the limiter waits. "late", MangoHud's default, renders the
+        # frame the moment the last one was presented and sleeps out the
+        # rest of the interval, so what goes out is almost a whole interval
+        # old. "early" sleeps first and renders last, which is fresher by up
+        # to that interval, and on a stream that age is added to every other
+        # delay in the chain.
+        #
+        # This was "late" for one release, on the theory that "early" was
+        # what made the in-game Steam overlay stutter: a budget computed
+        # before the work cannot absorb what the overlay costs, so a missed
+        # budget would push the frame to the next interval and turn 60 into
+        # 30. It was a good theory and it was wrong. The overlay stutters
+        # just as badly in a seat where MangoHud is not loaded at all and
+        # there is therefore no cap, no method and no present mode. Measured
+        # on 2026-09-21, after an autostarted Steam turned out to be
+        # inheriting none of them. So the cap is not the cause, and "early"
+        # comes back rather than paying a frame of latency for a fix that
+        # fixes nothing.
+        echo "fps_limit_method=early"
 
-            # And how the finished frame reaches the compositor. A game with a
-            # FIFO swapchain queues frames and waits for them to drain, which is
-            # a queue nobody sees the far end of over a stream. Mailbox keeps
-            # only the newest, so the frame sway hands to Sunshine is the last
-            # one the game drew rather than the oldest one still in line.
-            #
-            # Deliberately written only alongside a cap. Mailbox never blocks
-            # the game, so it is the cap that keeps a seat from rendering flat
-            # out; without one, a game left running after the stream ended would
-            # go back to the thousands of frames a second this file exists to
-            # prevent.
-            echo "vulkan_present_mode=mailbox"
-        fi
+        # And how the finished frame reaches the compositor. A game with a
+        # FIFO swapchain queues frames and waits for them to drain, which is
+        # a queue nobody sees the far end of over a stream. Mailbox keeps
+        # only the newest, so the frame sway hands to Sunshine is the last
+        # one the game drew rather than the oldest one still in line.
+        #
+        # Mailbox never blocks the game, so the cap above is all that paces
+        # it. MangoHud applies this when a game creates its swapchain and
+        # not again afterwards, so a game keeps it for as long as it runs:
+        # one more reason the cap has to stay.
+        echo "vulkan_present_mode=mailbox"
     } > "$CONF.tmp" 2>/dev/null || {
         say "cannot write $CONF, leaving the framerate alone"
         exit 0
@@ -103,28 +109,31 @@ write() {
     }
 }
 
-case "$1" in
-    off)
-        write ""
-        say "cap removed"
-        ;;
-    *)
-        fps=$SUNSHINE_CLIENT_FPS
+# The rate, from an argument when there is one. A mode is accepted as it is
+# written everywhere else, so the daemon hands this the same string it hands
+# polyseat-resize.
+if [ -n "$1" ]; then
+    fps=${1##*@}
+    fps=${fps%Hz}
+    from="'$1'"
+else
+    fps=$SUNSHINE_CLIENT_FPS
+    from="Sunshine"
+fi
 
-        # Sunshine has been seen to leave the framerate out, and a made up
-        # number would be worse than no cap: too low and the stream stutters
-        # for no reason anybody can see from the client.
-        case "$fps" in
-            '' | *[!0-9]* | 0)
-                say "Sunshine reported no framerate, leaving the cap off"
-                write ""
-                exit 0
-                ;;
-        esac
-
-        write "$fps"
-        say "capped at $fps fps"
+# Sunshine has been seen to leave the framerate out, and a made up number would
+# be worse than the cap that is already there: too low and the stream stutters
+# for no reason anybody can see from the client. The same goes for an argument
+# that is not a rate, which includes the "off" a Sunshine started before an
+# upgrade still passes until it is restarted. The file is left as it is.
+case "$fps" in
+    '' | *[!0-9]* | 0)
+        say "no framerate from $from, leaving the cap as it is"
+        exit 0
         ;;
 esac
+
+write "$fps"
+say "capped at $fps fps"
 
 exit 0

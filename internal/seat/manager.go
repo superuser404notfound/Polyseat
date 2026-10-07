@@ -1162,9 +1162,8 @@ func (m *Manager) refreshSession(ctx context.Context, name string) {
 	}
 
 	// The end of a stream, seen by the daemon rather than reported by Sunshine.
-	// Sunshine's own undo commands put the resolution and the framerate cap
-	// back, and they do not run when a session ends abnormally, which the app
-	// list reload above used to cause.
+	// Nothing in sunshine.conf puts the seat's own mode and framerate back, so
+	// this is where it happens, however the session ended.
 	if ended {
 		defer m.sessionEnded(ctx, name)
 	}
@@ -1461,14 +1460,14 @@ func (m *Manager) readEncoders(ctx context.Context, name string) (string, []stri
 // sessionEnded puts a seat back the way an idle seat should be, and does the
 // work that was held back while somebody was streaming.
 //
-// Sunshine's own undo commands do this when a stream ends properly. They do not
-// run when it ends any other way: a reload of the app list used to end a session
-// without a CLIENT DISCONNECTED and without any undo, and the seat was left at
-// the client's resolution with the framerate still capped, which the web
-// interface then reported as the truth because it was.
+// Sunshine's own undo commands used to do this, and they only run when a stream
+// ends properly: a reload of the app list used to end a session without a
+// CLIENT DISCONNECTED and without any undo, and the seat was left at the
+// client's resolution and framerate, which the web interface then reported as
+// the truth because it was.
 //
-// Running them again after a normal end costs nothing. The resize is idempotent
-// and the cap is already off.
+// Neither the resize nor the cap has an undo in sunshine.conf any more, so both
+// are this function's alone, and both are idempotent.
 //
 // A client that left without quitting is the case those two sentences missed.
 // Sunshine keeps the application for it to resume, a resume runs no prep
@@ -1506,9 +1505,12 @@ func (m *Manager) sessionEnded(ctx context.Context, name string) {
 		m.logf(name, "! the resolution could not be put back: %v", err)
 	}
 
+	// Set to the seat's own rate rather than taken off. MangoHud rereads its
+	// file in a running game, so a game somebody left open would lose its limit
+	// here and render as fast as the card allows with nobody watching.
 	if _, _, err := m.client.Try(quick, name, m.asPlayer(name,
-		"/usr/local/bin/polyseat-fps", "off")...); err != nil {
-		m.logf(name, "! the framerate cap could not be taken off: %v", err)
+		"/usr/local/bin/polyseat-fps", seat.Resolution)...); err != nil {
+		m.logf(name, "! the framerate cap could not be put back: %v", err)
 	}
 
 	// The marker, which Sunshine removes itself when a stream ends normally and

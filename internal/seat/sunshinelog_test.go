@@ -130,3 +130,24 @@ func TestSunshineConfigHasNoUndoForTheResize(t *testing.T) {
 
 	t.Fatal("no global_prep_cmd in sunshine.conf")
 }
+
+// Nor the cap. MangoHud rereads its file in a running game, so an undo that
+// took the cap off left a game somebody had not quit rendering flat out behind
+// them: 7000 frames a second from an OpenGL program in joser on 2026-10-07.
+func TestSunshineConfigHasNoUndoForTheCap(t *testing.T) {
+	conf := string(asset("assets/sunshine.conf"))
+
+	for _, line := range strings.Split(conf, "\n") {
+		if !strings.HasPrefix(line, "global_prep_cmd") {
+			continue
+		}
+
+		if !strings.Contains(line, `{"do":"/usr/local/bin/polyseat-fps"}`) {
+			t.Errorf("the cap is not a do on its own: %s", line)
+		}
+
+		return
+	}
+
+	t.Fatal("no global_prep_cmd in sunshine.conf")
+}

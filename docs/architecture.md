@@ -1600,11 +1600,21 @@ because latency is what a stream has least of to spare.
 So the games stay uncapped and the limit is applied from outside, which is what
 RTSS does on Windows. The Linux equivalent is MangoHud: a Vulkan layer, plus a
 preloaded shim for OpenGL, both reading one configuration file. `polyseat-fps`
-writes the client's framerate into that file on the way in and takes it out
-again on the way out, so one file caps a native game, a game under Proton, a
-flatpak launcher and an emulator without any of them being configured. Measured
-in a seat: 1519 fps uncapped, 58.3 with a 60 fps client connected, and a game
-that was already respecting vsync loses nothing worth measuring.
+writes the client's framerate into that file on the way in, so one file caps a
+native game, a game under Proton, a flatpak launcher and an emulator without any
+of them being configured. Measured in a seat: 1519 fps uncapped, 58.3 with a
+60 fps client connected, and a game that was already respecting vsync loses
+nothing worth measuring.
+
+**The cap is never taken off again.** Until 0.38.0 it was, when the client left,
+on the belief that MangoHud reads its file once at application start. It
+rereads it while a game runs. So the cap did reach a game started for an earlier
+client, which the code said it would not, and a game somebody left open lost its
+limit the moment they disconnected: one was found at 220 % of a core with nobody
+watching, and an OpenGL test program in a seat went from 60 to 7000 frames a
+second each time the file was emptied. A client arriving now sets the cap to its
+own rate, and once the stream has stayed gone the daemon sets it to the seat's
+own, in the same step that puts the seat's mode back.
 
 **Two lines go into that file beside the cap, and they are about age rather than
 count.** `fps_limit_method=early` changes when the limiter waits: MangoHud's
@@ -1614,10 +1624,8 @@ before anything has encoded it. Sleeping first and rendering last costs the same
 heat and the same framerate. `vulkan_present_mode=mailbox` is the same idea one
 step further along: a FIFO swapchain queues frames and waits for them to drain,
 and nobody sees the far end of that queue over a stream, so the newest frame is
-kept and the rest dropped. Both are written only alongside a cap. Mailbox never
-blocks the game, so with the cap gone it is nothing that paces a seat, and a
-game left running after a stream ended would go straight back to the thousands
-of frames a second the cap exists to prevent.
+kept and the rest dropped. Mailbox never blocks the game, so the cap is all that
+paces a seat, which is one more reason it stays.
 
 Three things carry it into place, because there are three ways an application
 gets started in a seat. Sunshine's app list carries the two variables in its
@@ -1659,8 +1667,8 @@ anybody has connected and while there is nobody to see it.
 
 Telling Sunshine to reread its app list ends the stream in progress. Not politely:
 it emits no `CLIENT DISCONNECTED` and runs none of the `undo` commands, so the
-seat is left at the client's resolution with the framerate still capped, and the
-interface then reports that as the truth because it is the truth. Two complaints,
+seat was left at the client's resolution and framerate, and the interface then
+reported that as the truth because it was the truth. Two complaints,
 one cause: a Moonlight session ending by itself, and a resolution that stayed
 after the client had gone.
 

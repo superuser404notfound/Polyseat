@@ -132,56 +132,64 @@ func TestFpsWaitsBeforeTheFrameRatherThanAfterIt(t *testing.T) {
 	}
 }
 
-// Mailbox never blocks the game, so with the cap gone nothing paces it at all.
-// Written together with a cap or not at all: a game left running after the
-// stream ended would otherwise go back to rendering thousands of frames a
-// second, which is what the cap exists to prevent.
-func TestFpsLeavesNoPresentModeBehindWithoutACap(t *testing.T) {
-	home := t.TempDir()
+// Once the stream has stayed gone the daemon hands over the seat's own mode,
+// the same string it hands polyseat-resize.
+func TestFpsTakesTheRateOfAMode(t *testing.T) {
+	for arg, want := range map[string]string{
+		"1920x1080@60Hz":  "60",
+		"3840x2160@120Hz": "120",
+		"30":              "30",
+	} {
+		// A client's rate in the environment as well, which an argument has to
+		// win over: this is what a hand run inside a prep command would see.
+		conf, code := runFps(t, "144", arg)
 
-	if conf, _, _ := runFpsIn(t, home, "60"); !strings.Contains(conf, "vulkan_present_mode") {
-		t.Fatalf("the seat never had a present mode set, so this test proves nothing:\n%s", conf)
-	}
+		if code != 0 {
+			t.Errorf("%s: exit %d", arg, code)
+		}
 
-	conf, _, _ := runFpsIn(t, home, "60", "off")
-
-	if strings.Contains(conf, "vulkan_present_mode") {
-		t.Errorf("the cap is off and the present mode stayed:\n%s", conf)
-	}
-
-	if strings.Contains(conf, "fps_limit_method") {
-		t.Errorf("the cap is off and the limiter method stayed:\n%s", conf)
+		if got := limit(conf); got != want {
+			t.Errorf("%s: capped at %q, want %s", arg, got, want)
+		}
 	}
 }
 
-// A stream that has ended must leave the seat uncapped, otherwise the last
-// client to connect decides the framerate of everything after it, including
-// somebody playing on the seat directly.
-func TestFpsOffRemovesTheCap(t *testing.T) {
+// The cap is never taken off. MangoHud rereads this file in a running game, so
+// a game somebody left open would lose its limit and render flat out with
+// nobody watching, and mailbox, which a game keeps from the moment it created
+// its swapchain, would not hold it back either.
+//
+// "off" is what this script used to be called with when a client left, and a
+// Sunshine started before an upgrade goes on passing it until it is restarted.
+func TestFpsKeepsTheCapWhenToldToTakeItOff(t *testing.T) {
 	home := t.TempDir()
 
-	if conf, _, _ := runFpsIn(t, home, "30"); limit(conf) != "30" {
-		t.Fatalf("the seat was not capped to begin with:\n%s", conf)
+	before, _, _ := runFpsIn(t, home, "30")
+	if limit(before) != "30" {
+		t.Fatalf("the seat was not capped to begin with:\n%s", before)
 	}
 
-	conf, said, code := runFpsIn(t, home, "30", "off")
+	for _, arg := range []string{"off", "0", "1920x1080", "@Hz"} {
+		after, said, code := runFpsIn(t, home, "", arg)
 
-	if code != 0 {
-		t.Errorf("exit %d", code)
-	}
+		if code != 0 {
+			t.Errorf("%s: exit %d", arg, code)
+		}
 
-	if strings.Contains(said, "cannot") {
-		t.Errorf("it gave up instead of taking the cap off: %s", strings.TrimSpace(said))
-	}
+		if after != before {
+			t.Errorf("%s: the file changed:\n%s", arg, after)
+		}
 
-	if got := limit(conf); got != "" {
-		t.Errorf("cap is still %q after the stream ended", got)
+		if !strings.Contains(said, "leaving the cap as it is") {
+			t.Errorf("%s: it did not say that it left the cap alone: %s", arg, strings.TrimSpace(said))
+		}
 	}
 }
 
 // Sunshine has been seen to leave the framerate out. Anything invented here
 // would be wrong in the direction that shows: a cap below what the client can
-// display looks like a seat that cannot keep up.
+// display looks like a seat that cannot keep up. So the cap that is there
+// stays, and a seat that never had one gets none.
 func TestFpsInventsNoCapWhenSunshineSaysNothing(t *testing.T) {
 	for name, fps := range map[string]string{
 		"nothing at all":     "",
@@ -189,14 +197,21 @@ func TestFpsInventsNoCapWhenSunshineSaysNothing(t *testing.T) {
 		"not a number":       "sixty",
 		"a rate with a unit": "60Hz",
 	} {
-		conf, code := runFps(t, fps)
+		if conf, code := runFps(t, fps); code != 0 || conf != "" {
+			t.Errorf("%s: exit %d in a seat with no cap, and wrote:\n%s", name, code, conf)
+		}
+
+		home := t.TempDir()
+		before, _, _ := runFpsIn(t, home, "90")
+
+		after, _, code := runFpsIn(t, home, fps)
 
 		if code != 0 {
 			t.Errorf("%s: exit %d, and a prep command that fails stops the stream", name, code)
 		}
 
-		if got := limit(conf); got != "" {
-			t.Errorf("%s: capped at %q anyway", name, got)
+		if after != before || limit(after) != "90" {
+			t.Errorf("%s: the cap of 90 became %q", name, limit(after))
 		}
 	}
 }

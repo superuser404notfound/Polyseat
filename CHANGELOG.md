@@ -10,6 +10,39 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.38.0
+
+**A game left running rendered flat out once nobody was watching.** A seat caps
+its games at the framerate the client asked for, and took that cap off again
+when the client left. That was written on the belief that MangoHud reads its
+file once, when a game starts, so that removing it would cost a running game
+nothing. MangoHud rereads the file while the game runs. Somebody who
+disconnected without quitting therefore left a game behind with no limit at
+all, and since the seat also asks for a present mode that never blocks, nothing
+else held it either: one game was found at 220 % of a core with no client, and
+an OpenGL test program in a seat went from 60 to about 7000 frames a second
+every time the cap was removed, and back every time it was written.
+
+The cap now stays. A client arriving sets it to its own rate, as before, and a
+game that was already running follows within seconds. Once the stream has
+stayed gone, the daemon sets it to the rate of the seat's own mode, in the same
+step that puts the mode back, where it used to remove it. Sunshine no longer
+runs anything for the cap when a client leaves.
+
+Measured in a seat with a Vulkan and an OpenGL program running throughout: the
+cap removed and rewritten by the old script, then the same sequence with the
+new one, where both stayed at 60 through every step that used to release them,
+followed a 120 fps client up and came back to 60 for the seat's own mode.
+
+**Seats need provisioning again** for this, recipe generation 66: the script and
+Sunshine's configuration both change. Until a seat's Sunshine has been
+restarted it still asks for the cap to be taken off, and the new script answers
+that by leaving it alone.
+
+**Not measured:** a real game through a real disconnect and reconnect on the
+released build. The measurements above are from test programs, with the script
+run by hand the way Sunshine and the daemon run it.
+
 ## 0.37.0
 
 **A stream stuttered with nothing wrong with it.** On a wired connection, with
