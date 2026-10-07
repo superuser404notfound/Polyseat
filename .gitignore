@@ -10,3 +10,7 @@ __pycache__/
 # is only ever a stale one.
 packaging/build/
 packaging/dist/
+
+# What packaging/sunshine/build.sh leaves next to itself. It is attached to a
+# release and named by its checksum in provision.go, never committed.
+packaging/sunshine/*.pkg.tar.zst

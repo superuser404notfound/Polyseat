@@ -1573,8 +1573,25 @@ is reported and ignored rather than guessed at.
 
 ## Framerate per client
 
-The output's refresh rate paces anything that waits for vblank, and that is not
-the same as capping the framerate. A game with vsync off renders as fast as the
+The output runs at twice the rate the client asked for. It has no display
+behind it, so its refresh rate is not a clock anything is held to, it is the
+shortest gap sway leaves between two frames, and a game does not deliver its
+frames evenly. At the client's own rate there is one place per frame interval
+and a frame that comes early to catch up has nowhere to go: measured on
+2026-10-07, 54 to 57 frames a second reached a 60 fps client, against 60.00 at
+twice the rate. Exactly twice, because gamescope takes the output's rate as its
+own and can only hold a game to a whole fraction of it.
+
+What keeps the stream at the client's rate is Sunshine, and not the one
+LizardByte publish. A seat runs their release with one patch,
+`packaging/sunshine/wlgrab-event-driven.patch`: it captures a frame when sway
+has a new one instead of sampling the output on a clock of its own, which is
+what handed the same picture to the encoder twice and dropped another, 5 to 11
+frames in a hundred, at a full 60 frames a second and with nothing on the
+client to show for it.
+
+An output's refresh rate also paces anything that waits for vblank, and that is
+not the same as capping the framerate. A game with vsync off renders as fast as the
 card allows: measured in a seat, 1519 frames per second against a client asking
 for 60. Everything above the client's rate is heat and a longer queue rather
 than a frame anybody sees. Turning vsync on to stop it is the wrong trade,

@@ -4,8 +4,9 @@
 #   polyseat-fps          take the framerate from Sunshine's environment
 #   polyseat-fps off      take the cap off again
 #
-# The seat's output already runs at the client's refresh rate, and that paces
-# anything that waits for vblank. It is not enough. A game with vsync off
+# The seat's output runs at twice the client's rate, see polyseat-resize, so
+# even a game that waits for vblank renders double what anybody is shown, and
+# one that does not wait is held by nothing at all. A game with vsync off
 # renders as fast as the card allows, and everything above the client's rate is
 # heat and a longer queue rather than a frame anybody sees. Turning vsync on to
 # stop that is the wrong trade: it costs latency, which is the one thing a

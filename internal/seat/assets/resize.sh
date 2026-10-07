@@ -80,7 +80,27 @@ if [ -z "$mode" ]; then
         0) fps=60 ;;
     esac
 
-    mode="${width}x${height}@${fps}Hz"
+    # Twice the client's rate, and exactly twice.
+    #
+    # The output has no display behind it, so its refresh rate is not a clock
+    # that anything is held to. It is the shortest gap sway leaves between two
+    # frames, and a game does not deliver its frames evenly: measured in a seat
+    # on 2026-10-07, one capped at 60 came in after 17 ms, after 18.5, and then
+    # one after 5 to catch up. At 60 Hz there is one place per 16.7 ms and the
+    # catch-up frame has nowhere to go, so the stream loses it: 54 to 57 frames
+    # a second reached a 60 fps client, with four or five gaps of 33 ms in
+    # every one of them. At 120 Hz every frame has a place, and the same seat
+    # delivered 60.00 with none.
+    #
+    # Exactly twice, because gamescope takes the output's rate as its own and
+    # can only hold a game to a whole fraction of it. 90 Hz for a 60 fps client
+    # gave 43 frames a second and 240 Hz gave 57.
+    #
+    # Sunshine is what keeps the stream at the client's rate. It captures a
+    # frame when sway has one, see packaging/sunshine, and holds that to the
+    # rate the client asked for; and it only captures that way on an output
+    # that is faster than the stream, so this and that belong together.
+    mode="${width}x${height}@$((fps * 2))Hz"
 fi
 
 if swaymsg -- output HEADLESS-1 mode "$mode" >/dev/null 2>&1; then

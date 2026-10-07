@@ -98,11 +98,12 @@ func TestTheClientGetsTheSizeItAskedFor(t *testing.T) {
 
 	asked, said, code := runResize(t, sunshine("2250", "1206", "120"))
 
-	if want := "-- output HEADLESS-1 mode 2250x1206@120Hz"; asked != want {
+	// Twice the 120 the client asked for, see the script for why.
+	if want := "-- output HEADLESS-1 mode 2250x1206@240Hz"; asked != want {
 		t.Errorf("sway was asked for %q, want %q", asked, want)
 	}
 
-	if !strings.Contains(said, "2250x1206@120Hz") {
+	if !strings.Contains(said, "2250x1206@240Hz") {
 		t.Errorf("the journal says %q, want the mode it set in it", said)
 	}
 
@@ -145,7 +146,7 @@ func TestResizeSaysWhatItDidAndSurvivesEveryPathOutOfItself(t *testing.T) {
 	// still needs one.
 	if asked, _, _ := runResize(t, []string{
 		"SUNSHINE_CLIENT_WIDTH=1920", "SUNSHINE_CLIENT_HEIGHT=1080",
-	}); !strings.HasSuffix(asked, "1920x1080@60Hz") {
-		t.Errorf("sway was asked for %q, want a refresh rate of its own", asked)
+	}); !strings.HasSuffix(asked, "1920x1080@120Hz") {
+		t.Errorf("sway was asked for %q, want twice the 60 it assumes", asked)
 	}
 }

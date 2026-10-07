@@ -3,6 +3,7 @@ package seat
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -32,7 +33,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 64
+const Generation = 65
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -701,22 +702,25 @@ func (p *Provisioner) stepPackages(ctx context.Context) error {
 	return nil
 }
 
-// stepSunshine installs Sunshine from the upstream release rather than from a
+// stepSunshine installs Sunshine as a package of its own rather than from a
 // distribution repository.
 //
 // The M1 spike took it from the CachyOS repository, which meant bootstrapping a
 // third party keyring inside every seat out of the host's package cache. That
 // tied the seat to a CachyOS host, and it is also where the mirror lag problem
-// came from. LizardByte publish an Arch package with every release, the seat is
-// an Arch container, so this is both simpler and better matched.
+// came from. Until 0.36.0 it was the Arch package LizardByte publish with every
+// release. Since then it is that release built here with one patch, see
+// SunshineBuild.
 func (p *Provisioner) stepSunshine(ctx context.Context) error {
 	installed, code, err := p.Client.Try(ctx, p.name(), "pacman", "-Q", "sunshine")
 	if err != nil {
 		return err
 	}
 
-	if code == 0 && strings.Contains(installed, SunshinePin) {
-		p.Log("sunshine %s already installed", SunshinePin)
+	want := SunshinePin + "-" + SunshineBuild
+
+	if code == 0 && sunshineIsCurrent(installed) {
+		p.Log("sunshine %s already installed", want)
 
 		return nil
 	}
@@ -725,22 +729,25 @@ func (p *Provisioner) stepSunshine(ctx context.Context) error {
 	// lookup used to come first, which meant every provisioning run and every
 	// update of an already current seat spent a request on somebody else's
 	// rate limit to be told what this source already says.
-	p.Log("installing sunshine %s", SunshinePin)
+	p.Log("installing sunshine %s", want)
 
-	url, err := sunshinePackage(ctx, SunshinePin)
+	// Downloaded here and pushed in, rather than handing pacman the URL.
+	// pacman applies RemoteFileSigLevel to a URL, which on Arch is Required,
+	// and it then fails looking for a .sig next to the package that nobody
+	// publishes. A local file falls under LocalFileSigLevel, which is
+	// Optional.
+	pkg, err := download(ctx, sunshinePackageURL())
 	if err != nil {
 		return err
 	}
 
-	// Downloaded here and pushed in, rather than handing pacman the URL.
-	// pacman applies RemoteFileSigLevel to a URL, which on Arch is Required,
-	// and it then fails looking for a .sig next to the package that LizardByte
-	// do not publish. A local file falls under LocalFileSigLevel, which is
-	// Optional. The download is verified by TLS either way, which is the same
-	// assurance the release page itself offers.
-	pkg, err := download(ctx, url)
-	if err != nil {
-		return err
+	// And checked against what this source says the package is. It is a binary
+	// built by hand and attached to a release, and a release asset can be
+	// replaced by anybody who can write to the repository without a commit to
+	// show for it. This line cannot.
+	if got := fmt.Sprintf("%x", sha256.Sum256(pkg)); got != sunshinePackageSHA256 {
+		return fmt.Errorf("the sunshine package is not the one this version was built with: sha256 %s, want %s",
+			got, sunshinePackageSHA256)
 	}
 
 	const path = "/root/sunshine.pkg.tar.zst"
@@ -756,6 +763,18 @@ func (p *Provisioner) stepSunshine(ctx context.Context) error {
 	_, err = p.run(ctx, "rm", "-f", path)
 
 	return err
+}
+
+// sunshineIsCurrent reads what pacman -Q printed and says whether it is the
+// package this version installs.
+//
+// The whole version and not only the release. A seat built before 0.37.0
+// carries LizardByte's package of the same release, and that is exactly the one
+// that has to be replaced.
+func sunshineIsCurrent(out string) bool {
+	fields := strings.Fields(out)
+
+	return len(fields) == 2 && fields[0] == "sunshine" && fields[1] == SunshinePin+"-"+SunshineBuild
 }
 
 func download(ctx context.Context, url string) ([]byte, error) {
@@ -866,23 +885,49 @@ func download(ctx context.Context, url string) ([]byte, error) {
 // this one never got.
 const SunshinePin = "2026.914.233613"
 
-// sunshinePackage finds the Arch package belonging to one Sunshine release.
+// SunshineBuild is which build of that release a seat gets, and it is not
+// LizardByte's.
 //
-// By tag rather than by a URL written down here, because the asset name carries
-// the version and there is no stable path to guess at. That is the same reason
-// the old code gave for not pinning at all, and it was a reason to look the
-// download up rather than a reason to take whatever was newest.
-func sunshinePackage(ctx context.Context, version string) (string, error) {
-	release, err := sunshineAsset(ctx, "tags/v"+version)
-	if err != nil {
-		return "", err
-	}
+// Their wlr capture sleeps on a clock of its own and then asks sway for a
+// frame, which makes sway commit at a time Sunshine chose. The game's next
+// frame and that request then compete for the same commit, and depending on
+// how the two clocks happen to stand the encoder is handed one picture twice
+// and never sees another. Measured on 2026-10-07 on a wired 4K60 stream: 60.00
+// frames a second, not a packet lost, every statistic on the client clean, and
+// 5 to 11 frames in a hundred a repeat of the one before. It shows as
+// microstutter and as nothing else.
+//
+// The patch in packaging/sunshine asks for the next frame that differs
+// instead, where the output refreshes faster than the stream, and
+// polyseat-resize makes it so. The two were measured together and only work
+// together: the patch alone on an output at the client's rate delivered 54 to
+// 57 frames a second, and the faster output alone was a lottery, clean on one
+// connection and one repeat in ten on the next. Together, 60.00 with no repeat
+// and no gap over seven connections.
+//
+// The number is the pkgrel of the package built by packaging/sunshine/build.sh.
+// 1.1 sorts after LizardByte's 1 for the same release and before whatever they
+// publish next, so pacman takes this over theirs and theirs over nothing.
+//
+// The same thing is open upstream as LizardByte/Sunshine#5748 and #5751. When
+// a release carries it, the pin moves to that release and this goes away.
+const SunshineBuild = "1.1"
 
-	if release.url == "" {
-		return "", fmt.Errorf("sunshine %s carries no Arch package", version)
-	}
+// sunshinePackageSHA256 is the package named by SunshinePin and SunshineBuild,
+// as packaging/sunshine/build.sh printed it. The two move together or the
+// install fails, which is the point.
+const sunshinePackageSHA256 = "5cd0bebd19e7a8ca267dda29b5810285c46965b4e594b0e36d9d2d7f8df488df"
 
-	return release.url, nil
+// sunshinePackageURL is where that package is published: an asset on a release
+// of this repository that exists only to carry it. Not on the Polyseat release
+// it first shipped with, because the package changes when Sunshine does and a
+// Polyseat release does not need an attachment that is the same as the
+// last one's.
+func sunshinePackageURL() string {
+	version := SunshinePin + "-" + SunshineBuild
+
+	return "https://github.com/superuser404notfound/Polyseat/releases/download/sunshine-" +
+		version + "/sunshine-" + version + "-x86_64.pkg.tar.zst"
 }
 
 // sunshineLatest is what LizardByte have published, for saying so and nothing
@@ -898,12 +943,11 @@ func sunshineLatest(ctx context.Context) (string, error) {
 
 type sunshineAssetInfo struct {
 	version string
-	url     string
 }
 
-// sunshineAsset asks GitHub about one release and picks the Arch package out of
-// it. The path is "latest" or "tags/vX", which is the only difference between
-// the two questions this file asks.
+// sunshineAsset asks GitHub about one of LizardByte's releases. The path is
+// "latest" or "tags/vX". Only the version is read: what a seat installs is
+// built here, see SunshineBuild.
 func sunshineAsset(ctx context.Context, path string) (sunshineAssetInfo, error) {
 	var info sunshineAssetInfo
 
@@ -929,10 +973,6 @@ func sunshineAsset(ctx context.Context, path string) (sunshineAssetInfo, error) 
 
 	var release struct {
 		TagName string `json:"tag_name"`
-		Assets  []struct {
-			Name string `json:"name"`
-			URL  string `json:"browser_download_url"`
-		} `json:"assets"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
@@ -940,14 +980,6 @@ func sunshineAsset(ctx context.Context, path string) (sunshineAssetInfo, error) 
 	}
 
 	info.version = strings.TrimPrefix(release.TagName, "v")
-
-	for _, asset := range release.Assets {
-		if strings.HasPrefix(asset.Name, "sunshine-") && strings.HasSuffix(asset.Name, "-x86_64.pkg.tar.zst") {
-			info.url = asset.URL
-
-			break
-		}
-	}
 
 	return info, nil
 }

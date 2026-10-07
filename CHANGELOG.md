@@ -10,6 +10,50 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.37.0
+
+**A stream stuttered with nothing wrong with it.** On a wired connection, with
+every statistic on the client clean, a game streamed out of a seat still
+hitched a few times a second. It was not the network and not the encoder: 60.00
+frames a second left the seat and not a packet was lost. Five to eleven of
+every hundred frames were the picture before, sent again, and for each of those
+another one was never sent.
+
+The cause was Sunshine's capture on sway. It asked for a frame on a clock of its
+own, which made sway produce one whether the game had drawn anything new or
+not, and depending on how that clock happened to stand against the game's the
+same picture went out twice. A seat now runs the same Sunshine release with one
+patch that takes a frame when sway has a new one, and its output runs at twice
+the rate the client asked for, so that a frame the game delivers a little early
+has somewhere to go. Measured on the same seat, game and client, before and
+after: 5 to 11 repeats in a hundred down to none, at 60.00 frames a second,
+over seven connections.
+
+Both halves are needed and each was measured without the other. The patch alone
+delivered 54 to 57 frames a second, and the faster output alone was clean on one
+connection and one repeat in ten on the next.
+
+**A seat's Sunshine is built here now.** It is LizardByte's 2026.914.233613
+with `packaging/sunshine/wlgrab-event-driven.patch`, published as a package on
+a release of this repository and checked against a checksum in the source
+before it is installed. The web interface of that Sunshine names Polyseat as
+its publisher, so that a problem with it is brought here. The recipe and how to
+build it are in `packaging/sunshine`. The change itself is open with LizardByte
+as #5751 and #5748; when a release of theirs carries it, the seats go back to
+their package.
+
+**The interface shows twice the client's rate while somebody is streaming.** A
+seat serving a 60 fps client reads `3840x2160@120Hz now`. That is the output's
+rate and it is meant to be; the stream is still the 60 the client asked for.
+
+**Not measured:** a client asking for 120 frames a second, which puts the
+output at 240 Hz; a game running directly on sway rather than through Steam;
+and an AMD host, where the package is the same but the encoder is not.
+
+**Seats have to be built again for this: recipe generation 65.** Provisioning
+replaces the Sunshine package and the script that sizes the output. A seat
+built before keeps stuttering exactly as it did.
+
 ## 0.36.0
 
 **A client that came back with a different size got the old one.** Leaving

@@ -354,7 +354,8 @@ simply does not offer DLSS in its settings, and there is no way from inside it
 to find out why.
 
 **Every client gets the picture it asked for.** The seat's screen is virtual, so
-it simply becomes the size and refresh rate the client wants. The framerate is
+it simply becomes the size the client wants, at twice the client's rate so that
+no frame has to wait for a place. The framerate is
 capped from outside rather than by turning vsync on, so games stay uncapped and
 pay no vsync latency, and one setting covers native games, Proton, flatpaks and
 emulators alike. Measured in a seat: 14866 fps uncapped becomes 60.00 fps with a
