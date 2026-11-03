@@ -143,10 +143,15 @@ def shortcut(keys):
 
     argv = expand(words)
 
-    # Steam and Lutris are asked directly and answer with more than this has.
-    # Steam's shortcut says "Cities Skylines II" where its manifest says
-    # "Cities: Skylines II", so the names would not have caught the repeat.
+    # Steam, Lutris and Faugus are asked directly and answer with more than
+    # this has. Steam's shortcut says "Cities Skylines II" where its manifest
+    # says "Cities: Skylines II", so the names would not have caught the
+    # repeat. Faugus writes one of these per game when asked to, and the name
+    # in it is the player's to change.
     if not argv or any("steam://" in a or a.startswith("lutris:") for a in argv):
+        return None
+
+    if os.path.basename(argv[0]) == "faugus-launcher" and "--game" in argv:
         return None
 
     # What the launcher does with TryExec, and what it should do here too: an

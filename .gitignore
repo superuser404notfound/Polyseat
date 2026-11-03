@@ -20,3 +20,6 @@ packaging/mangohud-shim/*.pkg.tar.zst
 
 # And for packaging/stevia/build.sh.
 packaging/stevia/*.pkg.tar.zst
+
+# And for packaging/faugus/build.sh.
+packaging/faugus/*.pkg.tar.zst

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -538,6 +539,114 @@ func lutrisListing(doc string) ([]Game, error) {
 	return games, nil
 }
 
+// faugusSource is the Source of a game that came from Faugus.
+const faugusSource = "faugus"
+
+// faugusScan lists what Faugus has, as JSON.
+//
+// Read out of games.json rather than asked of Faugus, which has no listing
+// command: everything it knows about a game is that one file, and this is what
+// it reads when it starts one. A JSON parse and a stat per cover, so unlike
+// Lutris there is nothing here worth remembering between scans.
+//
+// No Faugus means no games, even with a games.json left behind: picking one in
+// Moonlight would start a command that is not there.
+const faugusScan = `
+import json
+import os
+import shutil
+
+home = os.environ.get("POLYSEAT_HOME") or os.path.expanduser("~")
+data = os.path.join(home, ".local/share/faugus-launcher")
+
+
+def picture(game):
+    """The cover when there is one, the icon taken from the program otherwise."""
+    gameid = game.get("gameid") or ""
+    for path in (game.get("cover"), os.path.join(data, "covers", gameid + ".png"),
+                 game.get("icon"), os.path.join(data, "icons", gameid + ".png")):
+        if isinstance(path, str) and path and os.path.isabs(path) and os.path.isfile(path):
+            return path
+    return ""
+
+
+def main():
+    if not shutil.which("faugus-launcher"):
+        print("[]")
+        return
+    try:
+        with open(os.path.join(data, "games.json"), encoding="utf-8") as f:
+            games = json.load(f)
+    except (OSError, ValueError):
+        games = []
+    found = []
+    for game in games if isinstance(games, list) else []:
+        if not isinstance(game, dict) or game.get("hidden"):
+            continue
+        gameid, title = game.get("gameid"), game.get("title")
+        if isinstance(gameid, str) and isinstance(title, str) and gameid and title:
+            found.append({"gameid": gameid, "title": title[:80], "image": picture(game)})
+    print(json.dumps(found))
+
+
+main()
+`
+
+// faugusID is what a Faugus game id may be to go into a launch command. Faugus
+// makes it from the title, lower case with dashes, and keeps letters of any
+// script; the file is the player's, so anything else is left out.
+var faugusID = regexp.MustCompile(`^[\p{L}\p{N}_][\p{L}\p{N}_-]{0,99}$`)
+
+// faugusGames lists what Faugus has in this seat.
+func (p *Provisioner) faugusGames(ctx context.Context) ([]Game, error) {
+	out, code, err := look(ctx, p.Client, p.name(), scanPatience,
+		pythonScan(scanPatience, faugusScan)...)
+	if err != nil {
+		return nil, err
+	}
+
+	if code != 0 {
+		return nil, fmt.Errorf("%s", lastLines(out, 2))
+	}
+
+	return faugusListing(out)
+}
+
+// faugusListing turns what faugusScan printed into games.
+func faugusListing(out string) ([]Game, error) {
+	var found []struct {
+		GameID string `json:"gameid"`
+		Title  string `json:"title"`
+		Image  string `json:"image"`
+	}
+
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &found); err != nil {
+		return nil, fmt.Errorf("read what Faugus has: %w", err)
+	}
+
+	var games []Game
+
+	for _, f := range found {
+		if !faugusID.MatchString(f.GameID) || strings.TrimSpace(f.Title) == "" {
+			continue
+		}
+
+		launch, ok := sunshineCommand([]string{"faugus-launcher", "--game", f.GameID})
+		if !ok {
+			continue
+		}
+
+		games = append(games, Game{
+			Name:   f.Title,
+			Launch: launch,
+			Image:  f.Image,
+			Source: faugusSource,
+		})
+	}
+
+	return games, nil
+}
+
 // installedGames is everything a seat can start directly, from every launcher
 // that can be asked.
 func (p *Provisioner) installedGames(ctx context.Context) []Game {
@@ -556,6 +665,13 @@ func (p *Provisioner) installedGames(ctx context.Context) []Game {
 	}
 
 	games = append(games, lutris...)
+
+	faugus, err := p.faugusGames(ctx)
+	if err != nil {
+		p.Log("! Faugus's games could not be read: %v", err)
+	}
+
+	games = append(games, faugus...)
 
 	// Whatever is in ~/Applications. Not a launcher's idea of what is installed
 	// but a directory listing, because an AppImage answers to nobody: the file

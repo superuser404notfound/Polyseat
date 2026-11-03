@@ -24,7 +24,7 @@ type CatalogEntry struct {
 // installable by typing its application id, which is why this is a starting
 // point rather than a limit.
 //
-// What is missing from it is deliberate. Steam, Lutris and Firefox are
+// What is missing from it is deliberate. Steam, Lutris, Faugus and Firefox are
 // installed into every seat as ordinary packages, so offering them again as
 // flatpaks would be a second copy of something already there, taking hundreds
 // of megabytes per seat to do the same job worse: a sandboxed launcher has to

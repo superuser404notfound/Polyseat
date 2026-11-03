@@ -33,7 +33,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 69
+const Generation = 70
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -135,6 +135,7 @@ func Steps() []Step {
 		{"sunshine", (*Provisioner).stepSunshine},
 		{"mangohud shim", (*Provisioner).stepMangoHudShim},
 		{"stevia", (*Provisioner).stepStevia},
+		{"faugus", (*Provisioner).stepFaugus},
 		{"steam", (*Provisioner).stepSteam},
 		{"user", (*Provisioner).stepUser},
 		{"proton", (*Provisioner).stepProton},
@@ -1060,6 +1061,72 @@ func steviaIsCurrent(out string) bool {
 
 	return len(fields) == 2 && fields[0] == "polyseat-stevia" &&
 		fields[1] == SteviaVersion+"-"+SteviaBuild
+}
+
+// stepFaugus installs Faugus Launcher, the second launcher a seat carries
+// beside Lutris.
+//
+// Faugus keeps a game as one entry in a JSON file and starts it through
+// umu-run, with nothing else in between, and some games that sat in Lutris on
+// the host moved there for that reason. A seat had no Faugus, so a game
+// shared from it arrived as files nobody could start. It is in no Arch
+// repository, which is why it is a package of this repository's like the two
+// above: the AUR recipe of the release, built once in packaging/faugus.
+//
+// The version is Faugus's release, and the build is the package's pkgrel.
+const (
+	FaugusVersion = "2.5.6"
+	FaugusBuild   = "1"
+)
+
+// faugusPackageSHA256 is the package named by FaugusVersion and FaugusBuild,
+// as packaging/faugus/build.sh printed it.
+const faugusPackageSHA256 = "8e71888d4bd13579b1a5c2b0e8fb37b07c470cc412e33e1f604e29703b4204b5"
+
+func faugusPackageURL() string {
+	version := FaugusVersion + "-" + FaugusBuild
+
+	return "https://github.com/superuser404notfound/Polyseat/releases/download/faugus-" +
+		version + "/faugus-launcher-" + version + "-any.pkg.tar.zst"
+}
+
+// stepFaugus leaves a newer Faugus alone. One the player built from the AUR
+// later is theirs, and going back to this one would be a downgrade nobody
+// asked for; only an older one, or none, is replaced.
+func (p *Provisioner) stepFaugus(ctx context.Context) error {
+	installed, code, err := p.Client.Try(ctx, p.name(), "pacman", "-Q", "faugus-launcher")
+	if err != nil {
+		return err
+	}
+
+	want := FaugusVersion + "-" + FaugusBuild
+
+	if code == 0 && !faugusIsOlder(ctx, p, installed) {
+		p.Log("faugus %s already installed", strings.TrimSpace(installed))
+
+		return nil
+	}
+
+	p.Log("installing faugus %s", want)
+
+	return p.installOwnPackage(ctx, "faugus-launcher", faugusPackageURL(), faugusPackageSHA256)
+}
+
+// faugusIsOlder asks pacman's own comparison whether what is installed is
+// older than this build, which is the only kind of version it is fair to
+// replace. An answer that cannot be read is taken as not older.
+func faugusIsOlder(ctx context.Context, p *Provisioner, out string) bool {
+	fields := strings.Fields(out)
+	if len(fields) != 2 || fields[0] != "faugus-launcher" {
+		return true
+	}
+
+	cmp, code, err := p.Client.Try(ctx, p.name(), "vercmp", fields[1], FaugusVersion+"-"+FaugusBuild)
+	if err != nil || code != 0 {
+		return false
+	}
+
+	return strings.TrimSpace(cmp) == "-1"
 }
 
 // sunshineLatest is what LizardByte have published, for saying so and nothing

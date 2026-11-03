@@ -297,8 +297,8 @@ func TestLutrisHelperMovesScansAndRegisters(t *testing.T) {
 	writeFile(t, filepath.Join(seatShared, "Madison-AnkerGames/MADiSON/MADiSON.exe"), "MZ")
 
 	arg, _ := json.Marshal(struct {
-		lutrisRecipe
-		Folder string `json:"folder"`
+		Recipe lutrisRecipe `json:"recipe"`
+		Folder string       `json:"folder"`
 	}{recipe, "Madison-AnkerGames"})
 
 	res := runLutrisHelper(t, seat, "register", seatShared, string(arg))
@@ -364,12 +364,12 @@ func TestLutrisHelperRegisterLeavesATakenSlugAlone(t *testing.T) {
 	lutrisSQL(t, seat, "insert into games (name, slug, runner, directory, installed, configpath) values (?, ?, ?, ?, 1, ?)",
 		"Game", "game", "wine", filepath.Join(seat, "Games/game"), "game-1")
 
-	arg := `{"name":"Game","slug":"game","runner":"wine","exe":"game.exe","folder":"Game","wine_version":"wine-ge-8"}`
-	if res := runLutrisHelper(t, seat, "register", shared, arg); res["status"] != "slug-taken" {
+	arg := `{"folder":"Game","recipe":{"name":"Game","slug":"game","runner":"wine","exe":"game.exe","wine_version":"wine-ge-8"}}`
+	if res := runLutrisHelper(t, seat, "register", shared, arg); res["status"] != "taken" {
 		t.Errorf("answered %v", res)
 	}
 
-	arg = `{"name":"Other","slug":"other","runner":"wine","exe":"game.exe","folder":"Game","wine_version":"lutris-7.2"}`
+	arg = `{"folder":"Game","recipe":{"name":"Other","slug":"other","runner":"wine","exe":"game.exe","wine_version":"lutris-7.2"}}`
 
 	res := runLutrisHelper(t, seat, "register", shared, arg)
 	if res["status"] != "added" || res["wine_version"] != "" {

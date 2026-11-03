@@ -277,8 +277,11 @@ link somebody else could have put in its way.
 where one folder is one game, and a seat's Lutris already installs there, so a
 game installed the ordinary way appears in the other seats by itself, and in
 their Lutris too: the daemon writes the entry there from the one the game was
-installed with. On the host, the Library section lists Lutris's games and
-moves one into `~/Games/shared` with a button. Heroic and Bottles get there by
+installed with. Faugus, which every seat carries as well, is handled the same
+way: its games are Moonlight cards in the seat, and a game added to Faugus
+anywhere appears in every other seat's Faugus. On the host, the Library section
+lists the games of Lutris and of Faugus and moves one into `~/Games/shared`
+with a button. Heroic and Bottles get there by
 pointing them at the same directory. A folder can bring a
 `polyseat-setup.sh` that registers the game wherever it arrives, and that
 script runs only once somebody has read it and allowed it in the Library section

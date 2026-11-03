@@ -70,11 +70,13 @@ type LibraryStatus struct {
 	Setups []FolderSetup `json:"setups"`
 
 	// HostFolders is the host's ~/Games/shared, or empty when it has none and
-	// so takes no part in the folders. Lutris lists the games of the host's
-	// own Lutris, so that one installed somewhere else can be moved in with a
-	// button. Both see lutrisshare.go; Lutris is always a list, never null.
-	HostFolders string           `json:"host_folders,omitempty"`
-	Lutris      []HostLutrisGame `json:"lutris"`
+	// so takes no part in the folders. Lutris and Faugus list the games of
+	// the host's own launchers, so that one installed somewhere else can be
+	// moved in with a button. See share.go; both are always a list, never
+	// null.
+	HostFolders string     `json:"host_folders,omitempty"`
+	Lutris      []HostGame `json:"lutris"`
+	Faugus      []HostGame `json:"faugus"`
 
 	library.Inventory
 }
@@ -295,6 +297,14 @@ func (m *Manager) openLibrary() {
 	}
 
 	m.lutris = lutris
+
+	faugus, err := openFaugusShares(filepath.Join(m.cfg.StateDir, faugusShareFile))
+	if err != nil {
+		m.log.Warn("the record of Faugus entries carried between members could not "+
+			"be read, so it starts over", "err", err)
+	}
+
+	m.faugus = faugus
 
 	m.log.Info("shared library ready", "dir", m.cfg.LibraryDir)
 }
@@ -557,9 +567,9 @@ func (m *Manager) syncLibrary(ctx context.Context) {
 	m.settleSoon()
 
 	// Likewise every pass, for the same reason, and cheap when nothing moved:
-	// it asks a member's Lutris only when a folder went somewhere or the
-	// host's Lutris changed. See lutrisshare.go.
-	m.lutrisAfter(report)
+	// it asks a member's Lutris and Faugus only when a folder went somewhere
+	// or the host's launcher changed. See share.go.
+	m.sharesAfter(report)
 
 	for _, problem := range report.Problems {
 		m.log.Warn("library", "problem", problem)
@@ -675,14 +685,15 @@ func (m *Manager) Library() LibraryStatus {
 		Outside:     m.outside(),
 		Setups:      m.folderSetupsWaiting(),
 		HostFolders: folders,
-		Lutris:      m.hostLutrisGames(),
+		Lutris:      hostGamesOf(m, m.lutris),
+		Faugus:      hostGamesOf(m, m.faugus),
 		Inventory:   inv,
 	}
 }
 
 // SyncLibrary runs a pass now rather than waiting for the timer.
 //
-// It also has every member's Lutris read again. The timer only does that when
+// It also has every member's Lutris and Faugus read again. The timer only does that when
 // a folder moved, so an entry somebody added by hand for a folder that was
 // already there waits for this button; a scan reads a database and a few
 // files, and a press is a moment somebody chose, not one more thing on a timer.
@@ -691,8 +702,8 @@ func (m *Manager) SyncLibrary(ctx context.Context) error {
 		return fmt.Errorf("%w: %s", ErrNoLibrary, m.libraryErr)
 	}
 
-	if m.lutris != nil {
-		m.lutris.markAll()
+	for _, carrier := range m.shares() {
+		carrier.markAll()
 	}
 
 	m.syncLibrary(ctx)
@@ -803,15 +814,15 @@ func (m *Manager) UninstallEverywhere(appID string, closeHost bool) error {
 
 	// A folder that leaves the pool takes its approval with it, see forget,
 	// and the way to start it: the entries written for it are taken back by
-	// the next Lutris round, which finds the folder gone.
+	// the next round of each launcher, which finds the folder gone.
 	if name, ok := library.FolderName(appID); ok {
-		if m.lutris != nil {
-			if err := m.lutris.forgetRecipe(name); err != nil {
-				m.log.Warn("the record of carried Lutris entries could not be written", "err", err)
+		for _, carrier := range m.shares() {
+			if err := carrier.forgetRecipe(name); err != nil {
+				m.log.Warn("the record of carried launcher entries could not be written", "err", err)
 			}
-
-			m.lutrisSoon()
 		}
+
+		m.sharesSoon()
 
 		if m.setups != nil {
 			return m.setups.forget(name)

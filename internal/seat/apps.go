@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,6 +43,7 @@ type launcher struct {
 var launchers = []launcher{
 	{Name: "Heroic", Binary: "heroic", Flatpak: "com.heroicgameslauncher.hgl"},
 	{Name: "Lutris", Binary: "lutris", Flatpak: "net.lutris.Lutris"},
+	{Name: "Faugus", Binary: "faugus-launcher", Flatpak: "io.github.Faugus.faugus-launcher"},
 	{Name: "Bottles", Flatpak: "com.usebottles.bottles"},
 	{Name: "itch", Flatpak: "io.itch.itch"},
 	{Name: "Prism Launcher", Binary: "prismlauncher", Flatpak: "org.prismlauncher.PrismLauncher"},
@@ -920,6 +922,7 @@ func (p *Provisioner) sourceIcons(ctx context.Context) map[string]string {
 	return p.launcherIcons(ctx, []wanted{
 		{Key: "steam", Names: []string{"steam"}},
 		{Key: "lutris", Names: []string{"net.lutris.Lutris", "lutris"}},
+		{Key: faugusSource, Names: []string{"io.github.Faugus.faugus-launcher", "faugus-launcher"}},
 		{Key: "heroic", Names: []string{"com.heroicgameslauncher.hgl", "heroic"}},
 	})
 }
@@ -1149,7 +1152,21 @@ func foreignScan(dirs []string) string {
 // it writes for a game, with the game after it, so one Pokémon shortcut took
 // Eden's own entry out of the launcher while it stayed in Moonlight. The word
 // after the target is what makes that a different thing to start.
+//
+// Faugus's shortcut names the game by an id with nothing around it, which is
+// too wordlike for that test, so it is compared on the whole of what it says:
+// Faugus, and that game.
 func alreadyListed(execs, launch string) bool {
+	if id, ok := faugusLaunchID(launch); ok {
+		for _, line := range strings.Split(execs, "\n") {
+			if other, ok := faugusLaunchID(strings.TrimPrefix(strings.TrimSpace(line), "Exec=")); ok && other == id {
+				return true
+			}
+		}
+
+		return false
+	}
+
 	target := launchTarget(launch)
 	if target == "" {
 		return false
@@ -1183,6 +1200,26 @@ func startsTarget(command, target string) bool {
 	}
 
 	return false
+}
+
+// faugusLaunchID is the game a command has Faugus start, from either way of
+// writing it: ours, faugus-launcher --game <id>, or the shortcut Faugus writes
+// itself, which names the binary by its path.
+func faugusLaunchID(command string) (string, bool) {
+	fields := strings.Fields(command)
+
+	for len(fields) > 0 && len(fields[len(fields)-1]) == 2 && fields[len(fields)-1][0] == '%' {
+		fields = fields[:len(fields)-1]
+	}
+
+	n := len(fields)
+	if n < 3 || filepath.Base(strings.Trim(fields[0], `"'`)) != "faugus-launcher" || fields[n-2] != "--game" {
+		return "", false
+	}
+
+	id := strings.Trim(fields[n-1], `"'`)
+
+	return id, id != ""
 }
 
 // launchTarget is the part of a launch command that names the game: the URI for

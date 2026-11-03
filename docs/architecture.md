@@ -689,6 +689,38 @@ Proton game without a prefix of its own keeps one. Per game rather than for
 everything below `~/Games`, because a launcher like the EA App keeps its
 sign-in inside its folder and would carry it into every seat.
 
+**Faugus is carried the same way**, see `faugusshare.go` and `share.go`, which
+holds the part the two launchers have in common. Every seat has Faugus since
+0.47.0, from a package of this repository built in `packaging/faugus`, because
+it is in no Arch repository. Faugus keeps a game as one entry in
+`~/.local/share/faugus-launcher/games.json`, so the helper reads and writes that
+file instead of a database: the recipe is the title, the id, the program
+relative to the folder, the runner with Faugus's `Default` resolved to what that
+member's default was, the umu fix id, the game's own arguments and the runtime
+for a native game. The entry is written as `<id>-polyseat`, in the receiver's own
+prefix below its default prefix directory, with the program's icon extracted the
+way Faugus does it. A runner is translated to the nearest build the receiver
+already has, which in a seat is `/usr/share/steam/compatibilitytools.d/proton-cachyos`,
+rather than to Faugus's `Proton-CachyOS Latest`, which would download a second
+copy into every seat on the first start.
+
+Faugus builds the command it starts as words and reads any word of the form
+`NAME=value` as a variable for the game's environment, so the arguments that
+travel are checked word by word, and its launch arguments and pre and post
+launch commands do not travel at all. It also keeps the whole list in memory
+and writes it back when it saves, the runner every few seconds while a game
+plays, so nothing is written while a Faugus process runs as that person: the
+member stays owed and is looked at again on the next round.
+
+A seat with Faugus installed counts as having one, opened or not, so a new seat
+has the shared games in Moonlight before anybody has started Faugus there.
+Moonlight's list reads `games.json` directly for every seat, as it reads
+Steam's manifests, and starts a game with `faugus-launcher --game <id>`. On the
+host, the Library section lists Faugus's games beside Lutris's with the same
+Share button, which also rewrites the `Path=` of the desktop shortcut Faugus
+made for the game. A folder that one launcher moves is followed by the other
+launcher's entries for it as well.
+
 **A folder may carry `polyseat-setup.sh`**, and once somebody has allowed it the
 daemon runs it wherever that folder has been delivered: inside the container as
 the player for a seat, and as the library's owner for the host, never as root

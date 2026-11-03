@@ -88,6 +88,9 @@ type Manager struct {
 	// when there is no pool. See lutrisshare.go.
 	lutris *lutrisShares
 
+	// faugus is the same for Faugus. See faugusshare.go.
+	faugus *faugusShares
+
 	// syncMu serialises library work. The timer and the interface's own
 	// buttons both start passes, and two of them cloning into the same seat at
 	// once would race over the same directories.
@@ -3012,11 +3015,12 @@ func (m *Manager) Delete(name string, keepContainer bool) error {
 			}
 		}
 
-		// And the record of Lutris entries written there: a seat built again
-		// under this name has a Lutris that has never seen any of them.
-		if m.lutris != nil {
-			if err := m.lutris.forgetMember(name); err != nil {
-				m.logf(name, "! the record of its Lutris entries could not be cleared: %v", err)
+		// And the record of launcher entries written there: a seat built
+		// again under this name has a Lutris and a Faugus that have never seen
+		// any of them.
+		for _, carrier := range m.shares() {
+			if err := carrier.forgetMember(name); err != nil {
+				m.logf(name, "! the record of its launcher entries could not be cleared: %v", err)
 			}
 		}
 

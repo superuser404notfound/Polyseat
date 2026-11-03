@@ -16,11 +16,14 @@ folder that arrived, from what the member that installed it had.
 Commands, each printing one JSON document:
 
     scan GAMES_ROOT SHARED       every wine and linux game, with its paths
-    register SHARED RECIPE       add an entry for SHARED/<folder>
+    register SHARED DOC          add an entry for SHARED/<folder>, DOC being
+                                 {"recipe": ..., "folder": ...}
     unregister SHARED FOLDER CONFIGPATH
                                  take back an entry register made
     move GAMES_ROOT SHARED SLUG  host only: move a game's folder into SHARED
                                  and point its entries at the new place
+    repoint OLD NEW              point every entry into OLD at NEW instead,
+                                 after another launcher moved the folder
 
 What is read from an entry is a short list of keys and nothing else, see KEEP.
 Lutris also has hooks that run commands around a launch and an environment it
@@ -174,14 +177,14 @@ def describe(row, games_root, shared):
 
 def scan(games_root, shared):
     if not os.path.isfile(PGA):
-        out({"lutris": False, "games": []})
+        out({"present": False, "games": []})
         return
     db = connect()
     try:
         found = [describe(row, games_root, shared) for row in games(db)]
     finally:
         db.close()
-    out({"lutris": True, "games": found})
+    out({"present": True, "games": found})
 
 
 # ------------------------------------------------------------------ register
@@ -259,8 +262,8 @@ def covers(row, folder_dir):
     return False
 
 
-def register(shared, recipe):
-    folder = recipe["folder"]
+def register(shared, doc):
+    recipe, folder = doc["recipe"], doc["folder"]
     base = os.path.join(shared, folder)
 
     if not os.path.isdir(base):
@@ -270,17 +273,17 @@ def register(shared, recipe):
     if not os.path.isfile(PGA):
         # Lutris has never run here, so it has no database to add to yet. The
         # daemon asks again on a later pass.
-        out({"status": "no-lutris"})
+        out({"status": "absent"})
         return
 
     db = connect()
     try:
         for row in db.execute("select id, slug, directory, configpath from games"):
             if covers(row, base):
-                out({"status": "present", "configpath": row["configpath"] or ""})
+                out({"status": "present", "written": row["configpath"] or ""})
                 return
             if row["slug"] == recipe["slug"]:
-                out({"status": "slug-taken", "configpath": row["configpath"] or ""})
+                out({"status": "taken", "written": row["configpath"] or ""})
                 return
 
         configpath = recipe["slug"] + SUFFIX
@@ -317,7 +320,7 @@ def register(shared, recipe):
     finally:
         db.close()
 
-    out({"status": "added", "configpath": configpath, "wine_version": version})
+    out({"status": "added", "written": configpath, "wine_version": version})
 
 
 def unregister(shared, folder, configpath):
@@ -394,31 +397,51 @@ def move(games_root, shared, slug):
         # construction, shared being inside games_root, and a game that has to
         # be copied in full to be shared is a decision about somebody's disk.
         os.rename(old, new)
-
-        moved = []
-        with db:
-            for row in db.execute("select id, directory, configpath from games"):
-                directory = row["directory"] or ""
-                if directory == old or directory.startswith(old + os.sep):
-                    db.execute("update games set directory = ? where id = ?",
-                               (rewrite(directory, old, new), row["id"]))
-                configpath = row["configpath"] or ""
-                config = load_config(configpath)
-                if not config:
-                    continue
-                changed = rewrite(config, old, new)
-                if changed == config:
-                    continue
-                path = os.path.join(GAMES, configpath + ".yml")
-                tmp = path + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    yaml.safe_dump(changed, f, allow_unicode=True, sort_keys=False)
-                os.replace(tmp, path)
-                moved.append(configpath)
+        moved = repoint_entries(db, old, new)
     finally:
         db.close()
 
-    out({"status": "moved", "folder": name, "entries": moved})
+    out({"status": "moved", "folder": name, "entries": moved, "old": old, "new": new})
+
+
+def repoint_entries(db, old, new):
+    """Every row and YAML pointing into old, pointed into new instead."""
+    moved = []
+    with db:
+        for row in db.execute("select id, directory, configpath from games"):
+            directory = row["directory"] or ""
+            if directory == old or directory.startswith(old + os.sep):
+                db.execute("update games set directory = ? where id = ?",
+                           (rewrite(directory, old, new), row["id"]))
+            configpath = row["configpath"] or ""
+            config = load_config(configpath)
+            if not config:
+                continue
+            changed = rewrite(config, old, new)
+            if changed == config:
+                continue
+            path = os.path.join(GAMES, configpath + ".yml")
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                yaml.safe_dump(changed, f, allow_unicode=True, sort_keys=False)
+            os.replace(tmp, path)
+            moved.append(configpath)
+    return moved
+
+
+def repoint(old, new):
+    if not os.path.isabs(old) or not os.path.isabs(new):
+        out({"error": "repoint wants two absolute paths"})
+        return
+    if not os.path.isfile(PGA):
+        out({"status": "gone"})
+        return
+    db = connect()
+    try:
+        moved = repoint_entries(db, os.path.normpath(old), os.path.normpath(new))
+    finally:
+        db.close()
+    out({"status": "repointed" if moved else "gone"})
 
 
 def main(argv):
@@ -431,8 +454,10 @@ def main(argv):
             unregister(argv[1], argv[2], argv[3])
         elif argv[:1] == ["move"] and len(argv) == 4:
             move(argv[1], argv[2], argv[3])
+        elif argv[:1] == ["repoint"] and len(argv) == 3:
+            repoint(argv[1], argv[2])
         else:
-            out({"error": "usage: scan|register|unregister|move ..."})
+            out({"error": "usage: scan|register|unregister|move|repoint ..."})
             return 2
     except (OSError, sqlite3.Error, ValueError, KeyError) as e:
         out({"error": "%s: %s" % (type(e).__name__, e)})

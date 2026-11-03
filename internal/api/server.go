@@ -207,6 +207,7 @@ func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker
 	guarded.HandleFunc("POST /api/library/readmit/{appid}", s.readmitTitle)
 	guarded.HandleFunc("POST /api/library/setups/{folder}", s.allowFolderSetup)
 	guarded.HandleFunc("POST /api/library/share/{slug}", s.shareLutrisGame)
+	guarded.HandleFunc("POST /api/library/share-faugus/{gameid}", s.shareFaugusGame)
 	guarded.HandleFunc("POST /api/seats/{name}/{action}", s.seatAction)
 
 	mux.Handle("/api/", s.requireSession(guarded))
@@ -1537,7 +1538,11 @@ func (s *Server) libraryStatus() seat.LibraryStatus {
 	}
 
 	if status.Lutris == nil {
-		status.Lutris = []seat.HostLutrisGame{}
+		status.Lutris = []seat.HostGame{}
+	}
+
+	if status.Faugus == nil {
+		status.Faugus = []seat.HostGame{}
 	}
 
 	if status.Withheld == nil {
@@ -1726,6 +1731,17 @@ func (s *Server) allowFolderSetup(w http.ResponseWriter, r *http.Request) {
 // which is what puts it in the pool and from there in every seat's Lutris.
 func (s *Server) shareLutrisGame(w http.ResponseWriter, r *http.Request) {
 	if err := s.manager.ShareHostLutrisGame(r.Context(), r.PathValue("slug")); err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.libraryStatus())
+}
+
+// shareFaugusGame is shareLutrisGame for a game in the host's own Faugus.
+func (s *Server) shareFaugusGame(w http.ResponseWriter, r *http.Request) {
+	if err := s.manager.ShareHostFaugusGame(r.Context(), r.PathValue("gameid")); err != nil {
 		fail(w, statusFor(err), err)
 
 		return
