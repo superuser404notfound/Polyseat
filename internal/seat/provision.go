@@ -575,6 +575,11 @@ func (p *Provisioner) stack() stack { return stackFor(p.GPU) }
 // ------------------------------------------------------------------ packages
 
 func (p *Provisioner) stepPackages(ctx context.Context) error {
+	// Before anything is fetched, see mirrors.go.
+	if err := p.ensureMirrors(ctx); err != nil {
+		return err
+	}
+
 	// The seats built during the M1 spike carry the CachyOS repository, which
 	// was how Sunshine got in before it came from the upstream release. Leaving
 	// it would mean two sources for the same package and seats that differ

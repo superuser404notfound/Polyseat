@@ -10,6 +10,22 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.47.2
+
+**A new seat no longer stalls on its one package mirror.** The Arch image a
+seat is built from names a single mirror, mirrors.kernel.org in Dallas, and
+pacman gives up the whole transaction when it slows to nothing for ten
+seconds. That stopped joser's provisioning in September and louis's today, at
+the step that fetches a gigabyte or two. A seat whose list still has one server
+now gets Arch's own geo mirror first, then the first four of the host's list
+when the host is an Arch or an Arch derivative, then the image's mirror as the
+last resort; the original is kept beside it as `mirrorlist.image`. A list with
+two servers or more is somebody's choice and is left exactly as it is.
+
+No seat needs building again: it happens at the start of the packages step, so
+on the next provisioning or software update of a seat that needs it. The list
+was generated from this host's and every mirror in it answered.
+
 ## 0.47.1
 
 **The library has a section per launcher.** Steam, Lutris, Faugus and the folders no launcher carries each have a heading now, with their games in the pool, the ones waiting after an uninstall, and the host's Share list for that launcher below them. Until now all of it was one table and the launcher showed only in the small print. A folder is under every launcher that carries an entry for it, which the daemon now reports per folder; a folder whose Lutris or Faugus entry has not been read yet stays under "Other folders" until the next round has read it. The columns line up across the sections.
