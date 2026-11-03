@@ -1487,9 +1487,9 @@ func (p *Pool) Forget(seat string) error {
 // Title is one entry in the pool as the web interface shows it.
 type Title struct {
 	// Kind is "steam" for a title read from an appmanifest and "folder" for a
-	// plain directory shared for some other launcher. The interface shows both
-	// in one list, because from where somebody is standing they are both just
-	// games that are in the pool.
+	// plain directory shared for some other launcher. The interface shows
+	// each under its launcher's heading, a folder under every launcher that
+	// carries an entry for it.
 	Kind string `json:"kind"`
 
 	AppID      string `json:"appid"`

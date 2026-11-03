@@ -387,6 +387,41 @@ type shareCarrier interface {
 	forgetMember(member string) error
 	soon(m *Manager)
 	repointHost(ctx context.Context, m *Manager, old, new string)
+
+	// launcher is the launcher's name, folders the shared folders it has a
+	// recipe for.
+	launcher() string
+	folders() []string
+}
+
+// folderLaunchers is, per shared folder, the launchers that carry it, in the
+// order shares lists them.
+func (m *Manager) folderLaunchers() map[string][]string {
+	out := map[string][]string{}
+
+	for _, s := range m.shares() {
+		for _, folder := range s.folders() {
+			out[folder] = append(out[folder], s.launcher())
+		}
+	}
+
+	return out
+}
+
+func (s *shareBook[R, E]) launcher() string { return s.name }
+
+func (s *shareBook[R, E]) folders() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make([]string, 0, len(s.state.Recipes))
+	for folder := range s.state.Recipes {
+		out = append(out, folder)
+	}
+
+	sort.Strings(out)
+
+	return out
 }
 
 // shares is every launcher whose entries the pool carries, or none when there

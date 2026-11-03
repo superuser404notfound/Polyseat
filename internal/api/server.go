@@ -1545,6 +1545,10 @@ func (s *Server) libraryStatus() seat.LibraryStatus {
 		status.Faugus = []seat.HostGame{}
 	}
 
+	if status.Launchers == nil {
+		status.Launchers = map[string][]string{}
+	}
+
 	if status.Withheld == nil {
 		status.Withheld = []library.Title{}
 	}

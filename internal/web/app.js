@@ -986,11 +986,30 @@ function renderLibrary() {
         });
 
   const titles = library.titles || [];
+  const withheld = library.withheld || [];
+  const launchers = library.launchers || {};
 
-  if (titles.length === 0) {
-    body.replaceChildren(
-      ...[
-        Object.assign(document.createElement("p"), {
+  // One section per launcher, so that which games belong where is a heading
+  // rather than something to read out of a badge. Steam's titles are Steam's;
+  // a folder is under every launcher that carries an entry for it, which can
+  // be two, and under "Other folders" when none does, a Heroic or Bottles
+  // game or one that brings its own setup script.
+  const carriers = (title) =>
+    title.kind === "folder"
+      ? launchers[(title.appid || "").replace(/^folder:/, "")] || []
+      : null;
+  const steam = (list) => list.filter((title) => carriers(title) === null);
+  const carriedBy = (launcher, list) =>
+    list.filter((title) => (carriers(title) || []).includes(launcher));
+  const uncarried = (list) =>
+    list.filter((title) => {
+      const by = carriers(title);
+      return by !== null && by.length === 0;
+    });
+
+  const intro =
+    titles.length === 0
+      ? Object.assign(document.createElement("p"), {
           className: "empty",
           textContent:
             "Nothing in the pool yet. Install a game in any seat that takes part " +
@@ -998,59 +1017,109 @@ function renderLibrary() {
             "The games already on this host come in by themselves once their " +
             "Steam library is watched, which the daemon does for you where it " +
             "can.",
-        }),
-        // Worth the most here of anywhere: an empty pool on a machine that has
-        // a Steam library full of games is exactly the state this is for.
-        ...withheldTitles(library),
-        ...watching(library),
-        ...launcherSharing(library, "Lutris", library.lutris, (game) =>
-          apiPath`/api/library/share/${game.key}`),
-        ...launcherSharing(library, "Faugus", library.faugus, (game) =>
-          apiPath`/api/library/share-faugus/${game.key}`),
-        aside,
-      ].filter(Boolean),
-    );
-    return;
-  }
+        })
+      : null;
 
-  const table = document.createElement("table");
-  table.className = "titles";
-
-  const head = document.createElement("thead");
-  head.innerHTML =
-    "<tr><th>Title</th><th>Size</th><th>In</th><th></th></tr>";
-
-  const rows = document.createElement("tbody");
-
-  titles.forEach((title) => rows.append(titleRow(title)));
-
-  table.append(head, rows);
-
-  const note = document.createElement("p");
-  note.className = "hint";
-  note.textContent =
-    "The pool holds " +
-    bytes(library.bytes) +
-    " in " +
-    library.root +
-    ". Copies in the seats share those blocks, so they cost almost nothing " +
-    "until a seat updates a game. Sharing files is not sharing licences: a " +
-    "seat can only play what its own Steam account owns.";
+  const note =
+    titles.length === 0
+      ? null
+      : Object.assign(document.createElement("p"), {
+          className: "hint",
+          textContent:
+            "The pool holds " +
+            bytes(library.bytes) +
+            " in " +
+            library.root +
+            ". Copies in the seats share those blocks, so they cost almost " +
+            "nothing until a seat updates a game. Sharing files is not sharing " +
+            "licences: a seat can only play what its own Steam account owns.",
+        });
 
   body.replaceChildren(
     ...[
+      intro,
       ...setupsWaiting(library),
-      table,
+      // Always there, even empty: an empty pool on a machine that has a Steam
+      // library full of games is exactly the state the watching hint is for.
+      ...librarySection(
+        "Steam",
+        steam(titles),
+        steam(withheld),
+        watching(library),
+        true,
+      ),
+      ...librarySection(
+        "Lutris",
+        carriedBy("Lutris", titles),
+        carriedBy("Lutris", withheld),
+        launcherSharing(
+          library,
+          "Lutris",
+          library.lutris,
+          carriedBy("Lutris", titles),
+          (game) => apiPath`/api/library/share/${game.key}`,
+        ),
+      ),
+      ...librarySection(
+        "Faugus",
+        carriedBy("Faugus", titles),
+        carriedBy("Faugus", withheld),
+        launcherSharing(
+          library,
+          "Faugus",
+          library.faugus,
+          carriedBy("Faugus", titles),
+          (game) => apiPath`/api/library/share-faugus/${game.key}`,
+        ),
+      ),
+      ...librarySection(
+        "Other folders",
+        uncarried(titles),
+        uncarried(withheld),
+        [],
+      ),
       note,
-      ...withheldTitles(library),
-      ...watching(library),
-      ...launcherSharing(library, "Lutris", library.lutris, (game) =>
-        apiPath`/api/library/share/${game.key}`),
-      ...launcherSharing(library, "Faugus", library.faugus, (game) =>
-        apiPath`/api/library/share-faugus/${game.key}`),
       aside,
     ].filter(Boolean),
   );
+}
+
+// One launcher's part of the library: a heading, its titles in the pool, the
+// ones waiting after an uninstall, and whatever else belongs to it below. A
+// section with nothing in it is left out, unless always says otherwise.
+function librarySection(heading, titles, withheld, extra, always = false) {
+  const empty =
+    titles.length === 0 && withheld.length === 0 && extra.length === 0;
+  if (empty && !always) return [];
+
+  const out = [
+    Object.assign(document.createElement("h3"), { textContent: heading }),
+  ];
+
+  if (titles.length) {
+    const table = document.createElement("table");
+    table.className = "titles";
+
+    const head = document.createElement("thead");
+    head.innerHTML =
+      "<tr><th>Title</th><th>Size</th><th>In</th><th></th></tr>";
+
+    const rows = document.createElement("tbody");
+
+    titles.forEach((title) => rows.append(titleRow(title)));
+
+    table.append(head, rows);
+    out.push(table);
+  } else if (always) {
+    out.push(
+      Object.assign(document.createElement("p"), {
+        className: "hint",
+        textContent: "No " + heading + " games in the pool yet.",
+      }),
+    );
+  }
+
+  return [...out, ...withheldTitles(withheld), ...extra];
 }
 
 // Titles uninstalled everywhere that some library has again.
@@ -1060,8 +1129,7 @@ function renderLibrary() {
 // it again with its next update, and that looks exactly like somebody
 // installing it. So each one waits here: shared again if somebody did install
 // it, uninstalled again if not.
-function withheldTitles(pool) {
-  const titles = pool.withheld || [];
+function withheldTitles(titles) {
   if (titles.length === 0) return [];
 
   const list = document.createElement("ul");
@@ -1109,8 +1177,16 @@ function withheldTitles(pool) {
 // which is what the button does. Asked per game rather than done for every
 // game, because a launcher like the EA App keeps its sign in inside its folder
 // and would carry it into every seat.
-function launcherSharing(pool, launcher, listed, sharePath) {
-  const games = listed || [];
+//
+// A game that is shared and already has its row in the table above is not
+// listed a second time; one shared but not in the pool yet still is.
+function launcherSharing(pool, launcher, listed, inPool, sharePath) {
+  const pooled = new Set(
+    inPool.map((title) => (title.appid || "").replace(/^folder:/, "")),
+  );
+  const games = (listed || []).filter(
+    (game) => !(game.shared && pooled.has(game.folder)),
+  );
   if (games.length === 0) return [];
 
   const out = [];
@@ -1384,9 +1460,9 @@ function titleRow(title) {
   const name = document.createElement("td");
   name.textContent = title.name || title.installdir || title.appid;
 
-  // Where it came from. Both kinds sit in one list because from where somebody
-  // is standing they are both just games in the pool, but a Steam title behaves
-  // differently from a plain folder and the badge is where that shows.
+  // Where it came from. The section a row is in already says which launcher,
+  // but a folder behaves differently from a Steam title and the badge is where
+  // that shows.
   if (title.kind === "folder") {
     const badge = document.createElement("span");
     badge.className = "badge";

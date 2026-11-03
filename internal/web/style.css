@@ -221,6 +221,13 @@ button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad)
 .library h2 { margin: 0; font-size: 1.05rem; }
 .library .empty { padding: 2rem 1rem; }
 .library .hint { margin-top: 0.9rem; }
+.library h3 {
+  margin: 1.6rem 0 0;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.95rem;
+}
+.library h3:first-child { margin-top: 1rem; }
 
 table.titles {
   width: 100%;
@@ -244,6 +251,17 @@ table.titles td {
 }
 
 table.titles tr:last-child td { border-bottom: 0; }
+
+/* The same columns in every launcher's table, so the sections read as one
+   list cut into parts rather than as tables of their own. On a phone the
+   browser's own widths fit better. */
+@media (min-width: 640px) {
+  table.titles { table-layout: fixed; }
+  table.titles th:nth-child(1) { width: 46%; }
+  table.titles th:nth-child(2) { width: 12%; }
+  table.titles th:nth-child(3) { width: 26%; }
+  table.titles td:first-child { overflow-wrap: anywhere; }
+}
 table.titles td.num { font-family: var(--mono); color: var(--dim); white-space: nowrap; }
 table.titles td.right { text-align: right; white-space: nowrap; }
 

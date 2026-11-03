@@ -78,6 +78,12 @@ type LibraryStatus struct {
 	Lutris      []HostGame `json:"lutris"`
 	Faugus      []HostGame `json:"faugus"`
 
+	// Launchers names, per shared folder, the launchers it is carried in,
+	// "Lutris" and "Faugus", so that the interface can show each folder under
+	// its launcher. A folder no launcher knows is not in it. Always a map,
+	// never null.
+	Launchers map[string][]string `json:"launchers"`
+
 	library.Inventory
 }
 
@@ -687,6 +693,7 @@ func (m *Manager) Library() LibraryStatus {
 		HostFolders: folders,
 		Lutris:      hostGamesOf(m, m.lutris),
 		Faugus:      hostGamesOf(m, m.faugus),
+		Launchers:   m.folderLaunchers(),
 		Inventory:   inv,
 	}
 }
