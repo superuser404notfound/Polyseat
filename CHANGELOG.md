@@ -10,6 +10,31 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.47.0
+
+**Faugus is carried like Lutris.** Every seat now has Faugus Launcher, 2.5.6
+from a package of this repository, since it is in no Arch repository. A game in
+a seat's Faugus is a Moonlight card that starts it directly, and one whose
+folder is in the shared directory appears in every other seat's Faugus by
+itself: the daemon reads the entry where the game was added and writes one from
+it wherever the folder arrives, with that seat's own prefix, so its own saves,
+and the Proton CachyOS the seat already has instead of a second download. On
+the host, the Library section lists Faugus's games beside Lutris's, and Share
+moves one into `~/Games/shared` and points Faugus and its desktop shortcut at
+the new place. Launch arguments and commands run around a game do not travel,
+and nothing is written while Faugus is open, because it would save its own list
+over the new entry.
+
+The machinery is now one piece for both launchers, `share.go`. Nothing about
+Lutris changed on the way, apart from a folder that Faugus moves on the host
+being followed by Lutris's entries for it too, and the other way round.
+
+**Seats need provisioning** for Faugus itself, Generation 70. The cards and the
+carried entries need nothing else. Tested against copies of the host's and a
+seat's Faugus, and the launch command Faugus builds from a written entry was
+checked inside a container with the package installed; no game has been started
+from a carried entry yet.
+
 ## 0.46.0
 
 **Steam's screensaver stays off a running game.** Steam counts input and a
