@@ -10,6 +10,12 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.47.1
+
+**The library has a section per launcher.** Steam, Lutris, Faugus and the folders no launcher carries each have a heading now, with their games in the pool, the ones waiting after an uninstall, and the host's Share list for that launcher below them. Until now all of it was one table and the launcher showed only in the small print. A folder is under every launcher that carries an entry for it, which the daemon now reports per folder; a folder whose Lutris or Faugus entry has not been read yet stays under "Other folders" until the next round has read it. The columns line up across the sections.
+
+No seat needs building again. Looked at with made-up data, at desktop width and at phone width.
+
 ## 0.47.0
 
 **Faugus is carried like Lutris.** Every seat now has Faugus Launcher, 2.5.6
