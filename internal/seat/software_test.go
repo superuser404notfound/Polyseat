@@ -74,7 +74,7 @@ func TestEveryFlatpakLauncherCanBeInstalledFromTheInterface(t *testing.T) {
 
 		// A launcher that ships as a package in every seat needs no flatpak
 		// entry, because the app list will find the binary.
-		if l.Binary == "lutris" || l.Binary == "faugus-launcher" {
+		if l.Binary == "lutris" || l.Binary == "faugus-launcher" || l.Binary == "heroic" {
 			continue
 		}
 

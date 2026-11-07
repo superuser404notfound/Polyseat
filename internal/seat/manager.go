@@ -91,6 +91,9 @@ type Manager struct {
 	// faugus is the same for Faugus. See faugusshare.go.
 	faugus *faugusShares
 
+	// heroic is the same for Heroic. See heroicshare.go.
+	heroic *heroicShares
+
 	// syncMu serialises library work. The timer and the interface's own
 	// buttons both start passes, and two of them cloning into the same seat at
 	// once would race over the same directories.

@@ -70,16 +70,17 @@ type LibraryStatus struct {
 	Setups []FolderSetup `json:"setups"`
 
 	// HostFolders is the host's ~/Games/shared, or empty when it has none and
-	// so takes no part in the folders. Lutris and Faugus list the games of
-	// the host's own launchers, so that one installed somewhere else can be
-	// moved in with a button. See share.go; both are always a list, never
-	// null.
+	// so takes no part in the folders. Lutris, Faugus and Heroic list the
+	// games of the host's own launchers, so that one installed somewhere else
+	// can be moved in with a button. See share.go; each is always a list,
+	// never null.
 	HostFolders string     `json:"host_folders,omitempty"`
 	Lutris      []HostGame `json:"lutris"`
 	Faugus      []HostGame `json:"faugus"`
+	Heroic      []HostGame `json:"heroic"`
 
 	// Launchers names, per shared folder, the launchers it is carried in,
-	// "Lutris" and "Faugus", so that the interface can show each folder under
+	// "Lutris", "Faugus" and "Heroic", so that the interface can show each folder under
 	// its launcher. A folder no launcher knows is not in it. Always a map,
 	// never null.
 	Launchers map[string][]string `json:"launchers"`
@@ -311,6 +312,14 @@ func (m *Manager) openLibrary() {
 	}
 
 	m.faugus = faugus
+
+	heroic, err := openHeroicShares(filepath.Join(m.cfg.StateDir, heroicShareFile))
+	if err != nil {
+		m.log.Warn("the record of Heroic entries carried between members could not "+
+			"be read, so it starts over", "err", err)
+	}
+
+	m.heroic = heroic
 
 	m.log.Info("shared library ready", "dir", m.cfg.LibraryDir)
 }
@@ -693,6 +702,7 @@ func (m *Manager) Library() LibraryStatus {
 		HostFolders: folders,
 		Lutris:      hostGamesOf(m, m.lutris),
 		Faugus:      hostGamesOf(m, m.faugus),
+		Heroic:      hostGamesOf(m, m.heroic),
 		Launchers:   m.folderLaunchers(),
 		Inventory:   inv,
 	}

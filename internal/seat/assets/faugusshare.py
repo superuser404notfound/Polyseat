@@ -18,6 +18,9 @@ other half, the same four commands lutrisshare.py has:
                                  and point its entries at the new place
     repoint OLD NEW              point every entry into OLD at NEW instead,
                                  after another launcher moved the folder
+    stores SHARED                make every store launcher's place for its
+                                 games a link to SHARED, moving the games
+                                 already there into it first
 
 What travels is a short list of keys, see the recipe in describe. Faugus also
 runs commands before and after a game and puts launch arguments in front of
@@ -25,6 +28,7 @@ it, and none of that is carried: the entry written here is one somebody else
 will start.
 """
 
+import errno
 import json
 import os
 import re
@@ -32,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 HOME = os.path.expanduser("~")
 DATA = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local/share"),
@@ -183,7 +188,7 @@ def game_title(gameid):
     return gameid
 
 
-def describe(game, games_root, shared, default_runner):
+def describe(game, games_root, shared, default_runner, prefixes=()):
     gameid = text(game, "gameid")
     exe = absolute(text(game, "path"))
     prefix = absolute(text(game, "prefix"))
@@ -211,6 +216,25 @@ def describe(game, games_root, shared, default_runner):
         item["game_arguments"] = text(game, "game_arguments")
         item["runtime"] = text(game, "runtime")
         item["disable_umu"] = bool(game.get("disable_umu"))
+        return item
+
+    # A game a store launcher installed, started through the link that store's
+    # directory is, see link_store. Its files are a shared folder; the prefix is
+    # the store's, which is where it is signed in, and stays behind like any
+    # other prefix outside the folder.
+    found = store_of(exe, prefixes)
+    if found:
+        kind, root, folder, rel = found
+        if same_place(os.path.join(root, folder), os.path.join(shared, folder)):
+            item["folder"] = folder
+            item["store"] = kind
+            item["exe"] = rel
+            item["prefix"] = ""
+            item["runner"] = runner
+            item["protonfix"] = text(game, "protonfix")
+            item["game_arguments"] = text(game, "game_arguments")
+            item["runtime"] = text(game, "runtime")
+            item["disable_umu"] = bool(game.get("disable_umu"))
     return item
 
 
@@ -224,7 +248,208 @@ def scan(games_root, shared):
     games = load_games() or []
     default_runner = text(config(), "default-runner").strip('"')
     out({"present": True,
-         "games": [describe(g, games_root, shared, default_runner) for g in games]})
+         "games": [describe(g, games_root, shared, default_runner, store_prefixes(games))
+                   for g in games]})
+
+
+# -------------------------------------------------------------------- stores
+
+# The store launchers Faugus installs whose games each get a directory of
+# their own in one place: the launcher's program and that place, both below
+# drive_c. The place is made a link to the shared folders, so whatever the
+# store installs is a shared folder from its first byte, on every member, and
+# the store finds it where it put it. Epic and Rockstar keep the launcher
+# itself among their games and Battle.net puts every game straight into
+# Program Files, so none of those can be linked whole.
+STORES = {
+    "ea": ("Program Files/Electronic Arts/EA Desktop/EA Desktop/EALauncher.exe",
+           "Program Files/EA Games"),
+    "ubisoft": ("Program Files (x86)/Ubisoft/Ubisoft Game Launcher/UbisoftConnect.exe",
+                "Program Files (x86)/Ubisoft/Ubisoft Game Launcher/games"),
+}
+
+# How long a directory in a store's place has to be left alone before it is
+# moved into the shared folders. A store writes a game in place while it
+# downloads, and a download can pause.
+QUIET = 10 * 60
+
+
+def store_prefixes(games):
+    """(kind, prefix) for every prefix in games.json that has a store
+    launcher installed, in the order of the list, each once. Read off the
+    prefix rather than off the launcher's entry, which somebody may have
+    renamed or removed."""
+    seen, found = set(), []
+    for game in games:
+        prefix = absolute(text(game, "prefix"))
+        if not prefix or prefix in seen:
+            continue
+        seen.add(prefix)
+        for kind, (exe, _) in STORES.items():
+            if os.path.isfile(os.path.join(prefix, "drive_c", exe)):
+                found.append((kind, prefix))
+                break
+    return found
+
+
+def store_root(kind, prefix):
+    return os.path.join(prefix, "drive_c", STORES[kind][1])
+
+
+def store_of(exe, prefixes):
+    """(kind, root, folder, exe relative to the folder) when exe is a game in
+    one of the stores' places, as written, and None otherwise."""
+    for kind, prefix in prefixes:
+        root = store_root(kind, prefix)
+        folder = inside(exe, root)
+        if folder:
+            rel = relative(exe, os.path.join(root, folder))
+            if rel:
+                return kind, root, folder, rel
+    return None
+
+
+def same_place(a, b):
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def store_runner(games, kind, prefix):
+    """The runner the store's own entry has, which is what its games are
+    started with too: one prefix is one wine."""
+    exe = os.path.join(prefix, "drive_c", STORES[kind][0])
+    for game in games:
+        if absolute(text(game, "path")) == exe:
+            return text(game, "runner") or "Default"
+    return "Default"
+
+
+def in_use(folder):
+    """Whether a process of this person runs out of folder: its working
+    directory, its program or a file it has mapped is inside it."""
+    me = os.getuid()
+    inner = folder.rstrip(os.sep) + os.sep
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or str(os.getpid()) == pid:
+            continue
+        base = "/proc/" + pid
+        try:
+            if os.stat(base).st_uid != me:
+                continue
+        except OSError:
+            continue
+        for link in ("cwd", "exe"):
+            try:
+                target = os.readlink(os.path.join(base, link))
+            except OSError:
+                continue
+            if target == folder or target.startswith(inner):
+                return True
+        try:
+            with open(os.path.join(base, "maps"), encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if " " + inner in line:
+                        return True
+        except OSError:
+            continue
+    return False
+
+
+def quiet(folder, seconds):
+    """Whether nothing below folder has changed for that long."""
+    limit = time.time() - seconds
+    for top, dirs, files in os.walk(folder):
+        for name in dirs + files:
+            try:
+                if os.lstat(os.path.join(top, name)).st_mtime > limit:
+                    return False
+            except OSError:
+                return False
+    return True
+
+
+def link_store(kind, prefix, shared):
+    """Makes one store's place a link to the shared folders.
+
+    Games already in it are moved there first, a rename on one filesystem,
+    each leaving a link behind until the whole place can become one. A game
+    still being written or played stays where it is, and so does anything
+    that would land on a folder of the same name: both are answered as a
+    problem and tried again next time."""
+    root = store_root(kind, prefix)
+    report = {"kind": kind, "prefix": prefix, "moved": [], "problem": ""}
+
+    if os.path.islink(root):
+        if not same_place(root, shared):
+            report["problem"] = "%s is a link to somewhere else" % root
+        return report
+    if not os.path.lexists(root):
+        os.makedirs(os.path.dirname(root), exist_ok=True)
+        os.symlink(shared, root)
+        report["linked"] = True
+        return report
+    if not os.path.isdir(root):
+        report["problem"] = "%s is not a directory" % root
+        return report
+
+    for name in sorted(os.listdir(root)):
+        path = os.path.join(root, name)
+        target = os.path.join(shared, name)
+        if os.path.islink(path):
+            if not same_place(path, target):
+                report["problem"] = "%s is a link to somewhere else" % path
+                return report
+            continue
+        if not os.path.isdir(path):
+            report["problem"] = "%s is not a game's directory" % path
+            return report
+        if os.path.lexists(target):
+            report["problem"] = "%s is in the shared folders already" % name
+            return report
+        if in_use(path) or not quiet(path, QUIET):
+            report["problem"] = "%s is still being written or played" % name
+            return report
+        try:
+            os.rename(path, target)
+        except OSError as e:
+            if e.errno == errno.EXDEV:
+                report["problem"] = "%s is on another filesystem than the shared folders" % name
+                return report
+            raise
+        os.symlink(target, path)
+        report["moved"].append(name)
+
+    # Nothing but links into the shared folders left: the place becomes one.
+    for name in os.listdir(root):
+        os.unlink(os.path.join(root, name))
+    os.rmdir(root)
+    os.symlink(shared, root)
+    report["linked"] = True
+    return report
+
+
+def stores(shared):
+    """Links every store's place in this member's Faugus, see link_store."""
+    if not installed():
+        out({"status": "absent", "stores": []})
+        return
+    games = load_games()
+    if games is None:
+        out({"status": "absent", "stores": []})
+        return
+    found = store_prefixes(games)
+    if not found:
+        out({"status": "none", "stores": []})
+        return
+    # Nothing is moved or linked under a running store: it holds the place
+    # open and writes into it.
+    who = busy()
+    if who:
+        out({"status": "busy", "who": who, "stores": []})
+        return
+    out({"status": "done", "stores": [link_store(k, p, shared) for k, p in found]})
 
 
 # ------------------------------------------------------------------ register
@@ -296,11 +521,16 @@ def pick_runner(wanted, available):
 
 
 def covers(game, folder_dir):
-    """Whether one existing entry already starts something in the folder."""
+    """Whether one existing entry already starts something in the folder,
+    as written or through a link, which is how a store's games are named."""
+    real = os.path.realpath(folder_dir)
     for key in ("path", "prefix"):
         path = absolute(text(game, key))
-        if path and (path == folder_dir or path.startswith(folder_dir + os.sep)):
-            return True
+        if not path:
+            continue
+        for p, d in ((path, folder_dir), (os.path.realpath(path), real)):
+            if p == d or p.startswith(d + os.sep):
+                return True
     return False
 
 
@@ -334,13 +564,22 @@ def extract_icon(exe, gameid):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def entry(recipe, base, gameid):
+def entry(recipe, base, gameid, store=None):
     """A whole entry with every key Faugus writes, so that nothing it reads
-    has to fall back on a default it does not have."""
-    exe = os.path.normpath(os.path.join(base, recipe["exe"]))
-    rel = recipe.get("prefix") or ""
-    prefix = (os.path.normpath(os.path.join(base, rel)) if rel
-              else os.path.join(default_prefix(), gameid))
+    has to fall back on a default it does not have.
+
+    store is (prefix, runner) for a store's game: started through the store's
+    place in this member's own store prefix, where the store is signed in."""
+    if store:
+        prefix, runner = store
+        exe = os.path.normpath(os.path.join(
+            store_root(recipe["store"], prefix), os.path.basename(base), recipe["exe"]))
+    else:
+        exe = os.path.normpath(os.path.join(base, recipe["exe"]))
+        rel = recipe.get("prefix") or ""
+        prefix = (os.path.normpath(os.path.join(base, rel)) if rel
+                  else os.path.join(default_prefix(), gameid))
+        runner = pick_runner(recipe.get("runner") or "", tools())
     return {
         "gameid": gameid,
         "title": recipe["title"],
@@ -352,7 +591,7 @@ def entry(recipe, base, gameid):
         "gamemode": "",
         "sdl_enabled": "",
         "protonfix": recipe.get("protonfix") or "",
-        "runner": pick_runner(recipe.get("runner") or "", tools()),
+        "runner": runner,
         "addapp_enabled": "",
         "addapp": "",
         "addapp_bat": "",
@@ -369,7 +608,7 @@ def entry(recipe, base, gameid):
         "hidden": False,
         "no_sleep": "",
         "category": False,
-        "icon": extract_icon(exe, gameid),
+        "icon": extract_icon(os.path.realpath(exe), gameid),
         "steamgriddb_id": "",
         "pre_launch": "",
         "post_launch": "",
@@ -407,7 +646,23 @@ def register(shared, doc):
             out({"status": "taken", "written": gameid})
             return
 
-    new = entry(recipe, base, gameid)
+    store = None
+    kind = recipe.get("store") or ""
+    if kind:
+        if kind not in STORES:
+            out({"status": "refused"})
+            return
+        # The first prefix this member has the store in, once its place is
+        # the link: before that the game would be started from a directory
+        # the store does not have it in. Asked again on a later round.
+        here = [p for k, p in store_prefixes(games) if k == kind
+                and same_place(store_root(k, p), shared)]
+        if not here:
+            out({"status": "absent"})
+            return
+        store = (here[0], store_runner(games, kind, here[0]))
+
+    new = entry(recipe, base, gameid, store)
     games.append(new)
     save_games(games)
     out({"status": "added", "written": gameid, "runner": new["runner"]})
@@ -576,8 +831,10 @@ def main(argv):
             move(argv[1], argv[2], argv[3])
         elif argv[:1] == ["repoint"] and len(argv) == 3:
             repoint(argv[1], argv[2])
+        elif argv[:1] == ["stores"] and len(argv) == 2:
+            stores(argv[1])
         else:
-            out({"error": "usage: scan|register|unregister|move|repoint ..."})
+            out({"error": "usage: scan|register|unregister|move|repoint|stores ..."})
             return 2
     except (OSError, ValueError, KeyError, TypeError) as e:
         out({"error": "%s: %s" % (type(e).__name__, e)})

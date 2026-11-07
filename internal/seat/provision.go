@@ -136,6 +136,7 @@ func Steps() []Step {
 		{"mangohud shim", (*Provisioner).stepMangoHudShim},
 		{"stevia", (*Provisioner).stepStevia},
 		{"faugus", (*Provisioner).stepFaugus},
+		{"heroic", (*Provisioner).stepHeroic},
 		{"steam", (*Provisioner).stepSteam},
 		{"user", (*Provisioner).stepUser},
 		{"proton", (*Provisioner).stepProton},
@@ -757,6 +758,14 @@ func (p *Provisioner) stepSunshine(ctx context.Context) error {
 // can write to the repository without a commit to show for it. That line
 // cannot.
 func (p *Provisioner) installOwnPackage(ctx context.Context, name, url, sha string) error {
+	return p.installPinnedPackage(ctx, name, url, sha)
+}
+
+// installPinnedPackage is installOwnPackage for a package from anywhere, with
+// arguments of its own for pacman. The checksum is what makes the source not
+// matter: a package that is not byte for byte the one this version names is
+// never installed.
+func (p *Provisioner) installPinnedPackage(ctx context.Context, name, url, sha string, extra ...string) error {
 	pkg, err := download(ctx, url)
 	if err != nil {
 		return err
@@ -773,7 +782,9 @@ func (p *Provisioner) installOwnPackage(ctx context.Context, name, url, sha stri
 		return err
 	}
 
-	if _, err := p.run(ctx, "pacman", "-U", "--noconfirm", "--needed", path); err != nil {
+	args := append([]string{"pacman", "-U", "--noconfirm", "--needed"}, extra...)
+
+	if _, err := p.run(ctx, append(args, path)...); err != nil {
 		return err
 	}
 
@@ -1132,6 +1143,62 @@ func faugusIsOlder(ctx context.Context, p *Provisioner, out string) bool {
 	}
 
 	return strings.TrimSpace(cmp) == "-1"
+}
+
+// stepHeroic installs Heroic Games Launcher, for Epic, GOG and Amazon games,
+// the third launcher a seat carries beside Lutris and Faugus.
+//
+// It used to be a flatpak somebody could pick in the software section. Its
+// games could not be shared from there without somebody pointing it at the
+// library by hand, and the pool can only carry a game whose launcher is in
+// every seat to receive it, the way Faugus's are. Heroic is in no Arch
+// repository; its own releases carry a pacman package, which is what this
+// installs, pinned by checksum like the packages of this repository.
+//
+// That package names two dependencies Arch does not have: libappindicator-gtk3,
+// which Arch dropped, and http-parser. They are electron-builder's stock list
+// rather than anything Heroic uses; no program or library in the package links
+// either, which readelf shows, and Electron only reaches for an appindicator
+// to draw a tray icon and goes on without one. So pacman is told to take both
+// as there. Found by installing it into a seat, which is where 0.48.0 was
+// tried first.
+const HeroicVersion = "2.22.4"
+
+// heroicPackageSHA256 is Heroic-<HeroicVersion>-linux-x64.pacman.
+const heroicPackageSHA256 = "a5a798ee49bb4a20d3d163f46f39382389974cf4f818b49aa715e1b74d2a0eb0"
+
+func heroicPackageURL() string {
+	return "https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/releases/download/v" +
+		HeroicVersion + "/Heroic-" + HeroicVersion + "-linux-x64.pacman"
+}
+
+// stepHeroic leaves a Heroic alone that is this one or newer, and one from
+// another package, the AUR's for instance: that is the player's choice.
+func (p *Provisioner) stepHeroic(ctx context.Context) error {
+	// By the package's name: /usr/bin/heroic is a link its install script
+	// makes, which pacman does not count as the package's.
+	installed, code, err := p.Client.Try(ctx, p.name(), "pacman", "-Q", "heroic")
+	if err != nil {
+		return err
+	}
+
+	if fields := strings.Fields(installed); code == 0 && len(fields) == 2 {
+		cmp, c, err := p.Client.Try(ctx, p.name(), "vercmp", fields[1], HeroicVersion+"-1")
+		if err == nil && c == 0 && strings.TrimSpace(cmp) != "-1" {
+			p.Log("heroic %s already installed", fields[1])
+
+			return nil
+		}
+	} else if owner, c, err := p.Client.Try(ctx, p.name(), "pacman", "-Qqo", "/usr/bin/heroic"); err == nil && c == 0 {
+		p.Log("heroic from %s already installed", strings.TrimSpace(owner))
+
+		return nil
+	}
+
+	p.Log("installing heroic %s", HeroicVersion)
+
+	return p.installPinnedPackage(ctx, "heroic", heroicPackageURL(), heroicPackageSHA256,
+		"--assume-installed", "libappindicator-gtk3", "--assume-installed", "http-parser")
 }
 
 // sunshineLatest is what LizardByte have published, for saying so and nothing

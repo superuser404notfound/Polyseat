@@ -673,6 +673,13 @@ func (p *Provisioner) installedGames(ctx context.Context) []Game {
 
 	games = append(games, faugus...)
 
+	heroic, err := p.heroicGames(ctx)
+	if err != nil {
+		p.Log("! Heroic's games could not be read: %v", err)
+	}
+
+	games = append(games, heroic...)
+
 	// Whatever is in ~/Applications. Not a launcher's idea of what is installed
 	// but a directory listing, because an AppImage answers to nobody: the file
 	// is the installation, and the only thing that knows it is there is the

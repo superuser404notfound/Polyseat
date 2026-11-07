@@ -81,6 +81,11 @@ type shareLauncher struct {
 	// validKey says whether a key from the interface is one the launcher
 	// could have given a game, before it is handed to the helper.
 	validKey func(string) bool
+
+	// prepare is a helper command run with the member's shared directory
+	// before each scan, when the launcher has one: whatever has to be put
+	// right in the member before its games are read.
+	prepare string
 }
 
 type shareState[R any] struct {
@@ -459,6 +464,10 @@ func (m *Manager) shares() []shareCarrier {
 		out = append(out, m.faugus)
 	}
 
+	if m.heroic != nil {
+		out = append(out, m.heroic)
+	}
+
 	return out
 }
 
@@ -612,6 +621,10 @@ func (s *shareBook[R, E]) round(ctx context.Context, m *Manager) {
 	for _, p := range places {
 		if !owed[p.member.Name] || !m.shareReachable(p.member) {
 			continue
+		}
+
+		if s.prepare != "" {
+			s.prepareMember(ctx, m, p)
 		}
 
 		result, err := s.scan(ctx, m, p)
@@ -782,6 +795,56 @@ func (s *shareBook[R, E]) member(ctx context.Context, m *Manager, p sharePlace, 
 	}
 
 	return settled
+}
+
+// storeNames are what the helpers' kinds of store are called in the log.
+var storeNames = map[string]string{
+	"ea": "the EA App", "ubisoft": "Ubisoft Connect", "heroic": "Heroic",
+}
+
+// prepareMember runs the launcher's prepare command in one member and says
+// what it did. What it could not do is for the log, not the interface: it is
+// asked again every round, and a game still downloading is no fault.
+func (s *shareBook[R, E]) prepareMember(ctx context.Context, m *Manager, p sharePlace) {
+	out, err := s.run(ctx, m, p, s.prepare, p.shared)
+	if err != nil {
+		m.log.Warn("library: "+s.name+" could not be prepared", "member", p.member.Name, "err", err)
+
+		return
+	}
+
+	var res struct {
+		Error  string `json:"error"`
+		Status string `json:"status"`
+		Stores []struct {
+			Kind    string   `json:"kind"`
+			Moved   []string `json:"moved"`
+			Linked  bool     `json:"linked"`
+			Problem string   `json:"problem"`
+		} `json:"stores"`
+	}
+
+	if err := json.Unmarshal([]byte(lastLine(out)), &res); err != nil || res.Error != "" {
+		m.log.Warn("library: "+s.name+" could not be prepared", "member", p.member.Name,
+			"err", res.Error, "out", lastLine(out))
+
+		return
+	}
+
+	for _, st := range res.Stores {
+		for _, name := range st.Moved {
+			m.moved(p.member.Name, "%s moved out of %s into the shared folders", name, storeNames[st.Kind])
+		}
+
+		if st.Linked {
+			m.moved(p.member.Name, "%s now installs into the shared folders", storeNames[st.Kind])
+		}
+
+		if st.Problem != "" {
+			m.log.Info("library: a store's games stay where they are for now",
+				"member", p.member.Name, "store", st.Kind, "why", st.Problem)
+		}
+	}
 }
 
 func (s *shareBook[R, E]) scan(ctx context.Context, m *Manager, p sharePlace) (shareScanResult[E], error) {
@@ -1082,7 +1145,8 @@ func (s *shareBook[R, E]) shareHost(ctx context.Context, m *Manager, key string)
 	case home == "" || shareMoveRefused[home]:
 		err = fmt.Errorf("%s is not in a folder of its own below %s", key, place.root)
 	case !hostIdle(filepath.Join(place.root, home), place.member.Owner.UID):
-		err = fmt.Errorf("%w: something on this host is using %s", ErrBusy, home)
+		err = fmt.Errorf("%w: %s is running on this host; close it first, its folder %s would move out from under it",
+			ErrBusy, (*game).title(), home)
 	}
 
 	if err != nil {

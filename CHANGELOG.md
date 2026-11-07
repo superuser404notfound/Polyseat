@@ -10,6 +10,53 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.48.0
+
+**Games from the EA App and Ubisoft Connect are shared like any other.**
+Both run inside a Faugus prefix and install their games into a directory of
+their own in it, `Program Files/EA Games` for the EA App, which kept them out
+of the shared folders: moved out and pointed at, the store no longer knew
+them, and an entry in another seat with a new prefix would start them without
+the store they need. Now the daemon makes that directory a link to the
+member's shared folders, before it reads Faugus on every round. A store
+installs straight into the shared folders from then on and finds its games
+where it put them, and the pool carries them to every seat like any folder.
+Games that were in the store's directory already are moved into the shared
+folders first, once nothing in them has changed for ten minutes and nothing
+runs out of them, so a paused download is left alone.
+
+A Faugus entry for such a game, made once where it was installed, reaches
+every member that has the same store installed through Faugus, in that
+member's own prefix of the store and with its runner. That is the one step
+that stays by hand in a seat: install the EA App or Ubisoft Connect from
+Faugus there and sign in with the seat's own account, since a licence belongs
+to an account. Whether a seat's EA App then lists the game as installed or
+first checks the files has not been seen yet.
+
+Epic, Rockstar and Battle.net are not linked: the first two keep their
+launcher among their games, and Battle.net installs every game straight into
+Program Files. Epic is what Heroic is for.
+
+**Heroic is in every seat, and its games are carried like Lutris's.** Epic,
+GOG and Amazon games installed with Heroic anywhere appear in every other
+seat's Heroic and as Moonlight cards. Heroic used to be a flatpak somebody
+could pick in the software section, and a game installed with it stayed in
+that seat; it is now installed into every seat from Heroic's own pacman
+package, version 2.22.4, pinned by checksum, and gone from the software
+catalog. That package names libappindicator-gtk3 and http-parser, which
+Arch does not have; nothing in it links either, so pacman is told to take
+both as there. Tried in a seat: it installs and no library is missing.
+
+Before it reads Heroic, the daemon points it at the member's shared folders
+as the directory it installs into, unless somebody chose a directory other
+than Heroic's own ~/Games/Heroic, so a game installed from then on is shared
+from its first byte. One installed before is moved with Share in the Heroic
+section on the host. Every seat signs in to Epic, GOG or Amazon in Heroic with
+its own account, as with Steam.
+
+The next software update of each seat installs Heroic; no seat needs building
+again.
+
 ## 0.47.4
 
 **Share says what is in the way.** Sharing a Faugus game was refused with

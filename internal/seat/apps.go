@@ -923,7 +923,7 @@ func (p *Provisioner) sourceIcons(ctx context.Context) map[string]string {
 		{Key: "steam", Names: []string{"steam"}},
 		{Key: "lutris", Names: []string{"net.lutris.Lutris", "lutris"}},
 		{Key: faugusSource, Names: []string{"io.github.Faugus.faugus-launcher", "faugus-launcher"}},
-		{Key: "heroic", Names: []string{"com.heroicgameslauncher.hgl", "heroic"}},
+		{Key: heroicSource, Names: []string{"com.heroicgameslauncher.hgl", "heroic"}},
 	})
 }
 

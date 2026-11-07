@@ -1073,6 +1073,18 @@ function renderLibrary() {
         ),
       ),
       ...librarySection(
+        "Heroic",
+        carriedBy("Heroic", titles),
+        carriedBy("Heroic", withheld),
+        launcherSharing(
+          library,
+          "Heroic",
+          library.heroic,
+          carriedBy("Heroic", titles),
+          (game) => apiPath`/api/library/share-heroic/${game.key}`,
+        ),
+      ),
+      ...librarySection(
         "Other folders",
         uncarried(titles),
         uncarried(withheld),
@@ -1168,7 +1180,7 @@ function withheldTitles(titles) {
   ];
 }
 
-// The games in one of the host's own launchers, Lutris or Faugus, and which of
+// The games in one of the host's own launchers, Lutris, Faugus or Heroic, and which of
 // them are on their way to the seats.
 //
 // A game is shared by where its files are: below ~/Games/shared it goes into

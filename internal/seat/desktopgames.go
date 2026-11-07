@@ -154,6 +154,11 @@ def shortcut(keys):
     if os.path.basename(argv[0]) == "faugus-launcher" and "--game" in argv:
         return None
 
+    # Heroic's shortcuts start a game through its link, and Heroic is asked
+    # directly as well.
+    if any(a.startswith("heroic://") for a in argv):
+        return None
+
     # What the launcher does with TryExec, and what it should do here too: an
     # emulator updated to a new file name leaves shortcuts to the old one.
     if not shutil.which(argv[0]):

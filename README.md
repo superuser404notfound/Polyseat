@@ -281,7 +281,12 @@ installed with. Faugus, which every seat carries as well, is handled the same
 way: its games are Moonlight cards in the seat, and a game added to Faugus
 anywhere appears in every other seat's Faugus. On the host, the Library section
 lists the games of Lutris and of Faugus and moves one into `~/Games/shared`
-with a button. Heroic and Bottles get there by
+with a button. The EA App and Ubisoft Connect, installed through Faugus,
+install straight into the shared folders: give a game a Faugus entry once
+where it was installed, and every seat whose EA App or Ubisoft Connect is
+signed in gets it as well. Heroic is in every seat too and is pointed at the
+shared folders by itself, so an Epic, GOG or Amazon game installed with it
+anywhere is in every seat's Heroic. Bottles gets there by
 pointing them at the same directory. A folder can bring a
 `polyseat-setup.sh` that registers the game wherever it arrives, and that
 script runs only once somebody has read it and allowed it in the Library section

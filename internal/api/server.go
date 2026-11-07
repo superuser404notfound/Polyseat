@@ -208,6 +208,7 @@ func New(manager *seat.Manager, credentials *auth.Store, updates *update.Checker
 	guarded.HandleFunc("POST /api/library/setups/{folder}", s.allowFolderSetup)
 	guarded.HandleFunc("POST /api/library/share/{slug}", s.shareLutrisGame)
 	guarded.HandleFunc("POST /api/library/share-faugus/{gameid}", s.shareFaugusGame)
+	guarded.HandleFunc("POST /api/library/share-heroic/{key}", s.shareHeroicGame)
 	guarded.HandleFunc("POST /api/seats/{name}/{action}", s.seatAction)
 
 	mux.Handle("/api/", s.requireSession(guarded))
@@ -1545,6 +1546,10 @@ func (s *Server) libraryStatus() seat.LibraryStatus {
 		status.Faugus = []seat.HostGame{}
 	}
 
+	if status.Heroic == nil {
+		status.Heroic = []seat.HostGame{}
+	}
+
 	if status.Launchers == nil {
 		status.Launchers = map[string][]string{}
 	}
@@ -1746,6 +1751,17 @@ func (s *Server) shareLutrisGame(w http.ResponseWriter, r *http.Request) {
 // shareFaugusGame is shareLutrisGame for a game in the host's own Faugus.
 func (s *Server) shareFaugusGame(w http.ResponseWriter, r *http.Request) {
 	if err := s.manager.ShareHostFaugusGame(r.Context(), r.PathValue("gameid")); err != nil {
+		fail(w, statusFor(err), err)
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, s.libraryStatus())
+}
+
+// shareHeroicGame is shareLutrisGame for a game in the host's own Heroic.
+func (s *Server) shareHeroicGame(w http.ResponseWriter, r *http.Request) {
+	if err := s.manager.ShareHostHeroicGame(r.Context(), r.PathValue("key")); err != nil {
 		fail(w, statusFor(err), err)
 
 		return

@@ -657,6 +657,10 @@ func (m *Manager) UpdateSoftware(name string) error {
 			return fmt.Errorf("faugus: %w", err)
 		}
 
+		if err := p.stepHeroic(ctx); err != nil {
+			return fmt.Errorf("heroic: %w", err)
+		}
+
 		m.updateFlatpaks(ctx, name)
 
 		// The seat is now carrying a Sunshine, and possibly a compositor, that

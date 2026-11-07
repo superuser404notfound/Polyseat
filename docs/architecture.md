@@ -721,6 +721,43 @@ Share button, which also rewrites the `Path=` of the desktop shortcut Faugus
 made for the game. A folder that one launcher moves is followed by the other
 launcher's entries for it as well.
 
+**Store launchers inside Faugus are carried too**, the EA App and Ubisoft
+Connect, since 0.48.0. Their games cannot be moved out of the prefix and
+pointed at, because the store keeps its own record of where it put them, and
+their prefix cannot stay behind for a new one, because the store is installed
+and signed in to in it. So the place the store installs into,
+`drive_c/Program Files/EA Games` or Ubisoft's `games` directory, is made a
+link to the member's `shared/` before every scan: the store installs straight
+into the shared folders and finds its games where it put them. Games already
+in that place are moved there first, on the host where both are one
+filesystem, and only once nothing in them has changed for ten minutes and no
+process runs out of them, which is how a paused download is told from a
+finished one. A Faugus entry for such a game becomes a recipe that names the
+store instead of a prefix, and a receiver that has the same store installed
+gets an entry in its own prefix of that store, with the runner the store's
+entry has; one without it is asked again later. The store itself is installed
+from Faugus and signed in to by hand in every member, with that member's own
+account. Epic and Rockstar keep their launcher among their games and
+Battle.net installs straight into `Program Files`, so none of the three can be
+linked that way.
+
+**Heroic is carried the same way**, see `heroicshare.go`, since 0.48.0, and
+every seat has it, from Heroic's own pacman package pinned by checksum.
+Heroic installs through one tool per store, legendary for Epic, gogdl for GOG
+and nile for Amazon, and each keeps a list of installed games under
+`~/.config/heroic` that names the game's directory. The helper reads those
+three lists, carries a short list of keys per store and nothing that names a
+path, and writes the receiver's entry under the store's own id for the game,
+since the store looks it up by that id in the account somebody signed in
+with. That id cannot carry the daemon's suffix, so the helper keeps
+`polyseat-written.json` beside the lists to know which entries it wrote.
+Before every scan Heroic's default install directory is pointed at the
+member's `shared/`, unless somebody chose one other than Heroic's own
+`~/Games/Heroic`; Heroic fills a partial `config.json` with its defaults, so
+this is safe before Heroic was ever started. Moonlight starts a game with
+`heroic --no-gui heroic://launch?appName=<id>&runner=<tool>`, which is what
+Heroic's own shortcuts do.
+
 **A folder may carry `polyseat-setup.sh`**, and once somebody has allowed it the
 daemon runs it wherever that folder has been delivered: inside the container as
 the player for a seat, and as the library's owner for the host, never as root

@@ -24,18 +24,17 @@ type CatalogEntry struct {
 // installable by typing its application id, which is why this is a starting
 // point rather than a limit.
 //
-// What is missing from it is deliberate. Steam, Lutris, Faugus and Firefox are
+// What is missing from it is deliberate. Steam, Lutris, Faugus, Heroic and Firefox are
 // installed into every seat as ordinary packages, so offering them again as
 // flatpaks would be a second copy of something already there, taking hundreds
 // of megabytes per seat to do the same job worse: a sandboxed launcher has to
 // be told separately that it may see the shared library.
 //
 // The ones that stay are the ones with no package in the distribution, or none
-// worth preferring, and the ones not everybody wants. Heroic alone is close to
-// a gigabyte once its runtime is counted, and a seat belonging to somebody who
-// only plays on Steam should not carry it.
+// worth preferring, and the ones not everybody wants. Heroic used to be among
+// them; it is in every seat since its games are carried between the seats, see
+// heroicshare.go, which a flatpak in some seats could not take part in.
 var Catalog = []CatalogEntry{
-	{"com.heroicgameslauncher.hgl", "Heroic", "Epic, GOG and Amazon games"},
 	{"com.usebottles.bottles", "Bottles", "Runs Windows software in prefixes"},
 	{"io.itch.itch", "itch", "The itch.io library"},
 	{"org.prismlauncher.PrismLauncher", "Prism Launcher", "Minecraft"},

@@ -28,6 +28,16 @@ import (
 // The prefix stays behind when it is outside the folder, which is how Faugus
 // makes them: ~/Faugus/<game>. The receiver gets one of its own in its own
 // place, and so its own saves, see private.go for why that matters.
+//
+// Store launchers are the one kind of game whose prefix cannot stay behind
+// for a new one: the EA App or Ubisoft Connect is installed and signed in in
+// it, and the game will not start without them. Their games are carried
+// anyway, by making the place a store installs its games in a link to the
+// member's shared folders, see link_store in faugusshare.py. A game the store
+// installs is then a shared folder like any other, the store finds it where
+// it put it, and a receiver that has the same store gets an entry in its own
+// prefix of that store. The store itself is installed and signed in to by
+// hand in every member, with that member's account: a licence is somebody's.
 
 // faugusShareFile is where the recipes and the record of written entries are
 // kept, beside the seat records.
@@ -46,6 +56,7 @@ func openFaugusShares(path string) (*faugusShares, error) {
 		// Everything Faugus knows about its games is this one file.
 		stamp:    []string{".local/share/faugus-launcher/games.json"},
 		validKey: faugusID.MatchString,
+		prepare:  "stores",
 	})
 }
 
@@ -67,6 +78,11 @@ type faugusRecipe struct {
 	GameArgs   string `json:"game_arguments,omitempty"`
 	Runtime    string `json:"runtime,omitempty"`
 	DisableUMU bool   `json:"disable_umu,omitempty"`
+
+	// Store names the store launcher that installed the game, see STORES in
+	// faugusshare.py. The receiver starts it in its own prefix of that store,
+	// so Prefix is always empty then.
+	Store string `json:"store,omitempty"`
 
 	// From is the member it was read from, which is never written to from it.
 	From string `json:"from"`
@@ -98,6 +114,7 @@ type faugusEntry struct {
 	GameArgs   string `json:"game_arguments"`
 	Runtime    string `json:"runtime"`
 	DisableUMU bool   `json:"disable_umu"`
+	Store      string `json:"store"`
 }
 
 func (e faugusEntry) key() string                  { return e.GameID }
@@ -116,6 +133,10 @@ var faugusProtonfix = regexp.MustCompile(`^[A-Za-z0-9_-]{0,64}$`)
 // faugusArg is one word of a game's arguments. A word with "=" in it has to
 // start with a dash, which no variable name does.
 var faugusArg = regexp.MustCompile(`^(-[A-Za-z0-9_./:+,@%=-]*|[A-Za-z0-9_./:+,@%][A-Za-z0-9_./:+,@%-]*)$`)
+
+// faugusStores are the store launchers whose games are carried, by the names
+// faugusshare.py gives them, and "" for a game that is no store's.
+var faugusStores = map[string]bool{"": true, "ea": true, "ubisoft": true}
 
 // faugusRuntimes are the Steam runtimes a native game can be started in.
 var faugusRuntimes = map[string]bool{
@@ -146,12 +167,16 @@ func (e faugusEntry) recipe(from string) (faugusRecipe, error) {
 		return faugusRecipe{}, fmt.Errorf("runtime %q", e.Runtime)
 	case !faugusArgs(e.GameArgs):
 		return faugusRecipe{}, fmt.Errorf("arguments %q", e.GameArgs)
+	case !faugusStores[e.Store]:
+		return faugusRecipe{}, fmt.Errorf("store %q", e.Store)
+	case e.Store != "" && e.Prefix != "":
+		return faugusRecipe{}, fmt.Errorf("a store's game with a prefix of its own, %q", e.Prefix)
 	}
 
 	return faugusRecipe{
 		GameID: e.GameID, Title: e.Title, Exe: e.Exe, Prefix: e.Prefix,
 		Runner: e.Runner, Protonfix: e.Protonfix, GameArgs: e.GameArgs,
-		Runtime: e.Runtime, DisableUMU: e.DisableUMU,
+		Runtime: e.Runtime, DisableUMU: e.DisableUMU, Store: e.Store,
 		From: from,
 	}, nil
 }
