@@ -406,3 +406,46 @@ func TestLutrisForgetMemberKeepsItsRecipes(t *testing.T) {
 		t.Errorf("nobody took the recipe over: %+v", got)
 	}
 }
+
+// A recipe goes when its own member stops offering it, which is what moving a
+// game to another launcher looks like from here; another member's entry, or
+// one the daemon wrote there, does not keep it.
+func TestLutrisLearnWithdrawsARecipeItsMemberDropped(t *testing.T) {
+	s, _ := openLutrisShares("")
+	pooled := func(string) bool { return true }
+
+	madison := lutrisEntry{Name: "Madison", Slug: "madison", Runner: "wine", Folder: "Madison", Exe: "m.exe"}
+	pinata := lutrisEntry{Name: "Viva", Slug: "viva", Runner: "linux", Folder: "Viva Pinata", Exe: "v.sh"}
+	_ = s.learn("host", []lutrisEntry{madison, pinata}, pooled)
+
+	copied := madison
+	copied.Ours = true
+
+	if err := s.learn("host", []lutrisEntry{pinata, copied}, pooled); err != nil {
+		t.Fatal(err)
+	}
+
+	recipes := s.recipes()
+
+	if _, ok := recipes["Madison"]; ok {
+		t.Error("a recipe stayed after its member took the game out")
+	}
+
+	if _, ok := recipes["Viva Pinata"]; !ok {
+		t.Error("a recipe its member still offers was withdrawn")
+	}
+
+	// Somebody else's scan never withdraws it.
+	_ = s.learn("vince", nil, pooled)
+
+	if _, ok := s.recipes()["Viva Pinata"]; !ok {
+		t.Error("another member's scan withdrew the recipe")
+	}
+
+	// And it can be offered again, by anyone.
+	_ = s.learn("vince", []lutrisEntry{madison}, pooled)
+
+	if got := s.recipes()["Madison"]; got.From != "vince" {
+		t.Errorf("a withdrawn recipe could not be offered again: %+v", got)
+	}
+}

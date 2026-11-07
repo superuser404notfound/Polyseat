@@ -299,6 +299,28 @@ func (s *shareBook[R, E]) learn(member string, entries []E, pooled func(string) 
 		changed = true
 	}
 
+	// A recipe whose own member no longer has an entry for its folder is
+	// withdrawn: the game was taken out of this launcher there, most often to
+	// move it to another one. Kept, it would go on being handed to every new
+	// seat and listed under this launcher forever, since only a folder leaving
+	// the pool dropped one. The entries written from it are taken back by
+	// member, which finds the recipe gone.
+	own := map[string]bool{}
+
+	for _, e := range entries {
+		if folder, _ := e.place(); folder != "" && !e.written() {
+			own[folder] = true
+		}
+	}
+
+	for folder, recipe := range s.state.Recipes {
+		if recipe.author() == member && !own[folder] {
+			delete(s.state.Recipes, folder)
+			s.everyone = true
+			changed = true
+		}
+	}
+
 	if !changed {
 		return nil
 	}
@@ -640,8 +662,9 @@ func (m *Manager) shareReachable(member library.Member) bool {
 }
 
 // member gives one member the entries it is missing and takes back the ones
-// whose folder it no longer has. It reports whether everything owed was
-// settled, which a member whose launcher could not be written to is not.
+// whose folder it no longer has, or whose recipe was withdrawn, see learn. It
+// reports whether everything owed was settled, which a member whose launcher
+// could not be written to is not.
 func (s *shareBook[R, E]) member(ctx context.Context, m *Manager, p sharePlace, entries []E, recipes map[string]R) bool {
 	present := map[string]bool{}
 
@@ -669,7 +692,8 @@ func (s *shareBook[R, E]) member(ctx context.Context, m *Manager, p sharePlace, 
 	given := s.registered(p.member.Name)
 
 	for folder, written := range given {
-		if present[folder] {
+		_, wanted := recipes[folder]
+		if present[folder] && wanted {
 			continue
 		}
 
@@ -684,7 +708,11 @@ func (s *shareBook[R, E]) member(ctx context.Context, m *Manager, p sharePlace, 
 			}
 
 			if res.Status == "removed" {
-				m.moved(p.member.Name, "%s is gone, and so is its %s entry", folder, s.name)
+				if present[folder] {
+					m.moved(p.member.Name, "%s left %s where it came from, and its entry here went with it", folder, s.name)
+				} else {
+					m.moved(p.member.Name, "%s is gone, and so is its %s entry", folder, s.name)
+				}
 			}
 		}
 

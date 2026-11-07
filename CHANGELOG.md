@@ -10,6 +10,22 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.47.3
+
+**A game taken out of a launcher no longer stays listed under it.** The pool
+carries a Lutris or Faugus entry from the member that made it to every other
+one, and kept what it learned from that entry until the folder itself left the
+pool. A game moved from Lutris to Faugus on the host therefore went on being
+listed under Lutris in the library, and the Lutris entries written for it in the
+seats stayed beside the new Faugus ones: Madison has been in both since the
+move on November 3rd. Now, once the member the entry came from no longer has
+one for that folder, the daemon forgets it, takes back the entries it wrote
+from it in the other members, and lists the game only where it still is. An
+entry another member made by hand is never touched, and the first member to
+offer the game again in that launcher carries it from then on.
+
+No seat needs building again.
+
 ## 0.47.2
 
 **A new seat no longer stalls on its one package mirror.** The Arch image a
