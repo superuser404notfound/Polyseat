@@ -367,6 +367,42 @@ def rewrite(value, old, new):
     return value
 
 
+def running_in(folder):
+    """Whether one of this person's processes runs out of folder: its working
+    directory, its program or a file it has mapped is inside it.
+
+    Lutris keeps no list in memory that it would write back over a move, so
+    unlike Faugus an open Lutris is no reason to wait. A game that is running
+    is: the rename takes its files from under it, and Wine resolves every
+    path it opens afterwards against a directory that is gone."""
+    me = os.getuid()
+    inner = folder.rstrip(os.sep) + os.sep
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or str(os.getpid()) == pid:
+            continue
+        base = "/proc/" + pid
+        try:
+            if os.stat(base).st_uid != me:
+                continue
+        except OSError:
+            continue
+        for link in ("cwd", "exe"):
+            try:
+                target = os.readlink(os.path.join(base, link))
+            except OSError:
+                continue
+            if target == folder or target.startswith(inner):
+                return True
+        try:
+            with open(os.path.join(base, "maps"), encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if " " + inner in line:
+                        return True
+        except OSError:
+            continue
+    return False
+
+
 def move(games_root, shared, slug):
     db = connect()
     try:
@@ -391,6 +427,10 @@ def move(games_root, shared, slug):
             return
         if os.path.lexists(new):
             out({"error": "%s already exists" % new})
+            return
+        if running_in(old):
+            out({"error": "Lutris is running %s here; close it first, its folder "
+                          "would move out from under it" % (row["name"] or slug)})
             return
 
         # A rename, never a copy: the two are on one filesystem by

@@ -10,6 +10,24 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.47.4
+
+**Share says what is in the way.** Sharing a Faugus game was refused with
+"Faugus is open here" while no Faugus window was open anywhere: the EA App,
+started through Faugus, sat in the tray and kept Faugus's runner alive, and
+the runner writes the whole game list back when it ends, which would have put
+the moved game's old place back. The refusal now names what runs, "Faugus is
+running EA App here", the title as Faugus shows it, and "Faugus is open" only
+when it is the window.
+
+Lutris had no such check at all, because it keeps no list it would write
+back. What it can do is run the very game being shared, and the move then
+pulled its folder out from under it. Share on a Lutris game now waits while
+any of the person's processes runs out of that game's folder, and says
+"Lutris is running Madison here" when one does.
+
+No seat needs building again.
+
 ## 0.47.3
 
 **A game taken out of a launcher no longer stays listed under it.** The pool

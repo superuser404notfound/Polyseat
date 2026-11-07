@@ -468,3 +468,41 @@ func TestAFaugusShortcutIsTheSameGame(t *testing.T) {
 		t.Error("Faugus itself was taken for one of its games")
 	}
 }
+
+// A runner kept alive by a launcher in the tray blocks a move like an open
+// Faugus does, and the refusal names the game it runs rather than a window
+// nobody can find.
+func TestFaugusHelperNamesTheRunningGame(t *testing.T) {
+	home, path := faugusHome(t)
+	writeFile(t, filepath.Join(home, "Games/Elden/elden.exe"), "MZ")
+	writeFaugusGames(t, home,
+		map[string]any{"gameid": "ea-app", "title": "EA App", "path": filepath.Join(home, "Faugus/ea/EALauncher.exe")},
+		map[string]any{"gameid": "elden", "title": "Elden", "path": filepath.Join(home, "Games/Elden/elden.exe")})
+
+	modules := t.TempDir()
+	writeFile(t, filepath.Join(modules, "faugus/__init__.py"), "")
+	writeFile(t, filepath.Join(modules, "faugus/runner.py"), "import time\ntime.sleep(60)\n")
+
+	runner := exec.Command("python3", "-m", "faugus.runner", "--game", "ea-app")
+	runner.Env = []string{"PYTHONPATH=" + modules}
+
+	if err := runner.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() {
+		_ = runner.Process.Kill()
+		_ = runner.Wait()
+	})
+
+	res := runFaugusHelper(t, home, path, "move", filepath.Join(home, "Games"), filepath.Join(home, "Games/shared"), "elden")
+
+	want := "Faugus is running EA App here; close it first, it would write the old place back"
+	if res["error"] != want {
+		t.Errorf("answered %v, want the error %q", res, want)
+	}
+
+	if _, err := os.Stat(filepath.Join(home, "Games/Elden/elden.exe")); err != nil {
+		t.Errorf("the game was moved while the runner held the list: %v", err)
+	}
+}

@@ -135,11 +135,15 @@ def relative(path, folder):
 
 
 def busy():
-    """Whether Faugus is open, or starting a game, as this person.
+    """What of Faugus is running as this person, said the way a refusal
+    names it, or empty when nothing is.
 
     Faugus holds games.json in memory and writes all of it back when it
     saves, the runner every few seconds while a game plays, so an entry added
-    while it runs is gone the next time it does."""
+    while it runs is gone the next time it does. The runner is named by the
+    game it runs, because that is all there is to see of it: a launcher like
+    the EA App keeps one alive from the tray with no Faugus window anywhere,
+    and "Faugus is open" sent people looking for a window to close."""
     me = os.getuid()
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
@@ -152,10 +156,31 @@ def busy():
         except OSError:
             continue
         for i, word in enumerate(argv[:-1]):
-            if word == b"-m" and argv[i + 1].startswith(b"faugus."):
-                if argv[i + 1] != b"faugus.backup_daemon":
-                    return True
-    return False
+            if word != b"-m" or not argv[i + 1].startswith(b"faugus."):
+                continue
+            module = argv[i + 1]
+            if module == b"faugus.backup_daemon":
+                continue
+            if module == b"faugus.runner":
+                rest = argv[i + 2:]
+                for j, arg in enumerate(rest[:-1]):
+                    if arg == b"--game" and rest[j + 1]:
+                        return "Faugus is running " + game_title(
+                            rest[j + 1].decode("utf-8", "replace"))
+                return "Faugus is starting a game"
+            return "Faugus is open"
+    return ""
+
+
+def game_title(gameid):
+    """The title Faugus shows for a game, or its id when there is none."""
+    try:
+        for game in load_games() or []:
+            if text(game, "gameid") == gameid and text(game, "title"):
+                return text(game, "title")
+    except (OSError, ValueError):
+        pass
+    return gameid
 
 
 def describe(game, games_root, shared, default_runner):
@@ -400,8 +425,9 @@ def unregister(shared, folder, gameid):
     if games is None:
         out({"status": "gone"})
         return
-    if busy():
-        out({"error": "Faugus is open, so its list cannot be changed under it"})
+    who = busy()
+    if who:
+        out({"error": "%s, so its list cannot be changed under it" % who})
         return
     kept = [g for g in games if not (text(g, "gameid") == gameid and covers(g, base))]
     if len(kept) == len(games):
@@ -488,8 +514,9 @@ def repoint_games(old, new):
 
 
 def move(games_root, shared, gameid):
-    if busy():
-        out({"error": "Faugus is open here; close it first, it would write the old place back"})
+    who = busy()
+    if who:
+        out({"error": "%s here; close it first, it would write the old place back" % who})
         return
     games = load_games() or []
     target = None
@@ -528,8 +555,9 @@ def repoint(old, new):
     if load_games() is None:
         out({"status": "gone"})
         return
-    if busy():
-        out({"error": "Faugus is open, so its list cannot be changed under it"})
+    who = busy()
+    if who:
+        out({"error": "%s, so its list cannot be changed under it" % who})
         return
     moved = repoint_games(os.path.normpath(old), os.path.normpath(new))
     repoint_shortcuts(os.path.normpath(old), os.path.normpath(new))

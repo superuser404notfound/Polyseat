@@ -449,3 +449,48 @@ func TestLutrisLearnWithdrawsARecipeItsMemberDropped(t *testing.T) {
 		t.Errorf("a withdrawn recipe could not be offered again: %+v", got)
 	}
 }
+
+// A game that is running is not moved, and the refusal names it.
+func TestLutrisHelperLeavesARunningGameWhereItIs(t *testing.T) {
+	host := lutrisHome(t)
+	root := filepath.Join(host, "Games")
+	shared := filepath.Join(root, "shared")
+
+	dir := filepath.Join(root, "Madison-AnkerGames/MADiSON")
+	exe := filepath.Join(dir, "MADiSON.exe")
+	writeFile(t, exe, "MZ")
+	writeFile(t, filepath.Join(host, ".config/lutris/games/madison-1.yml"), "game:\n  exe: "+exe+"\n")
+	lutrisSQL(t, host, "insert into games (name, slug, runner, platform, directory, installed, configpath) values (?, ?, ?, ?, ?, 1, ?)",
+		"Madison", "madison", "wine", "Windows", "", "madison-1")
+
+	// Started the way Lutris starts a wine game: in the game's directory.
+	game := exec.Command("python3", "-I", "-c", "import time; time.sleep(60)")
+	game.Dir = dir
+
+	if err := game.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := func() {
+		_ = game.Process.Kill()
+		_ = game.Wait()
+	}
+	t.Cleanup(stop)
+
+	res := runLutrisHelper(t, host, "move", root, shared, "madison")
+
+	want := "Lutris is running Madison here; close it first, its folder would move out from under it"
+	if res["error"] != want {
+		t.Errorf("answered %v, want the error %q", res, want)
+	}
+
+	if _, err := os.Stat(exe); err != nil {
+		t.Fatalf("the game was moved while it ran: %v", err)
+	}
+
+	stop()
+
+	if res := runLutrisHelper(t, host, "move", root, shared, "madison"); res["status"] != "moved" {
+		t.Errorf("once it stopped, move answered %v", res)
+	}
+}
