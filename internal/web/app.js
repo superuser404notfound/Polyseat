@@ -2325,6 +2325,55 @@ async function walkEntry(entry, prefix, out) {
   }
 }
 
+// The most one request carries. Firefox ends an HTTP/2 request body at 4 GiB
+// less one byte whatever length it announced, and the daemon speaks HTTP/2: a
+// 6.6 GB folder arrived as its first 4 GiB and the request failed. So a drop
+// goes up as several requests of at most this much, and a single file larger
+// than this goes up in pieces the seat puts back together. The same number as
+// seat.PieceSize.
+const PIECE = 1024 * 1024 * 1024;
+
+// A drop cut into the requests it goes up as: either several whole files that
+// together stay under PIECE, or one piece of one file that is larger.
+function requests(chosen) {
+  const out = [];
+  let batch = [];
+  let size = 0;
+
+  const flush = () => {
+    if (batch.length > 0) out.push({ files: batch, size });
+
+    batch = [];
+    size = 0;
+  };
+
+  for (const one of chosen) {
+    if (one.file.size > PIECE) {
+      flush();
+
+      for (let offset = 0; offset < one.file.size; offset += PIECE) {
+        const blob = one.file.slice(offset, offset + PIECE);
+
+        out.push({
+          piece: { ...one, blob, offset, total: one.file.size },
+          size: blob.size,
+        });
+      }
+
+      continue;
+    }
+
+    if (size + one.file.size > PIECE) flush();
+
+    batch.push(one);
+    size += one.file.size;
+  }
+
+  flush();
+
+  return out;
+}
+
 async function send(name, chosen) {
   if (chosen.length === 0) return;
 
@@ -2336,28 +2385,61 @@ async function send(name, chosen) {
   }
 
   const total = chosen.reduce((sum, { file }) => sum + file.size, 0);
-  const form = new FormData();
-
-  // The third argument is the part's file name, and it is where the path goes:
-  // a folder upload is one part per file and this is the only thing carrying
-  // the folder.
-  chosen.forEach(({ file, path }) => form.append("file", file, path));
 
   uploading.set(name, { count: chosen.length, total, sent: 0 });
   uploaded.delete(name);
   drawUpload(name);
 
+  // Added up across the requests, so that the line at the end describes the
+  // drop and not the last gigabyte of it.
+  const got = { files: 0, bytes: 0, skipped: [] };
+  let done = 0;
+
   try {
-    const got = await upload(apiPath`/api/seats/${name}/files`, form, (sent) => {
-      const now = uploading.get(name);
+    for (const request of requests(chosen)) {
+      const form = new FormData();
+      let path = apiPath`/api/seats/${name}/files`;
 
-      if (!now) return;
+      if (request.piece) {
+        const { blob, path: as, offset, total: whole } = request.piece;
 
-      now.sent = sent;
-      drawUpload(name);
-    });
+        form.append("file", blob, as);
+        path += `?offset=${offset}&total=${whole}`;
+      } else {
+        // The third argument is the part's file name, and it is where the path
+        // goes: a folder upload is one part per file and this is the only thing
+        // carrying the folder.
+        request.files.forEach(({ file, path: as }) => form.append("file", file, as));
+      }
+
+      const answer = await upload(path, form, (sent) => {
+        const now = uploading.get(name);
+
+        if (!now) return;
+
+        // The request's own count includes the multipart framing, which is
+        // why it is capped at what the request carries.
+        now.sent = done + Math.min(sent, request.size);
+        drawUpload(name);
+      });
+
+      got.files += answer.files || 0;
+      got.bytes += answer.bytes || 0;
+      got.skipped.push(...(answer.skipped || []));
+      done += request.size;
+    }
 
     uploaded.set(name, describeUpload(got));
+  } catch (err) {
+    // What did arrive is worth saying. A drop that fails at its fifth
+    // gigabyte has put four of them into the seat, and the line that only
+    // reports the failure leaves somebody unsure whether to send all of it
+    // again.
+    if (got.files > 0) {
+      err.message += `. Before that, ${describeUpload(got)}`;
+    }
+
+    throw err;
   } finally {
     uploading.delete(name);
     drawUpload(name);

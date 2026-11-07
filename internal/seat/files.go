@@ -2,10 +2,13 @@ package seat
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"path"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -437,11 +440,176 @@ func describeDrop(first string, got Received) string {
 type counter struct {
 	r io.Reader
 	n int64
+
+	// err is the first thing other than the end that reading said. Kept
+	// because the command reading the body may treat a broken body the way it
+	// treats an ended one, and a piece cut off by a broken connection must not
+	// be answered as one that arrived.
+	err error
 }
 
 func (c *counter) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n += int64(n)
 
+	if err != nil && !errors.Is(err, io.EOF) && c.err == nil {
+		c.err = err
+	}
+
 	return n, err
+}
+
+// PieceSize is the most one upload request carries, and what the interface
+// cuts a large file into.
+//
+// Firefox ends an HTTP/2 request body at 4 GiB less one byte whatever the body
+// says its length is, and the daemon serves HTTP/2: a folder of 6.6 GB arrived
+// in a seat as its first 4 GiB and the request failed. Measured against a real
+// Firefox 159, not inferred from the number. One GiB is far under that line and
+// small enough that a piece lost to a broken connection is not most of an
+// evening's uplink.
+const PieceSize = 1 << 30
+
+// pieceScript appends one piece of a large file as the player, and moves the
+// whole into place once the last piece is in.
+//
+// Arguments: the destination, the name of the file the pieces collect in, the
+// offset this piece starts at and the size of the whole file.
+//
+// The same rules as dropScript, for the same reasons: written by the player so
+// that a link leads only where the player could already write, and moved over
+// the destination at the end so that a name is never half a file. The size the
+// collecting file already has is checked against the offset before anything is
+// appended, so a piece that arrives without the one before it is refused
+// rather than stitched in at the wrong place. A piece that fails takes the
+// collecting file with it: the interface starts a file over from the beginning
+// and never resumes one.
+const pieceScript = `d=$(dirname -- "$1")
+t="$d/$2"
+mkdir -p -- "$d" || exit 1
+if [ "$3" = 0 ]; then
+	rm -f -- "$t" || exit 1
+	: > "$t" || exit 1
+elif [ ! -f "$t" ] || [ -L "$t" ] || [ "$(stat -c %s -- "$t")" != "$3" ]; then
+	echo "the piece before this one did not arrive, send the file again" >&2
+	rm -f -- "$t"
+	exit 1
+fi
+if ! cat >> "$t"; then
+	rm -f -- "$t"
+	exit 1
+fi
+have=$(stat -c %s -- "$t")
+if [ "$have" -gt "$4" ]; then
+	echo "more arrived than the file is long" >&2
+	rm -f -- "$t"
+	exit 1
+fi
+[ "$have" = "$4" ] || exit 0
+if chmod 0644 -- "$t" && mv -fT -- "$t" "$1"; then
+	exit 0
+fi
+rm -f -- "$t"
+exit 1
+`
+
+// playerPiece is the argv that runs pieceScript for one piece.
+func playerPiece(dest, collect string, offset, total int64) []string {
+	return []string{"sudo", "-u", Player, "env", "HOME=/home/" + Player,
+		"sh", "-c", pieceScript, "sh", dest, collect,
+		strconv.FormatInt(offset, 10), strconv.FormatInt(total, 10)}
+}
+
+// collectName is the hidden file the pieces of one destination gather in,
+// beside it.
+//
+// Derived from the destination rather than chosen per upload, because the
+// pieces are separate requests and nothing else connects them. Hashed rather
+// than the file's own name with a prefix, which would be over the 255 bytes a
+// name may have for any file whose own name is close to that already.
+func collectName(dest string) string {
+	sum := sha256.Sum256([]byte(dest))
+
+	return ".polyseat-piece." + hex.EncodeToString(sum[:8])
+}
+
+// ReceivePiece writes one piece of a file too large for a single request.
+//
+// Only into a running seat. A seat that is off is written through the Incus
+// file API, which can append but cannot rename, so the file would carry its
+// real name while it is still incomplete, and it cannot say how much of the
+// file is already there, so a piece that arrives without the one before it
+// would go in at the wrong place unnoticed. Starting the seat is the smaller
+// thing to ask.
+//
+// Files is one in what comes back once the last piece is in and zero before,
+// so that adding the answers up counts a file once.
+func (m *Manager) ReceivePiece(name string, up Upload, offset, total int64) (Received, error) {
+	got := Received{Skipped: []Skipped{}}
+
+	if offset < 0 || total <= 0 || offset >= total {
+		return got, fmt.Errorf("a piece at %d of a file of %d bytes is not part of it", offset, total)
+	}
+
+	s, err := m.store.Get(name)
+	if err != nil {
+		return got, err
+	}
+
+	if s.PlayerUID == 0 {
+		return got, errors.New("this seat has no recorded uid yet, provision it once")
+	}
+
+	rel, err := ValidateDropPath(up.Path)
+	if err != nil {
+		// Refused outright rather than skipped: every piece of the file would
+		// be refused the same way, and saying so once per gigabyte helps
+		// nobody.
+		return got, err
+	}
+
+	into := m.filer()
+
+	status, err := into.Status(name)
+	if err != nil {
+		return got, err
+	}
+
+	switch status {
+	case "Running":
+	case "":
+		return got, fmt.Errorf("%s has no container yet", name)
+	default:
+		return got, fmt.Errorf("a file over %s only goes into a seat that is running, and this one is %s",
+			humanBytes(PieceSize), strings.ToLower(status))
+	}
+
+	dest := DropDir + "/" + rel
+	counted := &counter{r: up.Body}
+	complaint := &cappedBuffer{limit: 4096}
+
+	code, err := into.Exec(context.Background(), name,
+		playerPiece(dest, collectName(dest), offset, total), counted, io.Discard, complaint)
+	if err == nil && code != 0 {
+		err = fmt.Errorf("the seat said: %s", lastLines(complaint.String(), 2))
+	}
+
+	if err == nil && counted.err != nil {
+		err = fmt.Errorf("the piece did not arrive whole: %w", counted.err)
+	}
+
+	if err != nil {
+		return got, fmt.Errorf("%s could not be written into the seat: %w", rel, err)
+	}
+
+	got.Bytes = counted.n
+
+	if offset+counted.n == total {
+		got.Files = 1
+
+		m.logf(name, "%s arrived in %s", describeDrop(rel, Received{Files: 1, Bytes: total}), DropDir)
+		m.notify()
+	}
+
+	return got, nil
 }

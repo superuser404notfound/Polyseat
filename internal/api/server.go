@@ -1405,7 +1405,14 @@ func (s *Server) uploadFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	got, err := s.manager.Receive(r.PathValue("name"), &uploadParts{parts: parts})
+	var got seat.Received
+
+	if r.URL.Query().Has("offset") {
+		got, err = s.receivePiece(r, &uploadParts{parts: parts})
+	} else {
+		got, err = s.manager.Receive(r.PathValue("name"), &uploadParts{parts: parts})
+	}
+
 	if err != nil {
 		_, _ = io.CopyN(io.Discard, r.Body, drained)
 
@@ -1417,6 +1424,51 @@ func (s *Server) uploadFiles(w http.ResponseWriter, r *http.Request) {
 	// Created rather than Accepted, unlike the AppImage download next to it:
 	// this answer is only written once every byte is in the seat.
 	writeJSON(w, http.StatusCreated, got)
+}
+
+// receivePiece is the upload of one piece of a file over seat.PieceSize, which
+// the interface sends as several requests: offset and total in the query, and
+// exactly one file in the body.
+//
+// A second file in the same body is refused rather than ignored. The interface
+// never sends one, and quietly dropping it would answer a request as done when
+// part of it was thrown away.
+func (s *Server) receivePiece(r *http.Request, parts *uploadParts) (seat.Received, error) {
+	query := r.URL.Query()
+
+	offset, err := strconv.ParseInt(query.Get("offset"), 10, 64)
+	if err != nil {
+		return seat.Received{}, fmt.Errorf("offset: %w", err)
+	}
+
+	total, err := strconv.ParseInt(query.Get("total"), 10, 64)
+	if err != nil {
+		return seat.Received{}, fmt.Errorf("total: %w", err)
+	}
+
+	up, err := parts.Next()
+	if errors.Is(err, io.EOF) {
+		return seat.Received{}, errors.New("a piece arrived without a file in it")
+	}
+
+	if err != nil {
+		return seat.Received{}, err
+	}
+
+	got, err := s.manager.ReceivePiece(r.PathValue("name"), up, offset, total)
+	if err != nil {
+		return got, err
+	}
+
+	if _, err := parts.Next(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("a piece carries one file and this one carried more")
+		}
+
+		return got, err
+	}
+
+	return got, nil
 }
 
 // uploadParts is a multipart body read the way the seat package wants to read

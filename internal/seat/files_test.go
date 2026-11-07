@@ -174,6 +174,9 @@ type fakeFiler struct {
 	// failOn makes the write of one path fail, which is the case that has to
 	// stop the whole drop rather than skip a file.
 	failOn string
+
+	// pieces is what arrived through pieceScript, one entry per piece.
+	pieces []pushed
 }
 
 func (f *fakeFiler) Status(string) (string, error) { return f.status, nil }
@@ -203,6 +206,19 @@ func (f *fakeFiler) MakeDir(_, dir string, _ int, _, _ int64) error {
 // Exec stands in for dropScript run as the player. The destination is the
 // argument after the script, which is what the real command reads as $1.
 func (f *fakeFiler) Exec(_ context.Context, _ string, argv []string, stdin io.Reader, _, _ io.Writer) (int, error) {
+	// A piece of a large file, which carries four arguments rather than one.
+	if piece := playerPiece("", "", 0, 0); len(argv) == len(piece) &&
+		strings.Join(argv[:len(argv)-4], "\x00") == strings.Join(piece[:len(piece)-4], "\x00") {
+		body, err := io.ReadAll(stdin)
+		if err != nil {
+			return -1, err
+		}
+
+		f.pieces = append(f.pieces, pushed{path: argv[len(argv)-4], body: string(body), player: true})
+
+		return 0, nil
+	}
+
 	want := playerDrop("")
 	if len(argv) != len(want) || strings.Join(argv[:len(argv)-1], "\x00") != strings.Join(want[:len(want)-1], "\x00") {
 		return -1, fmt.Errorf("an unexpected command: %q", argv)
@@ -554,4 +570,202 @@ func TestDropScript(t *testing.T) {
 			t.Errorf("a failed upload left %v beside it and %d files in it", left, len(inside))
 		}
 	})
+}
+
+func runPiece(t *testing.T, dest, body string, offset, total int64) error {
+	t.Helper()
+
+	argv := playerPiece(dest, collectName(dest), offset, total)
+
+	// The script and its arguments, without the sudo in front of it.
+	cmd := exec.Command(argv[5], argv[6:]...)
+	cmd.Stdin = strings.NewReader(body)
+
+	return cmd.Run()
+}
+
+// The script that puts a large file together from its pieces, against a real
+// filesystem. Firefox ends an HTTP/2 upload at 4 GiB, so every file past one
+// GiB arrives this way, and what has to hold is that the name only ever carries
+// the whole file and that a piece cannot land in the wrong place.
+func TestPieceScript(t *testing.T) {
+	dir := t.TempDir()
+
+	collecting := func(dest string) string {
+		return filepath.Join(filepath.Dir(dest), collectName(dest))
+	}
+
+	t.Run("three pieces become one file, under its name only at the end", func(t *testing.T) {
+		dest := filepath.Join(dir, "Pokopia", "romfs", "motor.bin")
+
+		for i, piece := range []string{"aaaa", "bbbb", "cc"} {
+			if err := runPiece(t, dest, piece, int64(i*4), 10); err != nil {
+				t.Fatalf("piece %d: %v", i, err)
+			}
+
+			_, err := os.Stat(dest)
+
+			if last := i == 2; last == os.IsNotExist(err) {
+				t.Fatalf("after piece %d the name exists: %v", i, err == nil)
+			}
+		}
+
+		if got, _ := os.ReadFile(dest); string(got) != "aaaabbbbcc" {
+			t.Errorf("read back %q", got)
+		}
+
+		if info, _ := os.Stat(dest); info.Mode().Perm() != 0o644 {
+			t.Errorf("mode %v", info.Mode().Perm())
+		}
+
+		if _, err := os.Lstat(collecting(dest)); !os.IsNotExist(err) {
+			t.Errorf("the collecting file is still there: %v", err)
+		}
+	})
+
+	t.Run("a piece without the one before it", func(t *testing.T) {
+		dest := filepath.Join(dir, "gap.bin")
+
+		if err := runPiece(t, dest, "aaaa", 0, 12); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := runPiece(t, dest, "cccc", 8, 12); err == nil {
+			t.Error("a piece was appended where it does not belong")
+		}
+
+		if _, err := os.Lstat(collecting(dest)); !os.IsNotExist(err) {
+			t.Error("the broken file was kept, and the next piece would build on it")
+		}
+	})
+
+	t.Run("starting over throws the earlier start away", func(t *testing.T) {
+		dest := filepath.Join(dir, "again.bin")
+
+		for _, step := range []struct {
+			body   string
+			offset int64
+		}{{"xxxx", 0}, {"aaaa", 0}, {"bb", 4}} {
+			if err := runPiece(t, dest, step.body, step.offset, 6); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		if got, _ := os.ReadFile(dest); string(got) != "aaaabb" {
+			t.Errorf("read back %q", got)
+		}
+	})
+
+	t.Run("more than the file is long", func(t *testing.T) {
+		dest := filepath.Join(dir, "long.bin")
+
+		if err := runPiece(t, dest, "aaaaaa", 0, 4); err == nil {
+			t.Error("six bytes were accepted as a file of four")
+		}
+
+		if _, err := os.Lstat(dest); !os.IsNotExist(err) {
+			t.Error("the overlong file was put under its name")
+		}
+	})
+
+	t.Run("a symlink standing at the name", func(t *testing.T) {
+		elsewhere := filepath.Join(dir, "ld.so.preload")
+		if err := os.WriteFile(elsewhere, []byte("untouched"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		dest := filepath.Join(dir, "link")
+		if err := os.Symlink(elsewhere, dest); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := runPiece(t, dest, "ab", 0, 4); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := runPiece(t, dest, "cd", 2, 4); err != nil {
+			t.Fatal(err)
+		}
+
+		if got, _ := os.ReadFile(elsewhere); string(got) != "untouched" {
+			t.Errorf("the upload was written through the link: %q", got)
+		}
+
+		if info, err := os.Lstat(dest); err != nil || !info.Mode().IsRegular() {
+			t.Errorf("the link was not replaced by the file: %v, %v", info, err)
+		}
+	})
+
+	t.Run("a symlink standing where the pieces collect", func(t *testing.T) {
+		elsewhere := filepath.Join(dir, "bashrc")
+		if err := os.WriteFile(elsewhere, []byte("untouched"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		dest := filepath.Join(dir, "planted.bin")
+		if err := os.Symlink(elsewhere, collecting(dest)); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := runPiece(t, dest, "ab", 0, 4); err != nil {
+			t.Fatal(err)
+		}
+
+		if got, _ := os.ReadFile(elsewhere); string(got) != "untouched" {
+			t.Errorf("the first piece was written through the link: %q", got)
+		}
+	})
+}
+
+// A file counts once, when its last piece is in, so that the interface adding
+// the answers up says one file and not one per gigabyte.
+func TestAPieceCountsTheFileOnceAtTheEnd(t *testing.T) {
+	files := &fakeFiler{status: "Running"}
+	m := receiver(t, 1000, files)
+
+	first, err := m.ReceivePiece("living-room", Upload{Path: "game/big.bin", Body: strings.NewReader("aaaa")}, 0, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	last, err := m.ReceivePiece("living-room", Upload{Path: "game/big.bin", Body: strings.NewReader("bb")}, 4, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.Files != 0 || first.Bytes != 4 || last.Files != 1 || last.Bytes != 2 {
+		t.Errorf("the pieces answered %+v and %+v", first, last)
+	}
+
+	if len(files.pieces) != 2 || files.pieces[0].path != DropDir+"/game/big.bin" || !files.pieces[1].player {
+		t.Errorf("the seat was handed %+v", files.pieces)
+	}
+}
+
+func TestAPieceIsRefused(t *testing.T) {
+	cases := map[string]struct {
+		status        string
+		path          string
+		offset, total int64
+	}{
+		"a seat that is off, where nothing can be renamed": {"Stopped", "big.bin", 0, 6},
+		"a seat with no container":                         {"", "big.bin", 0, 6},
+		"a name the seat would not accept":                 {"Running", "../big.bin", 0, 6},
+		"an offset past the end":                           {"Running", "big.bin", 6, 6},
+		"a negative offset":                                {"Running", "big.bin", -1, 6},
+		"a file of no length":                              {"Running", "big.bin", 0, 0},
+	}
+
+	for why, c := range cases {
+		files := &fakeFiler{status: c.status}
+		m := receiver(t, 1000, files)
+
+		if _, err := m.ReceivePiece("living-room", Upload{Path: c.path, Body: strings.NewReader("x")}, c.offset, c.total); err == nil {
+			t.Errorf("accepted: %s", why)
+		}
+
+		if len(files.pieces) != 0 {
+			t.Errorf("%s: something was written anyway", why)
+		}
+	}
 }

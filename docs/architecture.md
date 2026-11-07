@@ -929,6 +929,17 @@ switched off has no player to write as, so an upload into one checks every
 directory on the way for links first, which is sound only because nothing in
 the seat runs; the state is asked before every file.
 
+**An upload goes up in requests of at most a gibibyte.** Firefox ends an
+HTTP/2 request body at 4 GiB less one byte whatever length it announced, and
+the daemon speaks HTTP/2, so one request per drop lost everything past that
+line. The interface now bundles whole files up to `seat.PieceSize` per request
+and sends a file larger than that as pieces with `offset` and `total` in the
+query. The seat appends them as the player into a hidden file beside the
+destination, refuses a piece whose offset is not the size already there, and
+moves the whole over the name once the last piece is in. Pieces only go into a
+running seat: the file API could append, but it cannot rename and cannot say
+how much has arrived.
+
 **Files are not an account**, and forgetting that made the list actively
 misleading. The shared library puts a game into every seat that takes part, so
 a seat where nobody had ever signed in to Steam was offering its neighbour's

@@ -778,6 +778,16 @@ inside it running that could swap a link in, every directory from the home down
 is looked at without following links before the file API writes, and any link
 stops the file. The seat's state is asked again before every file.
 
+A file over a gibibyte arrives in pieces, as separate requests, and is
+collected beside its destination under a hidden name derived from it. The same
+rules hold there: the pieces are appended by the player, the first piece
+removes whatever stands at the collecting name before it writes, so a link
+planted there is replaced rather than followed, and the finished file is moved
+over the destination with `mv -T`. A piece whose offset does not match what has
+already arrived is refused and the collection is thrown away, so pieces cannot
+be stitched together out of order. Pieces are refused for a seat that is
+switched off.
+
 What this is not: a new authority. The same session can already install a
 flatpak into that seat, download and adopt an AppImage, pair a client and take
 the seat apart, and every one of those puts files in that home as the player.

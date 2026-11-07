@@ -10,6 +10,29 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.49.0
+
+**Uploads over 4 GiB arrive whole.** A folder dropped on a seat card went up
+as one request, and Firefox ends an HTTP/2 request body at 4 GiB less one byte
+whatever length it announced. A 6.6 GB game folder arrived as its first
+4 GiB and the upload failed with `request declared a Content-Length of
+6656486238 but only wrote 4294967295 bytes`. Reproduced with Firefox 159
+against a test server before anything was changed. The interface now sends a
+drop as several requests of at most one GiB: small files bundled, and a file
+larger than that in pieces the seat puts back together as the player,
+under a hidden name until the last piece is in. The progress line runs across
+all of them, and a drop that fails part way says what had already arrived.
+
+A single file over one GiB only goes into a seat that is running. A seat that
+is switched off is written through the Incus file API, which cannot rename, so
+the file would carry its name while it is still incomplete. Several smaller
+files still go into a seat that is off as before.
+
+Not yet clicked through in the real interface: the piece script ran as the
+player in a seat and put three pieces back together byte for byte, and the
+splitting was run under node, but a real upload over 4 GiB through the page
+has not been made.
+
 ## 0.48.0
 
 **Games from the EA App and Ubisoft Connect are shared like any other.**
