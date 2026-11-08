@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +32,10 @@ var errNotFound = errors.New("this Sunshine has no such route")
 
 // Port is where Sunshine serves its web interface.
 const Port = 47990
+
+// InfoPort is where Sunshine answers Moonlight's questions in plain HTTP,
+// /serverinfo among them, without a login.
+const InfoPort = 47989
 
 // How long a call may take.
 //
@@ -61,6 +66,7 @@ var (
 // Client talks to one seat's Sunshine.
 type Client struct {
 	base     string
+	info     string
 	user     string
 	password string
 	http     *http.Client
@@ -76,6 +82,7 @@ type Client struct {
 func New(address, user, password string) *Client {
 	return &Client{
 		base:     fmt.Sprintf("https://%s:%d", address, Port),
+		info:     fmt.Sprintf("http://%s:%d", address, InfoPort),
 		user:     user,
 		password: password,
 		http: &http.Client{
@@ -288,32 +295,47 @@ func (c *Client) Unpair(ctx context.Context, uuid string) error {
 	return nil
 }
 
-// CloseApp ends the application Sunshine considers running, which runs its undo
-// commands the way quitting from Moonlight does.
+// RunningApp is the id of the application Sunshine holds for a client to resume,
+// or 0 when it holds none.
 //
-// A client that leaves without quitting leaves the application running so that
-// it can be resumed, and a resumed application runs no prep commands: the seat
-// comes back at whatever size it was left at. So once the daemon has decided a
-// stream is over, it closes the application here rather than putting the seat
-// back behind Sunshine's back, and the next connection is a launch that sizes
-// the seat for whoever makes it.
-//
-// Every application in a seat is detached, so this ends no process. Steam and a
-// running game carry on; only Sunshine's idea of what is running changes.
-//
-// An empty object rather than no body, because Sunshine checks the content type
-// of every POST and a request without one is refused before it is read.
-func (c *Client) CloseApp(ctx context.Context) error {
-	var out statusResponse
-	if err := c.call(ctx, http.MethodPost, "/api/apps/close", map[string]any{}, &out); err != nil {
-		return err
+// Asked the way Moonlight asks it, of /serverinfo, because the web interface has
+// no route that says. A client that leaves without quitting leaves the
+// application there, and Sunshine forgets it the moment its app list is
+// reloaded: the next connection is then a launch, and a launch starts the game a
+// second time. So whatever reloads the list asks this first.
+func (c *Client) RunningApp(ctx context.Context) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.info+"/serverinfo", nil)
+	if err != nil {
+		return 0, err
 	}
 
-	if !out.Status {
-		return fmt.Errorf("Sunshine did not close the application")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("reach Sunshine in the seat: %w", err)
 	}
 
-	return nil
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("Sunshine answered %s", resp.Status)
+	}
+
+	var info struct {
+		CurrentGame *int `xml:"currentgame"`
+	}
+
+	if err := xml.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&info); err != nil {
+		return 0, fmt.Errorf("read Sunshine's server info: %w", err)
+	}
+
+	if info.CurrentGame == nil {
+		return 0, fmt.Errorf("Sunshine's server info does not say what is running")
+	}
+
+	return *info.CurrentGame, nil
 }
 
 func (c *Client) call(ctx context.Context, method, path string, body, into any) error {

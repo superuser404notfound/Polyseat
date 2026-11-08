@@ -33,7 +33,7 @@ var assets embed.FS
 // This is the mechanism that fixes the sort of drift found at the end of M4,
 // where seat1 carried security.nesting and seat2 did not simply because seat1
 // was built earlier.
-const Generation = 70
+const Generation = 71
 
 // Player is the unprivileged user inside every seat that owns the session.
 const Player = "player"
@@ -933,18 +933,24 @@ const SunshinePin = "2026.914.233613"
 // connection and one repeat in ten on the next. Together, 60.00 with no repeat
 // and no gap over seven connections.
 //
+// The second patch, from 1.2, runs the global prep commands again when a client
+// resumes, with that client's size, framerate and name. LizardByte's resume runs
+// none, so a client that came back got the size of the one that left; the daemon
+// used to close the application to force a launch instead, and a launch started
+// the game a second time. See sunshinelog.go.
+//
 // The number is the pkgrel of the package built by packaging/sunshine/build.sh.
 // 1.1 sorts after LizardByte's 1 for the same release and before whatever they
 // publish next, so pacman takes this over theirs and theirs over nothing.
 //
-// The same thing is open upstream as LizardByte/Sunshine#5748 and #5751. When
-// a release carries it, the pin moves to that release and this goes away.
-const SunshineBuild = "1.1"
+// The capture change is open upstream as LizardByte/Sunshine#5748 and #5751;
+// the resume one is ours alone. Both have to be carried to a new release.
+const SunshineBuild = "1.2"
 
 // sunshinePackageSHA256 is the package named by SunshinePin and SunshineBuild,
 // as packaging/sunshine/build.sh printed it. The two move together or the
 // install fails, which is the point.
-const sunshinePackageSHA256 = "5cd0bebd19e7a8ca267dda29b5810285c46965b4e594b0e36d9d2d7f8df488df"
+const sunshinePackageSHA256 = "f52577236b10b6a3e9e5d58d7b263f18389f7aad927f9ea2c323259f1a962194"
 
 // sunshinePackageURL is where that package is published: an asset on a release
 // of this repository that exists only to carry it. Not on the Polyseat release

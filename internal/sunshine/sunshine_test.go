@@ -398,37 +398,47 @@ func TestPairFallsBackWhenTheAnswerIsNotTheList(t *testing.T) {
 	}
 }
 
-func TestCloseAppRefusesACloseThatDidNotHappen(t *testing.T) {
-	c := seat(t, func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": false})
-	})
+// The answer as a seat on 2026.914.233613 gives it, cut to what is read.
+func TestRunningAppReadsTheCurrentGame(t *testing.T) {
+	for body, want := range map[string]int{
+		`<?xml version="1.0" encoding="utf-8"?><root status_code="200"><hostname>vince</hostname><currentgame>1742398217</currentgame><state>SUNSHINE_SERVER_BUSY</state></root>`: 1742398217,
+		`<?xml version="1.0" encoding="utf-8"?><root status_code="200"><currentgame>0</currentgame><state>SUNSHINE_SERVER_FREE</state></root>`:                                    0,
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/serverinfo" {
+				http.NotFound(w, r)
 
-	if err := c.CloseApp(t.Context()); err == nil {
-		t.Error("reported an application closed that Sunshine did not close")
+				return
+			}
+
+			_, _ = w.Write([]byte(body))
+		}))
+
+		c := New("placeholder", "user", "password")
+		c.info = server.URL
+
+		got, err := c.RunningApp(t.Context())
+		server.Close()
+
+		if err != nil || got != want {
+			t.Errorf("RunningApp = %d, %v, want %d", got, err, want)
+		}
 	}
 }
 
-// The content type is the part that is checked, because Sunshine refuses a POST
-// without one before it looks at anything else, and a stub that ignored it
-// would pass a request the real one answers with an error.
-func TestCloseAppPostsJSONToTheCloseRoute(t *testing.T) {
-	var method, path, kind string
+// An answer that does not say is not "nothing is running": that would let a
+// reload throw away a game somebody means to come back to.
+func TestRunningAppRefusesAnAnswerWithoutTheField(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<root status_code="200"><hostname>vince</hostname></root>`))
+	}))
+	defer server.Close()
 
-	c := seat(t, func(w http.ResponseWriter, r *http.Request) {
-		method, path, kind = r.Method, r.URL.Path, r.Header.Get("Content-Type")
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": true})
-	})
+	c := New("placeholder", "user", "password")
+	c.info = server.URL
 
-	if err := c.CloseApp(t.Context()); err != nil {
-		t.Fatalf("refused a close that worked: %v", err)
-	}
-
-	if method != http.MethodPost || path != "/api/apps/close" {
-		t.Errorf("asked %s %s, want POST /api/apps/close", method, path)
-	}
-
-	if kind != "application/json" {
-		t.Errorf("sent content type %q, Sunshine refuses anything but JSON", kind)
+	if _, err := c.RunningApp(t.Context()); err == nil {
+		t.Error("took an answer without currentgame for one")
 	}
 }
 

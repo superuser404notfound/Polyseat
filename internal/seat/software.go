@@ -583,6 +583,35 @@ func (m *Manager) refreshApps(ctx context.Context, name string) {
 		return
 	}
 
+	// Nor while Sunshine holds an application for somebody to come back to. A
+	// reload replaces everything it knows about applications, the one that is
+	// running included, so the client that returns is answered with a launch
+	// and the game starts a second time over the one it left. Held until the
+	// application is quit in Moonlight; the sweep comes back to it every
+	// appsInterval, since the debt stays recorded.
+	//
+	// An answer that cannot be had counts as held, for the same reason that a
+	// stream that cannot be ruled out counts as one: what is lost by waiting is
+	// a list a minute late, and what is lost by guessing is the game.
+	if running, err := client.RunningApp(ctx); err != nil || running != 0 {
+		m.mu.Lock()
+		first := !rt.reloadPending
+		rt.reloadPending = true
+		m.mu.Unlock()
+
+		if first {
+			if err != nil {
+				m.logf(name, "Sunshine could not say whether a game is waiting to be "+
+					"resumed, so the app list will be reloaded later: %v", err)
+			} else {
+				m.logf(name, "a game is waiting to be resumed, so Moonlight's list will "+
+					"be updated once it is quit")
+			}
+		}
+
+		return
+	}
+
 	err = client.ReloadApps(ctx)
 	if err != nil {
 		m.logf(name, "! Sunshine did not reload the app list, it will show the "+

@@ -1872,31 +1872,40 @@ The daemon also puts the seat back itself when it sees a session end, rather tha
 trusting Sunshine's undo to have run. That is the same signal the card uses, and
 it covers every abnormal end and not only this one.
 
-**It closes the application first.** A client that leaves without quitting
-leaves the application running for it to resume, and a resume runs no prep
-commands, so putting the seat back underneath it meant somebody who stepped out
-of Steam came back at 1920x1080 on a 4K television, for as long as they played.
-So once the 45 seconds are up the daemon asks Sunshine to close the application
-(`POST /api/apps/close`), which runs Sunshine's own undo, and the next
-connection is a launch that sizes the seat for whoever makes it. Every
-application in a seat is detached, so the close ends no process: Steam and a
-running game carry on, and picking the same entry in Moonlight lands back in
-them. The seat is asked once more immediately before, because closing the
-application under a client that has just come back would end their stream.
+**It leaves the application alone.** A client that leaves without quitting
+leaves the application running for it to resume, and in LizardByte's Sunshine a
+resume runs no prep commands: somebody who stepped out of Steam came back at
+1920x1080 on a 4K television, and a client that splits its screen came back at
+the size of the other half (top and bottom at 3840x1080, out at 11:10:33, back
+at 11:10:47 asking for side by side, streamed at 3840x1080 again).
 
-**And it closes it the moment the client leaves, not 45 seconds later.** A
-client that came back sooner than that still resumed, and a resume carries a new
-size that Sunshine reads and then hands only to the display code of other
-platforms. A client that splits its screen showed it: top and bottom at
-3840x1080, out at 11:10:33, back at 11:10:47 asking for side by side, and
-streamed at 3840x1080 again. So the daemon follows each seat's Sunshine log
-(`journalctl --user --follow`, started and stopped with the broker) and closes
-the application when `CLIENT DISCONNECTED` goes by, once the seat's sockets say
-the stream is gone and unless a `CLIENT CONNECTED` came first. The login to
-Sunshine's API is on the host, which is why this is the daemon's and not a
-script in the seat. The resize has no `undo` any more: run on every brief drop
-it would put a game through two mode changes for nothing, so the seat's own
-size goes back with the rest of the reset above, once the 45 seconds are up.
+From 0.31.10 to 0.49.0 the daemon answered that by closing the application,
+after 45 seconds and later the moment `CLIENT DISCONNECTED` went by, so that the
+next connection was a launch that sized the seat. It was: and it also ran the
+entry's command again, so the game started a second time over the one the
+player had left. Every application in a seat is detached, which is what made
+the close look harmless; the launch afterwards is what was not.
+
+So the size moved into Sunshine. The seats' build carries
+`packaging/sunshine/resume-prep-cmds.patch`: a resume with nobody else streaming
+runs the do commands of `global_prep_cmd` again, the ones that ran at launch,
+with the returning client's size, framerate and name in their environment. The
+seat is resized, the cap set and the session marker written before the stream
+starts, and the application is only closed when somebody quits it in Moonlight.
+The resize still has no `undo`: the seat's own size goes back with the rest of
+the reset above, once the 45 seconds are up, and the resume puts the client's
+back.
+
+A reload of the app list has to respect that too. Sunshine replaces everything
+it knows about applications on a reload, the running one included, so a list
+rebuilt while a game waits would turn the return into a launch again. The
+daemon asks `/serverinfo` on port 47989 (`currentgame`, the field Moonlight
+reads) before every reload and holds it while that is not 0.
+
+The daemon still follows each seat's Sunshine log (`journalctl --user
+--follow`, started and stopped with the broker), for `CLIENT CONNECTED` alone:
+a stream shorter than the ten second sweep would otherwise never be seen, and
+so never end.
 
 **A guard is only as good as the thing it asks.** The first version of this asked
 the marker file that describes the stream, and got thrown out of a stream anyway.

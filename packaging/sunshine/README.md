@@ -1,16 +1,16 @@
 # Sunshine, as a seat gets it
 
 A seat does not run the Sunshine package LizardByte publish. It runs the same
-release, built here with one patch, as a package of its own:
+release, built here with two patches, as a package of its own:
 
-    sunshine-2026.914.233613-1.1-x86_64.pkg.tar.zst
+    sunshine-2026.914.233613-1.2-x86_64.pkg.tar.zst
 
 `provision.go` names it three ways, `SunshinePin`, `SunshineBuild` and
 `sunshinePackageSHA256`, fetches it from a release of this repository called
 `sunshine-<pin>-<build>` and refuses anything whose checksum is not the one in
 the source.
 
-## What the patch does
+## What the capture patch does
 
 Sunshine's wlr capture sleeps on a clock of its own and then asks sway for a
 frame with a plain `copy`. That request makes sway commit at a time Sunshine
@@ -55,6 +55,25 @@ The last row held over seven connections with the clocks reshuffled in between.
 Rates that are not a whole multiple are worse than either: 90 Hz gave 43 frames
 a second, 240 Hz gave 57.
 
+## What the resume patch does
+
+A client that leaves Moonlight without quitting leaves its application running
+in Sunshine, and the next connection resumes it. LizardByte's resume runs no
+prep commands, and the prep commands are where a seat learns the client's size
+and framerate: `polyseat-resize`, `polyseat-fps` and `polyseat-session` in
+`global_prep_cmd`. A client that came back at another size got the old one.
+
+`resume-prep-cmds.patch` runs the do commands of `global_prep_cmd` again on a
+resume when nobody else is streaming, with the returning client's
+`SUNSHINE_CLIENT_*` values. Only those that ran at launch, so the undo owed for
+them is unchanged, and an application with `exclude-global-prep-cmd` gets none.
+A failure is logged and does not refuse the resume. The log line is
+`Resuming, executing Do Cmd: [...]`.
+
+Without it the daemon had to close the application whenever a client left, so
+that the return was a launch, and a launch ran the entry's command again: the
+game started a second time.
+
 ## Building it
 
     packaging/sunshine/build.sh <container>
@@ -73,8 +92,8 @@ captured frame for NVENC in a CUDA kernel, and at run time it loads only
 
 ## Moving to a new Sunshine release
 
-1. Change `_commit`, `pkgver` and, if the patch still applies, nothing else in
-   `PKGBUILD`. `pkgrel` goes back to `1.1`.
+1. Change `_commit`, `pkgver` and, if both patches still apply, nothing else
+   in `PKGBUILD`. `pkgrel` goes back to `1.1`.
 2. Build, and publish the package on a release named
    `sunshine-<pkgver>-<pkgrel>`.
 3. Change `SunshinePin`, `SunshineBuild` and `sunshinePackageSHA256` in
@@ -83,7 +102,7 @@ captured frame for NVENC in a CUDA kernel, and at run time it loads only
 4. Everything `SunshinePin`'s comment already asks for: pair a client against
    it, check that input stops at the seat boundary.
 
-Upstream this is LizardByte/Sunshine#5751, with #5748 open for the same change
-in a simpler form. When a release carries it, the pin moves there, the seats go
-back to LizardByte's package, and this directory goes away. The doubled output
-rate stays either way.
+Upstream the capture patch is LizardByte/Sunshine#5751, with #5748 open for the
+same change in a simpler form. The resume patch is not upstream, so this
+directory stays even once a release carries the capture change. The doubled
+output rate stays either way.

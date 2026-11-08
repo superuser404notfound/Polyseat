@@ -10,6 +10,26 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.50.0
+
+**Resuming a game resumes it.** Leaving Moonlight without quitting and coming
+back started the game a second time instead of returning to it. The daemon had
+been closing the application in Sunshine as soon as a client left, so that the
+next connection would be a launch and get the right size; a launch also runs the
+entry's command, and that is what started the game again. Nothing is closed any
+more. The size comes from Sunshine instead: the seats' build now carries a
+second patch that runs the resize, the framerate cap and the session marker
+again when a client resumes, with that client's values. The app list is not
+reloaded while a game waits to be resumed either, since a reload makes Sunshine
+forget it; it is reloaded once the game is quit in Moonlight.
+
+**Seats have to be provisioned again** (generation 71) to get Sunshine
+2026.914.233613-1.2. A seat on the old build resumes the game but at the size it
+was left at, which is how it behaved before 0.31.10.
+
+Built and unit-tested here; a resume against the new Sunshine in a seat has not
+been run.
+
 ## 0.49.0
 
 **Uploads over 4 GiB arrive whole.** A folder dropped on a seat card went up

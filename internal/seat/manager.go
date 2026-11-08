@@ -1481,17 +1481,12 @@ func (m *Manager) readEncoders(ctx context.Context, name string) (string, []stri
 // are this function's alone, and both are idempotent.
 //
 // A client that left without quitting is the case those two sentences missed.
-// Sunshine keeps the application for it to resume, a resume runs no prep
-// commands, and the resize below had already put the seat back: somebody who
-// stepped out of Steam for a minute came back to 1920x1080 on a 4K television.
-// Measured in vince: disconnected 18:13:52, put back by this at 18:14:47,
-// resumed at 19:09 with no polyseat-resize in the log. So the application is
-// closed first, and the next connection is a launch that sizes the seat.
-//
-// The daemon now closes it the moment Sunshine logs the client leaving, see
-// sunshinelog.go, so here it is the fallback for a departure that was missed.
-// Putting the size back is still this function's alone: sunshine.conf has no
-// undo for the resize any more.
+// Sunshine keeps the application for it to resume, and the resize below puts
+// the seat back behind it. That is fine since the seats' Sunshine carries
+// packaging/sunshine/resume-prep-cmds.patch: a resume runs the global prep
+// commands again, so it is sized for whoever comes back. The application is
+// left alone. Closing it here, as this used to, made the next connection a
+// launch, and a launch started the game a second time.
 func (m *Manager) sessionEnded(ctx context.Context, name string) {
 	seat, err := m.store.Get(name)
 	if err != nil {
@@ -1501,15 +1496,13 @@ func (m *Manager) sessionEnded(ctx context.Context, name string) {
 	quick, cancel := quick(ctx)
 	defer cancel()
 
-	// Asked again rather than taken from the sweep, because closing the
-	// application under a client that has just come back ends their stream.
-	// Nothing else is done either: the next sweep sees them and this runs again
-	// when they leave.
+	// Asked again rather than taken from the sweep, because resizing the seat
+	// under a client that has just come back would give them the wrong size.
+	// Nothing is done: the next sweep sees them and this runs again when they
+	// leave.
 	if m.streaming(quick, name) {
 		return
 	}
-
-	m.closeApp(quick, name)
 
 	if _, _, err := m.client.Try(quick, name, m.asPlayer(name,
 		"/usr/local/bin/polyseat-resize", seat.Resolution)...); err != nil {
@@ -1559,23 +1552,6 @@ func (m *Manager) sessionEnded(ctx context.Context, name string) {
 			rt.appsChecked = time.Time{}
 			m.mu.Unlock()
 		}
-	}
-}
-
-// closeApp tells a seat's Sunshine that nothing is running any more.
-//
-// A failure is logged and otherwise ignored. The resets after it still put the
-// seat back, and a seat that resumes at its default size is the old behaviour,
-// not a broken one.
-func (m *Manager) closeApp(ctx context.Context, name string) {
-	client, err := m.sunshineClient(name)
-	if err == nil {
-		err = client.CloseApp(ctx)
-	}
-
-	if err != nil {
-		m.logf(name, "! Sunshine could not be told the stream is over, a client "+
-			"that resumes will get the seat's default resolution: %v", err)
 	}
 }
 

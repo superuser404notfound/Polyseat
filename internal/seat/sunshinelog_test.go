@@ -1,11 +1,8 @@
 package seat
 
 import (
-	"context"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 )
 
 // The lines as they reach the daemon: journalctl --output cat, so Sunshine's own
@@ -45,74 +42,9 @@ func TestLineWriterHandsOnWholeLines(t *testing.T) {
 	}
 }
 
-// The case that was reported: the client leaves and the stream is gone a moment
-// later, so the application is closed and the next connection is a launch.
-func TestLetGoClosesOnceTheStreamIsGone(t *testing.T) {
-	var asked, closed atomic.Int32
-
-	idle := func(context.Context) bool { return asked.Add(1) >= 3 }
-
-	ok := letGo(context.Background(), func() bool { return false }, idle,
-		func(context.Context) { closed.Add(1) })
-
-	if !ok || closed.Load() != 1 {
-		t.Errorf("letGo = %v with %d closes, want true and one", ok, closed.Load())
-	}
-}
-
-// A client that is back before the stream was seen to go must keep it.
-// Closing the application under them ends what they just reconnected to.
-func TestLetGoLeavesAClientThatCameBack(t *testing.T) {
-	var asked, closed atomic.Int32
-
-	back := func() bool { return asked.Load() >= 2 }
-	idle := func(context.Context) bool { asked.Add(1); return false }
-
-	ok := letGo(context.Background(), back, idle, func(context.Context) { closed.Add(1) })
-
-	if ok || closed.Load() != 0 {
-		t.Errorf("letGo = %v with %d closes, want false and none", ok, closed.Load())
-	}
-}
-
-// And the same when the client comes back while the seat is being asked: the
-// question takes an exec, and a reconnect can land inside it.
-func TestLetGoAsksOnceMoreBeforeClosing(t *testing.T) {
-	var returned, closed atomic.Bool
-
-	idle := func(context.Context) bool { returned.Store(true); return true }
-
-	ok := letGo(context.Background(), returned.Load, idle,
-		func(context.Context) { closed.Store(true) })
-
-	if ok || closed.Load() {
-		t.Errorf("letGo = %v, closed %v, want neither", ok, closed.Load())
-	}
-}
-
-// A seat that never stops looking busy is somebody playing, and is left to
-// sessionEnded. Bounded, because this runs once per departure.
-func TestLetGoGivesUpOnASeatThatStaysBusy(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
-	defer cancel()
-
-	var closed atomic.Bool
-
-	start := time.Now()
-	ok := letGo(ctx, func() bool { return false }, func(context.Context) bool { return false },
-		func(context.Context) { closed.Store(true) })
-
-	if ok || closed.Load() {
-		t.Errorf("letGo = %v, closed %v, want neither", ok, closed.Load())
-	}
-
-	if waited := time.Since(start); waited > 2*time.Second {
-		t.Errorf("letGo waited %v past its deadline", waited)
-	}
-}
-
-// The resize must have no undo: Sunshine would run it on every brief drop, now
-// that the daemon closes the application the moment a client leaves.
+// The resize must have no undo. Putting the size back is sessionEnded's, once a
+// stream has stayed gone; an undo would run whenever somebody quits in
+// Moonlight and put a game through a mode change in front of nobody.
 func TestSunshineConfigHasNoUndoForTheResize(t *testing.T) {
 	conf := string(asset("assets/sunshine.conf"))
 

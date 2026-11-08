@@ -43,7 +43,7 @@ incus exec "$ct" -- pacman -S --needed --noconfirm $assume \
 
 say "recipe into $ct:$dir"
 incus exec "$ct" -- sh -c "rm -rf $dir && install -d -o nobody -g nobody $dir"
-for f in PKGBUILD sunshine.install wlgrab-event-driven.patch; do
+for f in PKGBUILD sunshine.install wlgrab-event-driven.patch resume-prep-cmds.patch; do
     incus file push -q "$here/$f" "$ct$dir/$f"
 done
 incus exec "$ct" -- chown -R nobody:nobody "$dir"

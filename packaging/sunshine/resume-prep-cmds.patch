@@ -1,0 +1,169 @@
+diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
+index 8e33cad..e8f3b15 100644
+--- a/src/nvhttp.cpp
++++ b/src/nvhttp.cpp
+@@ -1532,6 +1532,13 @@ namespace nvhttp {
+         static_cast<int>(net::map_port(rtsp_stream::RTSP_SETUP_PORT))
+       )
+     );
++    // A resume runs no prep commands, so whatever they set up for the client that
++    // launched the application stays set up for that one. With nobody else
++    // streaming, the commands that every stream runs are told about this client.
++    if (no_active_sessions) {
++      proc::proc.resume(launch_session);
++    }
++
+     tree.put("root.resume", 1);
+ 
+     rtsp_stream::launch_session_raise(launch_session);
+diff --git a/src/process.cpp b/src/process.cpp
+index 8a35cca..28c4705 100644
+--- a/src/process.cpp
++++ b/src/process.cpp
+@@ -149,6 +149,33 @@ namespace proc {
+     return cmd_path.parent_path();
+   }
+ 
++  /**
++   * @brief Put what a client asked for into the environment of the commands run for it.
++   */
++  static void set_client_env(boost::process::v1::environment &env, const rtsp_stream::launch_session_t &session) {
++    env["SUNSHINE_CLIENT_NAME"] = session.client_name;
++    env["SUNSHINE_CLIENT_WIDTH"] = std::to_string(session.width);
++    env["SUNSHINE_CLIENT_HEIGHT"] = std::to_string(session.height);
++    env["SUNSHINE_CLIENT_FPS"] = std::to_string(session.fps);
++    env["SUNSHINE_CLIENT_HDR"] = session.enable_hdr ? "true" : "false";
++    env["SUNSHINE_CLIENT_GCMAP"] = std::to_string(session.gcmap);
++    env["SUNSHINE_CLIENT_HOST_AUDIO"] = session.host_audio ? "true" : "false";
++    env["SUNSHINE_CLIENT_ENABLE_SOPS"] = session.enable_sops ? "true" : "false";
++    int channelCount = session.surround_info & 65535;
++    switch (channelCount) {
++      case 2:
++        env["SUNSHINE_CLIENT_AUDIO_CONFIGURATION"] = "2.0";
++        break;
++      case 6:
++        env["SUNSHINE_CLIENT_AUDIO_CONFIGURATION"] = "5.1";
++        break;
++      case 8:
++        env["SUNSHINE_CLIENT_AUDIO_CONFIGURATION"] = "7.1";
++        break;
++    }
++    env["SUNSHINE_CLIENT_AUDIO_SURROUND_PARAMS"] = session.surround_params;
++  }
++
+   int proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
+     // Ensure starting from a clean slate
+     terminate();
+@@ -170,27 +197,7 @@ namespace proc {
+     // Add Stream-specific environment variables
+     _env["SUNSHINE_APP_ID"] = std::to_string(_app_id);
+     _env["SUNSHINE_APP_NAME"] = _app.name;
+-    _env["SUNSHINE_CLIENT_NAME"] = launch_session->client_name;
+-    _env["SUNSHINE_CLIENT_WIDTH"] = std::to_string(launch_session->width);
+-    _env["SUNSHINE_CLIENT_HEIGHT"] = std::to_string(launch_session->height);
+-    _env["SUNSHINE_CLIENT_FPS"] = std::to_string(launch_session->fps);
+-    _env["SUNSHINE_CLIENT_HDR"] = launch_session->enable_hdr ? "true" : "false";
+-    _env["SUNSHINE_CLIENT_GCMAP"] = std::to_string(launch_session->gcmap);
+-    _env["SUNSHINE_CLIENT_HOST_AUDIO"] = launch_session->host_audio ? "true" : "false";
+-    _env["SUNSHINE_CLIENT_ENABLE_SOPS"] = launch_session->enable_sops ? "true" : "false";
+-    int channelCount = launch_session->surround_info & 65535;
+-    switch (channelCount) {
+-      case 2:
+-        _env["SUNSHINE_CLIENT_AUDIO_CONFIGURATION"] = "2.0";
+-        break;
+-      case 6:
+-        _env["SUNSHINE_CLIENT_AUDIO_CONFIGURATION"] = "5.1";
+-        break;
+-      case 8:
+-        _env["SUNSHINE_CLIENT_AUDIO_CONFIGURATION"] = "7.1";
+-        break;
+-    }
+-    _env["SUNSHINE_CLIENT_AUDIO_SURROUND_PARAMS"] = launch_session->surround_params;
++    set_client_env(_env, *launch_session);
+ 
+     if (!_app.output.empty() && _app.output != "null"sv) {
+ #ifdef _WIN32
+@@ -284,6 +291,46 @@ namespace proc {
+     return 0;
+   }
+ 
++  void proc_t::resume(std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
++    if (_app_id == 0) {
++      return;
++    }
++
++    set_client_env(_env, *launch_session);
++
++    // Only those that ran at launch, which are the ones whose undo is still owed.
++    // A failure is logged and not fatal: a stream at the wrong size is better than none.
++    auto ran = static_cast<std::size_t>(_app_prep_it - _app_prep_begin);
++    auto count = std::min(_app.global_prep_count, ran);
++
++    for (std::size_t i = 0; i < count; ++i) {
++      auto &cmd = _app.prep_cmds[i];
++      if (cmd.do_cmd.empty()) {
++        continue;
++      }
++
++      std::error_code ec;
++      boost::filesystem::path working_dir = _app.working_dir.empty() ?
++                                              find_working_directory(cmd.do_cmd, _env) :
++                                              boost::filesystem::path(_app.working_dir);
++      BOOST_LOG(info) << "Resuming, executing Do Cmd: ["sv << cmd.do_cmd << ']';
++      auto child = platf::run_command(cmd.elevated, true, cmd.do_cmd, working_dir, _env, _pipe.get(), ec, nullptr);
++      if (ec) {
++        BOOST_LOG(warning) << "Couldn't run ["sv << cmd.do_cmd << "]: System: "sv << ec.message();
++        continue;
++      }
++
++      child.wait(ec);
++      if (ec) {
++        BOOST_LOG(warning) << '[' << cmd.do_cmd << "] wait failed with error code ["sv << ec << ']';
++        continue;
++      }
++      if (auto ret = child.exit_code(); ret != 0) {
++        BOOST_LOG(warning) << '[' << cmd.do_cmd << "] exited with code ["sv << ret << ']';
++      }
++    }
++  }
++
+   int proc_t::running() {
+ #ifndef _WIN32
+     // On POSIX OSes, we must periodically wait for our children to avoid
+@@ -778,6 +825,7 @@ namespace proc {
+         ids.insert(ctx.id);
+ 
+         ctx.name = std::move(name);
++        ctx.global_prep_count = exclude_global_prep.value_or(false) ? 0 : config::sunshine.prep_cmds.size();
+         ctx.prep_cmds = std::move(prep_cmds);
+         ctx.detached = std::move(detached);
+ 
+diff --git a/src/process.h b/src/process.h
+index 75a9de0..75b623a 100644
+--- a/src/process.h
++++ b/src/process.h
+@@ -56,6 +56,7 @@ namespace proc {
+    */
+   struct ctx_t {
+     std::vector<cmd_t> prep_cmds;  ///< Prep cmds.
++    std::size_t global_prep_count {0};  ///< How many of prep_cmds, from the front, are global_prep_cmd.
+ 
+     /**
+      * Some applications, such as Steam, either exit quickly, or keep running indefinitely.
+@@ -114,6 +115,16 @@ namespace proc {
+      */
+     int execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session);
+ 
++    /**
++     * @brief Tell the running application's global prep commands about a client that resumed it.
++     *
++     * Runs the do command of every global prep command that ran at launch, again,
++     * with the resuming client's size, framerate and name in the environment.
++     *
++     * @param launch_session Launch session of the resuming client.
++     */
++    void resume(std::shared_ptr<rtsp_stream::launch_session_t> launch_session);
++
+     /**
+      * @return `_app_id` if a process is running, otherwise returns `0`
+      */
