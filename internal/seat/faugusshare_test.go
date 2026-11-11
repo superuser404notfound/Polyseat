@@ -413,8 +413,11 @@ func TestFaugusScanAndListing(t *testing.T) {
 	home, path := faugusHome(t)
 	icon := filepath.Join(home, ".local/share/faugus-launcher/icons/madison.png")
 	writeFile(t, icon, "png")
+	folder := filepath.Join(home, "games/shared/Madison Game/bin")
+	writeFile(t, filepath.Join(folder, "madison.exe"), "MZ")
 	writeFaugusGames(t, home,
-		map[string]any{"gameid": "madison", "title": "Madison", "icon": icon},
+		map[string]any{"gameid": "madison", "title": "Madison", "icon": icon,
+			"path": filepath.Join(folder, "madison.exe")},
 		map[string]any{"gameid": "fnaf", "title": "FNAF", "hidden": true},
 		map[string]any{"gameid": "evil id", "title": "Evil"},
 		map[string]any{"gameid": "x$(reboot)", "title": "Evil too"},
@@ -438,7 +441,7 @@ func TestFaugusScanAndListing(t *testing.T) {
 	}
 
 	if g := games[0]; g.Name != "Madison" || g.Launch != "faugus-launcher --game madison" ||
-		g.Image != icon || g.Source != faugusSource {
+		g.Image != icon || g.Dir != folder || g.Source != faugusSource {
 		t.Errorf("listed %+v", g)
 	}
 
@@ -504,5 +507,39 @@ func TestFaugusHelperNamesTheRunningGame(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(home, "Games/Elden/elden.exe")); err != nil {
 		t.Errorf("the game was moved while the runner held the list: %v", err)
+	}
+}
+
+// A Faugus game whose program is gone, or that has no path at all, is still
+// listed. It starts the way it did before Dir existed.
+func TestFaugusScanWithoutAFolder(t *testing.T) {
+	home, path := faugusHome(t)
+	writeFaugusGames(t, home,
+		map[string]any{"gameid": "gone", "title": "Gone", "path": filepath.Join(home, "nowhere/game.exe")},
+		map[string]any{"gameid": "bare", "title": "Bare"},
+		map[string]any{"gameid": "odd", "title": "Odd", "path": 42},
+	)
+
+	cmd := exec.Command("python3", "-I", "-c", faugusScan)
+	cmd.Env = []string{"POLYSEAT_HOME=" + home, "PATH=" + path}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+
+	games, err := faugusListing(string(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(games) != 3 {
+		t.Fatalf("listed %+v", games)
+	}
+
+	for _, g := range games {
+		if g.Dir != "" {
+			t.Errorf("%s got the directory %q", g.Name, g.Dir)
+		}
 	}
 }

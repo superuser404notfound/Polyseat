@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -29,6 +30,19 @@ type Game struct {
 	Name   string
 	Launch string
 	Image  string
+
+	// Dir is the directory the game has to be started in, empty when where it
+	// starts does not matter or is the launcher's own business. Always one
+	// startDir let through.
+	//
+	// Faugus needs it from whoever starts it. It changes into the game's
+	// folder only for a start out of its own window. `faugus-launcher --game`
+	// keeps whatever directory it was handed, and Proton gives the game that
+	// directory. Elden Ring opens its archives relative to it, so started from
+	// Moonlight it looked for Data0.bhd in /usr/bin, Sunshine's default, and
+	// stopped on a white screen with a Dantelion2 panic. Faugus's own
+	// shortcuts carry Path= for this. Ours carried nothing.
+	Dir string
 
 	// Icon is the square icon for the seat's own launcher, when one could be
 	// found. Image is the portrait card a client draws and is wrong in a grid
@@ -570,6 +584,18 @@ def picture(game):
     return ""
 
 
+def folder(game):
+    """The folder of the program, which is where Faugus starts a game from its
+    own window. Empty when there is none to be had."""
+    path = game.get("path")
+    if not isinstance(path, str) or not path:
+        return ""
+    folder = os.path.dirname(os.path.expanduser(path))
+    if os.path.isabs(folder) and os.path.isdir(folder):
+        return folder
+    return ""
+
+
 def main():
     if not shutil.which("faugus-launcher"):
         print("[]")
@@ -585,12 +611,38 @@ def main():
             continue
         gameid, title = game.get("gameid"), game.get("title")
         if isinstance(gameid, str) and isinstance(title, str) and gameid and title:
-            found.append({"gameid": gameid, "title": title[:80], "image": picture(game)})
+            found.append({"gameid": gameid, "title": title[:80], "image": picture(game),
+                          "dir": folder(game)})
     print(json.dumps(found))
 
 
 main()
 `
+
+// startDir is dir when it can go into both places a game's directory is
+// written, and empty otherwise. A game without one starts as it did before,
+// which is wrong for some games but breaks nothing that worked.
+//
+// Sunshine's working-dir expands $(NAME), and the seat's launcher hands its Exec
+// line to `env -S`, which expands ${NAME}, refuses a bare $ and reads a
+// backslash as an escape. nwg-drawer also cuts the line at the first %, and the
+// desktop entry format wants a quote, a backtick, a dollar or a backslash
+// escaped inside quotes. A folder with any of those, or with a control
+// character, is not worth an escaping scheme per reader. Faugus folders are
+// named after games, and those almost never contain such characters.
+func startDir(dir string) string {
+	if !filepath.IsAbs(dir) || len(dir) > 1024 {
+		return ""
+	}
+
+	for _, r := range dir {
+		if r < ' ' || r == 0x7f || strings.ContainsRune("\"`$\\%", r) {
+			return ""
+		}
+	}
+
+	return dir
+}
 
 // faugusID is what a Faugus game id may be to go into a launch command. Faugus
 // makes it from the title, lower case with dashes, and keeps letters of any
@@ -618,6 +670,7 @@ func faugusListing(out string) ([]Game, error) {
 		GameID string `json:"gameid"`
 		Title  string `json:"title"`
 		Image  string `json:"image"`
+		Dir    string `json:"dir"`
 	}
 
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &found); err != nil {
@@ -640,6 +693,7 @@ func faugusListing(out string) ([]Game, error) {
 			Name:   f.Title,
 			Launch: launch,
 			Image:  f.Image,
+			Dir:    startDir(f.Dir),
 			Source: faugusSource,
 		})
 	}

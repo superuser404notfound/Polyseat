@@ -68,6 +68,11 @@ type app struct {
 	PrepCmd   []prep   `json:"prep-cmd,omitempty"`
 	ImagePath string   `json:"image-path,omitempty"`
 
+	// WorkingDir is where Sunshine starts the detached command. Left out, it
+	// starts it in the directory of the command's own binary, which for
+	// faugus-launcher is /usr/bin. Game.Dir says why that matters.
+	WorkingDir string `json:"working-dir,omitempty"`
+
 	// Polyseat marks the entries this file's generator owns.
 	//
 	// Without it there is no way to tell an entry Polyseat wrote last time from
@@ -466,7 +471,7 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 	names := []string{"Desktop", "Steam Big Picture"}
 	taken := map[string]bool{"desktop": true, "steam big picture": true}
 
-	add := func(name, launch, image string) {
+	add := func(name, launch, image, dir string) {
 		// A game called Desktop, or one whose name matches a launcher, would
 		// otherwise put two entries with the same name in Moonlight and make
 		// which of them runs a matter of luck.
@@ -484,22 +489,23 @@ func polyseatApps(launchers []installed, games []Game) ([]app, []string) {
 			// inside gamescope, so it appears there. A Lutris or flatpak title
 			// has no such parent and stays on the desktop, which is why the
 			// switch is part of the launcher's entry and not of this one.
-			PrepCmd:   []prep{{Do: hideLauncher}},
-			ImagePath: image,
-			Polyseat:  true,
+			PrepCmd:    []prep{{Do: hideLauncher}},
+			ImagePath:  image,
+			WorkingDir: dir,
+			Polyseat:   true,
 		})
 
 		names = append(names, name)
 	}
 
 	for _, l := range launchers {
-		add(l.Name, l.command, l.image)
+		add(l.Name, l.command, l.image, "")
 	}
 
 	// The games themselves, so that a client with a controller can start one
 	// without first starting a launcher and steering through it.
 	for _, g := range games {
-		add(g.Name, g.Launch, g.Image)
+		add(g.Name, g.Launch, g.Image, g.Dir)
 	}
 
 	return ours, names
@@ -1272,7 +1278,19 @@ func desktopEntry(g Game) []byte {
 	// from. Through polyseat-capped rather than an env line, because the
 	// preload contains $LIB for the linker and the launcher runs Exec through
 	// `env -S`, which refuses a dollar sign it cannot expand and starts nothing.
-	b.WriteString("Exec=" + cappedPath + " " + oneLine(g.Launch) + "\n")
+	//
+	// A game that has to start in its own folder gets there through env -C.
+	// nwg-drawer has no Path= key: it starts every entry in its own directory.
+	// The folder goes in the command rather than into polyseat-capped, so a
+	// seat provisioned before this change runs the line as written. startDir
+	// has already kept out everything that would need escaping inside the
+	// quotes.
+	launch := oneLine(g.Launch)
+	if g.Dir != "" {
+		launch = `env -C "` + oneLine(g.Dir) + `" ` + launch
+	}
+
+	b.WriteString("Exec=" + cappedPath + " " + launch + "\n")
 
 	// The game's own icon, and the card drawn for Moonlight only when there is
 	// no icon to be had.

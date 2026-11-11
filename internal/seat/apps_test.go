@@ -1082,3 +1082,118 @@ func TestReadingTheAppList(t *testing.T) {
 		t.Error("an exec that failed was taken for no list at all")
 	}
 }
+
+// Only a directory every reader takes literally gets through. Anything else
+// leaves the game starting the way it did before.
+func TestStartDir(t *testing.T) {
+	for dir, want := range map[string]bool{
+		"/home/player/games/shared/ELDEN.RING-SteamRIP.com/ELDEN RING/Game": true,
+		"/home/player/games/Madison's Game (2024) #1":                       true,
+		"/home/player/Spiele/Pokémon":                                       true,
+		"":                                                                  false,
+		"games/relative":                                                    false,
+		"/home/player/$HOME":                                                false,
+		"/home/player/$(reboot)":                                            false,
+		`/home/player/a"b`:                                                  false,
+		`/home/player/a\b`:                                                  false,
+		"/home/player/a`b`":                                                 false,
+		"/home/player/100%":                                                 false,
+		"/home/player/a\nExec=rm -rf /":                                     false,
+		"/" + strings.Repeat("a", 2000):                                     false,
+	} {
+		got := startDir(dir)
+
+		if want && got != dir {
+			t.Errorf("startDir(%q) = %q, want it kept", dir, got)
+		}
+
+		if !want && got != "" {
+			t.Errorf("startDir(%q) = %q, want it dropped", dir, got)
+		}
+	}
+}
+
+// Moonlight starts a game with a directory in that directory, and nothing else
+// gets one.
+func TestAppsCarryTheGamesDirectory(t *testing.T) {
+	dir := "/home/player/games/shared/ELDEN.RING-SteamRIP.com/ELDEN RING/Game"
+
+	ours, _ := polyseatApps(nil, []Game{
+		{Name: "ELDEN RING", Launch: "faugus-launcher --game elden-ring", Dir: dir},
+		{Name: "Cities", Launch: "steam steam://rungameid/949230"},
+	})
+
+	got := map[string]app{}
+	for _, a := range ours {
+		got[a.Name] = a
+	}
+
+	if got["ELDEN RING"].WorkingDir != dir {
+		t.Errorf("ELDEN RING starts in %q", got["ELDEN RING"].WorkingDir)
+	}
+
+	for name, a := range got {
+		if name != "ELDEN RING" && a.WorkingDir != "" {
+			t.Errorf("%s starts in %q", name, a.WorkingDir)
+		}
+	}
+
+	data, err := json.Marshal(got["ELDEN RING"])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(data), `"working-dir":`) {
+		t.Errorf("Sunshine reads working-dir and this says %s", data)
+	}
+}
+
+// The seat's launcher reads the Exec line with env -S and has no Path= key, so
+// the directory has to survive that and be where the command runs. Measured
+// with the env that is here, which is what the seat runs.
+func TestDesktopEntryStartsInTheGamesDirectory(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/env"); err != nil {
+		t.Skip("no /usr/bin/env")
+	}
+
+	dir := filepath.Join(t.TempDir(), "ELDEN RING", "Madison's (2024) #1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if startDir(dir) != dir {
+		t.Fatalf("the test directory %q is refused", dir)
+	}
+
+	entry := string(desktopEntry(Game{Name: "Test", Launch: "pwd", Dir: dir}))
+
+	var line string
+
+	for _, l := range strings.Split(entry, "\n") {
+		if strings.HasPrefix(l, "Exec=") {
+			line = strings.TrimPrefix(l, "Exec=")
+		}
+	}
+
+	rest, ok := strings.CutPrefix(line, cappedPath+" ")
+	if !ok {
+		t.Fatalf("the entry does not start through polyseat-capped: %q", line)
+	}
+
+	// What nwg-drawer does with the line, less polyseat-capped, which only
+	// sets two variables and replaces itself with the rest.
+	out, err := exec.Command("/usr/bin/env", "-S", rest).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%q: %v: %s", rest, err, out)
+	}
+
+	if got := strings.TrimSpace(string(out)); got != dir {
+		t.Errorf("the game started in %q, want %q", got, dir)
+	}
+
+	// Without a directory the line is what it always was.
+	plain := string(desktopEntry(Game{Name: "Test", Launch: "faugus-launcher --game test"}))
+	if !strings.Contains(plain, "Exec="+cappedPath+" faugus-launcher --game test\n") {
+		t.Errorf("a game without a directory changed:\n%s", plain)
+	}
+}

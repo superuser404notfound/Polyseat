@@ -10,6 +10,26 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.50.1
+
+**Faugus games start in their own folder.** A Faugus game picked in Moonlight or
+in the seat's app grid was started without a working directory. Sunshine then
+used /usr/bin and the grid used its own. Faugus changes into the game's folder
+only for a start out of its own window, so a game that opens its files relative
+to where it was started could not find them. Elden Ring looked for `Data0.bhd`
+in the wrong place and stopped on a white screen with a `Dantelion2 Panic`
+in `CSEblFileManager.cpp`. Moonlight's entry now carries Sunshine's
+`working-dir`, and the grid's entry changes there with `env -C`, because
+nwg-drawer ignores `Path=`. A folder name with `"`, `$`, `\`, `%` or a
+backtick in it gets neither and starts as before.
+
+No seat has to be provisioned again. The entries are rewritten on the next scan.
+
+Reproduced in a seat before the change: the same game crashed every time
+started from the home directory and ran when started from its folder.
+The new scan and the new launcher line were run in that seat. Starting from
+Moonlight and from the grid with the new daemon has not been tried yet.
+
 ## 0.50.0
 
 **Resuming a game resumes it.** Leaving Moonlight without quitting and coming
