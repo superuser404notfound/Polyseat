@@ -74,6 +74,13 @@ type seatState struct {
 	// bigPictureHasRun is a gamescope whose base layer Steam has already
 	// written, which it does from the first Big Picture on.
 	bigPictureHasRun bool
+
+	// steamPad is a seat with polyseat-steam-pad installed and a uinput it can
+	// write to, which is every seat provisioned since the helper exists.
+	steamPad bool
+
+	// noUinput is that helper without the uinput it needs.
+	noUinput bool
 }
 
 // A Steam that is running is not a Big Picture that is ready: with -silent
@@ -339,7 +346,7 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		"  exit 0 ;;\n"+
 		"esac\n"+
 		delay+
-		"echo \"$* mangohud=$MANGOHUD\" > "+filepath.Join(home, "started")+"\n"+
+		"echo \"$* mangohud=$MANGOHUD pad-except=$SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT pad-ignore=$SDL_GAMECONTROLLER_IGNORE_DEVICES\" > "+filepath.Join(home, "started")+"\n"+
 		"touch "+steamMarker+"\n")
 
 	// gamescope's root window, as xprop reads and writes it. A signed out
@@ -422,8 +429,30 @@ func runSteamScript(t *testing.T, state seatState) (started, said string) {
 		argv = append(argv, state.arg)
 	}
 
+	// The Steam pad's helper and the uinput it writes to, both the test's own:
+	// the machine running the tests may well have a writable /dev/uinput.
+	steamPad := filepath.Join(home, "polyseat-steam-pad")
+	uinput := filepath.Join(home, "uinput")
+
+	if state.steamPad || state.noUinput {
+		if err := os.WriteFile(steamPad, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if state.steamPad {
+		if err := os.WriteFile(uinput, nil, 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	cmd := exec.Command("/bin/sh", argv...)
 	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"),
+		"POLYSEAT_STEAM_PAD="+steamPad,
+		"POLYSEAT_UINPUT="+uinput,
+		// What the session's units hand everything they start.
+		"SDL_GAMECONTROLLER_IGNORE_DEVICES=0x046d/0xc21d",
+		"SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=",
 		"POLYSEAT_CAPPED="+capped,
 		"POLYSEAT_X11_DIR="+x11,
 		"POLYSEAT_WORKSPACE="+filepath.Join(bin, "polyseat-workspace"),

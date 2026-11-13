@@ -10,6 +10,43 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.51.0
+
+**Steam hears the controller only while Steam is in front.** Playing a game
+outside Steam, Animal Crossing in Eden for one, a press on the Xbox button
+opened Big Picture on the other workspace, and from then on every button went
+to Steam as well as to the game. Steam never grabs a pad. It reads it alongside
+the game, and once it has a window of its own it acts on what it reads, whether
+anybody can see that window or not. A Steam nobody has signed in to opens Big
+Picture on the Xbox button even from the silent start. Steam's own switch,
+"Guide button focuses Steam", made no difference: Big Picture opened with it
+set in `config.vdf`, in `localconfig.vdf` and through Steam's settings call.
+
+A new helper in every seat, `polyseat-steam-pad`, keeps a second pad for each
+controller, the Steam pad. It carries the presses while gamescope (or a Steam
+window) is focused in sway and lets go of everything as soon as something else
+is. Steam is started with `SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT` naming the
+Steam pad, so it opens that one and leaves Sunshine's pad alone. Steam passes
+the exception on to the games it starts, so a Steam game sees the Steam pad
+only, and where Steam Input wraps it, only Steam's virtual pad. Everything
+else the session starts is told to ignore the Steam pad. Sunshine's pad itself
+is untouched, so Eden's and every other game's controller bindings stay as
+they were. Rumble from a Steam game is passed from the Steam pad to Sunshine's
+pad. The pointer helper skips the Steam pad.
+
+**Seats have to be provisioned again** (generation 72). That installs the
+helper, the new environment of the session's units and the new
+`polyseat-steam`, and restarts the session.
+
+Measured in seat vince with a stand-in for Sunshine's pad (045e:0b13, with
+rumble) and Steam's own logs. With Eden's workspace focused and Big Picture
+open, the Xbox button and A reached the game's pad and nothing reached Steam.
+With gamescope focused, the Xbox button opened Steam's menu. A rumble effect
+uploaded to the Steam pad was uploaded, played and erased on the pad behind it.
+With Steam Input wrapping the Steam pad, DREDGE held Steam's virtual pad and
+not the Steam pad underneath. A real controller through Moonlight has not been
+tried yet.
+
 ## 0.50.1
 
 **Faugus games start in their own folder.** A Faugus game picked in Moonlight or

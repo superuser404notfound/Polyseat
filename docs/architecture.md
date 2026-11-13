@@ -1734,6 +1734,23 @@ instead: a synthetic gamepad is fed into it and what comes out of the pointer
 device is read back, including the case that matters most, which is that nothing
 comes out while the mode is off.
 
+**Steam hears the controller only while Steam is in front.** Steam runs all
+session long in gamescope on the second workspace and reads every pad in the
+seat, without grabbing it, whether anybody is looking at it or not. Once it has
+a window of its own, the Xbox button in a game outside Steam opened Big Picture
+there, and Steam acted on every button after that. Its own "Guide button
+focuses Steam" switch changed nothing, wherever it was set. So
+`polyseat-steam-pad` keeps a second pad per controller, the Steam pad (an F310
+by its id, 046d:c21d, which Sunshine never builds), live while gamescope or a
+Steam window is focused and released the moment anything else is.
+`polyseat-steam` starts Steam with `SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT`
+naming it, and the session's units hand everything else
+`SDL_GAMECONTROLLER_IGNORE_DEVICES` with the same id. The exception and not an
+ignore list for Steam, because Steam replaces the ignore list for every game it
+starts and keeps the exception, which is what leaves a Steam game with the Steam
+pad alone. Sunshine's pad is not touched, so nothing changes for any game
+outside Steam. Rumble is passed back from the Steam pad to the pad behind it.
+
 ## Resolution per client
 
 The seat's output is virtual, so unlike a monitor it can simply become the size

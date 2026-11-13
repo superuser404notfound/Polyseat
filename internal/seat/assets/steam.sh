@@ -99,6 +99,37 @@ export XDG_RUNTIME_DIR DISPLAY
 
 say() { echo "polyseat-steam: $*" >&2; }
 
+# ------------------------------------------------------------------ controller
+#
+# Steam hears the controller only through the Steam pad, which
+# polyseat-steam-pad keeps live while Steam is in front and silent while
+# anything else is. Without this, a press on the Xbox button in Eden opened Big
+# Picture on the other workspace and Steam acted on every button from then on;
+# polyseat-steam-pad has the measurements, including why Steam's own switch for
+# the Xbox button is no use.
+#
+# The exception rather than a list of pads to ignore, for two reasons that were
+# both measured. It names one pad, so it holds whatever kind of pad Sunshine
+# builds for a client. And Steam replaces SDL_GAMECONTROLLER_IGNORE_DEVICES for
+# every game it starts but leaves the exception alone, so a Steam game sees the
+# Steam pad and not Sunshine's pad beside it.
+#
+# The session's units tell everything else to ignore the Steam pad, and that
+# list is dropped here: the exception would win over it anyway, but a Steam
+# that ignored its own pad would hear no controller at all.
+#
+# Only where the helper can run. Without uinput there is no Steam pad, and
+# Steam pointed at a pad that does not exist would be deaf, which is worse than
+# the bug.
+STEAM_PAD=0x046d/0xc21d
+
+if [ -x "${POLYSEAT_STEAM_PAD:-/usr/local/bin/polyseat-steam-pad}" ] &&
+    [ -w "${POLYSEAT_UINPUT:-/dev/uinput}" ]; then
+    unset SDL_GAMECONTROLLER_IGNORE_DEVICES
+    SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=$STEAM_PAD
+    export SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT
+fi
+
 # gamescope's own output is kept, overwritten on every start. It is the only log
 # in this chain that belongs to us, and a gamescope that does not survive the
 # session start is invisible without it - which is exactly what happened, twice,

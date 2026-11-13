@@ -454,7 +454,15 @@ def is_pad(device):
 
     By capability rather than by name. Sunshine names its virtual pads after
     whatever model it is emulating, and that string is chosen by the client.
+
+    The one name that counts is our own. polyseat-steam-pad keeps a copy of
+    every client's pad for Steam, called "polyseat:steam pad", which carries
+    the same presses while Steam is in front. Following it as well would see
+    every button twice.
     """
+    if str(getattr(device, "name", "")).startswith("polyseat:"):
+        return False
+
     caps = device.capabilities()
     keys = caps.get(ecodes.EV_KEY, [])
     axes = [code for code, _ in caps.get(ecodes.EV_ABS, [])]
