@@ -58,6 +58,15 @@ window#waybar {
     padding: 0 10px;
 }
 
+/* Next to the window title, and marked out the same way as the keyboard
+   button, so it reads as a button and not as part of the title. */
+#custom-close {
+    background: #2d3b4d;
+    color: #d8dee9;
+    padding: 0 10px;
+    margin-left: 8px;
+}
+
 #custom-seat {
     color: #7fb2d8;
 }

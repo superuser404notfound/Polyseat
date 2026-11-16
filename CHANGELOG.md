@@ -10,6 +10,27 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.52.0
+
+**Windows can be closed without a keyboard.** sway draws no close buttons, so
+the only way to close a window in a seat was Super+Q, which a client with a
+gamepad and no keyboard does not have. The bar now carries a Close button next
+to the title of the focused window, and it closes that window. The title beside
+it says which one that is before the click.
+
+**Focus follows a click, not the pointer.** Until now a window took focus as
+soon as the pointer passed over it, which is sway's default and not what anybody
+used to another desktop expects. With the Close button it was also wrong: on its
+way up to the bar the pointer crossed the window under the button, focused it,
+and the button closed that one. A window is now focused by clicking into it, A
+on the pad. Scrolling still goes to the window under the pointer, and a new
+window is still focused when it opens.
+
+**Seats have to be provisioned again** (generation 73). That writes the new bar
+and sway config and restarts the session.
+
+Not tried on a seat yet.
+
 ## 0.51.0
 
 **Steam hears the controller only while Steam is in front.** Playing a game
