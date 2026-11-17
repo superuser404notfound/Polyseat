@@ -10,6 +10,22 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.53.1
+
+**Games in a folder with a space in its name start from the seat's app grid
+again.** Since 0.50.1 an entry in the grid names the game's folder so that the
+game starts inside it, and it named it in quotes. nwg-drawer, which draws the
+grid, removes every quote from an entry's command before it runs it, so the
+folder fell apart at its first space and nothing started. DinoBones, Elden Ring,
+Metal Gear Solid V and Viva Piñata were affected. Started from Faugus's own
+window they worked, because Faugus sets the folder itself. The folder is now
+written without spaces or quotes and `polyseat-capped -C` turns it back into the
+path. The test for this now does what the grid does to the command, which the
+old one left out.
+
+The daemon updates the grid entries and `polyseat-capped` on its own. Seats do
+not have to be provisioned again.
+
 ## 0.53.0
 
 **Buttons no longer turn black when the pad selects them.** Proton starts

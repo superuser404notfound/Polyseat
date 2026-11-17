@@ -31,6 +31,39 @@
 # The desktop itself still has neither variable's preload, on purpose:
 # polyseat-launcher says why.
 
+#   polyseat-capped -C DIR COMMAND [ARG...]
+#
+# starts it in DIR, which is written with every byte outside [A-Za-z0-9/._,:+-]
+# as @ and three octal digits, a space as @040.
+#
+# **The folder cannot simply be quoted, and v0.50.1 did that.** nwg-drawer
+# removes every " and ' from an Exec line when it reads the entry, before env -S
+# ever sees it, so
+#
+#     Exec=... env -C "/home/player/games/shared/DinoBones Tidy Up the Museum" ...
+#
+# reached env as -C /home/player/games/shared/DinoBones and four more words:
+# exit 125, nothing on screen, for every game whose folder has a space in it.
+# The same game started fine from Faugus's own window, which sets the folder
+# itself. Nothing in the line is left for either reader to take apart: no
+# quote, no backslash, no dollar, no %, which the drawer cuts at, and no space.
+
+if [ "$1" = "-C" ] && [ "$#" -ge 2 ]; then
+    # Back to \ooo, which printf reads in its format on every shell. Nothing
+    # else in the encoded form is special to printf, since \ and % are encoded
+    # themselves. The x keeps a trailing newline from being eaten by $().
+    # shellcheck disable=SC2059
+    dir=$(printf "$(printf '%s' "$2" | sed 's/@\([0-7][0-7][0-7]\)/\\\1/g')x")
+    dir=${dir%x}
+
+    if ! cd -- "$dir"; then
+        echo "polyseat-capped: cannot start in $dir" >&2
+        exit 125
+    fi
+
+    shift 2
+fi
+
 if [ "$#" -eq 0 ]; then
     echo "polyseat-capped: nothing to start" >&2
     exit 2

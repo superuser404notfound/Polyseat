@@ -1149,46 +1149,73 @@ func TestAppsCarryTheGamesDirectory(t *testing.T) {
 }
 
 // The seat's launcher reads the Exec line with env -S and has no Path= key, so
-// the directory has to survive that and be where the command runs. Measured
-// with the env that is here, which is what the seat runs.
+// the directory has to survive that and be where the command runs. Run here the
+// way nwg-drawer runs it: quotes stripped when the entry is read, the line cut
+// at the first %, then env -S, which is what the seat runs, and the real
+// polyseat-capped behind it. v0.50.1 quoted the folder and its test left out the
+// stripping, so it passed while every folder with a space started nothing.
 func TestDesktopEntryStartsInTheGamesDirectory(t *testing.T) {
-	if _, err := os.Stat("/usr/bin/env"); err != nil {
-		t.Skip("no /usr/bin/env")
-	}
-
-	dir := filepath.Join(t.TempDir(), "ELDEN RING", "Madison's (2024) #1")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	if startDir(dir) != dir {
-		t.Fatalf("the test directory %q is refused", dir)
-	}
-
-	entry := string(desktopEntry(Game{Name: "Test", Launch: "pwd", Dir: dir}))
-
-	var line string
-
-	for _, l := range strings.Split(entry, "\n") {
-		if strings.HasPrefix(l, "Exec=") {
-			line = strings.TrimPrefix(l, "Exec=")
+	for _, tool := range []string{"/usr/bin/env", "/bin/sh"} {
+		if _, err := os.Stat(tool); err != nil {
+			t.Skip("no " + tool)
 		}
 	}
 
-	rest, ok := strings.CutPrefix(line, cappedPath+" ")
-	if !ok {
-		t.Fatalf("the entry does not start through polyseat-capped: %q", line)
+	bin := t.TempDir()
+	capped := filepath.Join(bin, "polyseat-capped")
+
+	if err := os.WriteFile(capped, asset("assets/capped.sh"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 
-	// What nwg-drawer does with the line, less polyseat-capped, which only
-	// sets two variables and replaces itself with the rest.
-	out, err := exec.Command("/usr/bin/env", "-S", rest).CombinedOutput()
-	if err != nil {
-		t.Fatalf("%q: %v: %s", rest, err, out)
-	}
+	for _, name := range []string{
+		"DinoBones Tidy Up the Museum",
+		"Madison's (2024) #1",
+		"METAL GEAR SOLID Δ  two spaces",
+		"plain-name_1.0",
+		"at@040sign & semicolon; [x]",
+	} {
+		dir := filepath.Join(t.TempDir(), "games shared", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 
-	if got := strings.TrimSpace(string(out)); got != dir {
-		t.Errorf("the game started in %q, want %q", got, dir)
+		if startDir(dir) != dir {
+			t.Fatalf("the test directory %q is refused", dir)
+		}
+
+		entry := string(desktopEntry(Game{Name: "Test", Launch: "pwd", Dir: dir}))
+
+		var line string
+
+		for _, l := range strings.Split(entry, "\n") {
+			if strings.HasPrefix(l, "Exec=") {
+				line = strings.TrimPrefix(l, "Exec=")
+			}
+		}
+
+		if !strings.HasPrefix(line, cappedPath+" ") {
+			t.Fatalf("the entry does not start through polyseat-capped: %q", line)
+		}
+
+		// nwg-drawer's xdgdesktop_parser and launch.
+		line = strings.NewReplacer(`"`, "", "'", "").Replace(line)
+		if i := strings.Index(line, "%"); i >= 0 {
+			line = line[:i-1]
+		}
+
+		line = capped + strings.TrimPrefix(line, cappedPath)
+
+		// Stdout only: the preload names a shim this machine does not have,
+		// and the linker says so on stderr and carries on.
+		out, err := exec.Command("/usr/bin/env", "-S", line).Output()
+		if err != nil {
+			t.Fatalf("%q: %v", line, err)
+		}
+
+		if got := strings.TrimSpace(string(out)); got != dir {
+			t.Errorf("the game started in %q, want %q", got, dir)
+		}
 	}
 
 	// Without a directory the line is what it always was.

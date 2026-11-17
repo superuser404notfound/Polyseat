@@ -1279,15 +1279,17 @@ func desktopEntry(g Game) []byte {
 	// preload contains $LIB for the linker and the launcher runs Exec through
 	// `env -S`, which refuses a dollar sign it cannot expand and starts nothing.
 	//
-	// A game that has to start in its own folder gets there through env -C.
-	// nwg-drawer has no Path= key: it starts every entry in its own directory.
-	// The folder goes in the command rather than into polyseat-capped, so a
-	// seat provisioned before this change runs the line as written. startDir
-	// has already kept out everything that would need escaping inside the
-	// quotes.
+	// A game that has to start in its own folder gets there through
+	// polyseat-capped -C. nwg-drawer has no Path= key: it starts every entry in
+	// its own directory. And not quoted, because the drawer strips every quote
+	// from the line before env -S splits it at the spaces: v0.50.1 wrote
+	// env -C "DIR", and every game in a folder with a space started nothing.
+	// capped.sh says how the folder is written instead. writeGameEntries
+	// pushes the script before any entry it writes, so a seat that has only
+	// the old one gets this one with the first entry that needs it.
 	launch := oneLine(g.Launch)
 	if g.Dir != "" {
-		launch = `env -C "` + oneLine(g.Dir) + `" ` + launch
+		launch = "-C " + cappedDir(oneLine(g.Dir)) + " " + launch
 	}
 
 	b.WriteString("Exec=" + cappedPath + " " + launch + "\n")
@@ -1335,6 +1337,28 @@ func oneLine(s string) string {
 
 		return r
 	}, strings.TrimSpace(s))
+}
+
+// cappedDir writes a folder the way polyseat-capped -C reads it: every byte
+// outside a small plain set as @ and three octal digits. Bytewise, so a name in
+// any script survives, and with nothing in it that nwg-drawer, env -S or the
+// desktop entry format would act on. capped.sh has the reason.
+func cappedDir(dir string) string {
+	var b strings.Builder
+
+	for i := 0; i < len(dir); i++ {
+		c := dir[i]
+
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			strings.IndexByte("/._,:+-", c) >= 0:
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "@%03o", c)
+		}
+	}
+
+	return b.String()
 }
 
 // iconItem is one icon to find: what to call the answer, and everything known
