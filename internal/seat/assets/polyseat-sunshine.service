@@ -12,6 +12,8 @@ Environment=SDL_JOYSTICK_DISABLE_UDEV=1
 # anything but Steam is in front, and a game that listens to the first pad it
 # finds could find that one. polyseat-steam drops this again for Steam.
 Environment=SDL_GAMECONTROLLER_IGNORE_DEVICES=0x046d/0xc21d
+# Xalia off, for the games Moonlight starts. polyseat-sway.service says why.
+Environment=PROTON_USE_XALIA=0
 # Waits for the Wayland session itself - see sunshine-run.sh.
 ExecStart=/usr/local/bin/polyseat-sunshine-run
 Restart=on-failure

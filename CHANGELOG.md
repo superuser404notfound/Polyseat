@@ -10,6 +10,38 @@ that changes behaviour, including changes that need seats to be built again.
 When that happens it is written here, because it is the one kind of update that
 costs a few minutes per seat rather than a restart.
 
+## 0.53.0
+
+**Buttons no longer turn black when the pad selects them.** Proton starts
+Xalia beside every Windows program, a helper that lets a gamepad move through
+dialogs and marks the chosen control with a frame. That frame is a window with
+its middle cut away by an X shape. sway ignores X shapes, so the part that was
+cut away is drawn black and covers the control. Reported in NHSE started from
+Faugus; in a seat a plain test window with a shape was black wherever the shape
+removed it, and the same window without one was transparent. Xalia is now off
+in seats. Windows dialogs are worked with the pad pointer, Select and Start held
+together.
+
+**Windows programs float at their own size.** sway placed every window from
+Proton as a tile. A Windows window of fixed size then became a full-height
+column with the form in its corner and black around it, and that column took
+focus away from the windows in front of it. Anything Proton runs from Faugus,
+Lutris or Heroic now opens floating at the size it asks for, as it would on
+Windows. Games in fullscreen are not affected.
+
+**Floating windows have a title bar** to drag them by with the pad pointer.
+Before, a floating window could only be moved with Super held.
+
+Other shaped Windows windows, such as launchers with irregular outlines, still
+show black where they should be transparent. That needs sway itself to honour X
+shapes and is not part of this release.
+
+**Seats have to be provisioned again** (generation 74).
+
+Tried by hand in a seat before it was written down: the float rule and the title
+bar were set at runtime and approved from the couch, and Xalia's black frame was
+reproduced and measured. The release as a whole has not run on a seat.
+
 ## 0.52.0
 
 **Windows can be closed without a keyboard.** sway draws no close buttons, so

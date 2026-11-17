@@ -34,6 +34,16 @@ Environment=SDL_JOYSTICK_DISABLE_UDEV=1
 # anything but Steam is in front, and a game that listens to the first pad it
 # finds could find that one. polyseat-steam drops this again for Steam.
 Environment=SDL_GAMECONTROLLER_IGNORE_DEVICES=0x046d/0xc21d
+# Proton starts Xalia beside every game, a helper that drives Windows dialogs
+# from a gamepad and marks the chosen control with a frame. The frame is a
+# window whose middle is cut away with an X shape, and sway ignores X shapes:
+# what was cut away is drawn black. Reported from the couch as every button
+# turning black the moment the pad selected it, in NHSE out of Faugus. Measured
+# in a seat with a plain test window: a shaped window is black where its shape
+# removes it, ARGB or not, and the same ARGB window without a shape is
+# transparent. The pad pointer is how Windows dialogs are worked here.
+# polyseat-sunshine.service carries the same line for what Moonlight starts.
+Environment=PROTON_USE_XALIA=0
 ExecStart=/usr/bin/sway
 Restart=on-failure
 RestartSec=2
